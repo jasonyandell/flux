@@ -33,7 +33,7 @@ function runOne(): Result {
   return { winner: 'draw', ticks: MAX_TICKS };
 }
 
-const N = parseInt(process.argv[2] ?? '100', 10);
+const N = parseInt(process.argv[2] ?? '10', 10);
 const results: Result[] = [];
 const t0 = performance.now();
 for (let i = 0; i < N; i++) results.push(runOne());

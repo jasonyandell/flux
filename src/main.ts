@@ -5,7 +5,6 @@ import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { eventToWorld, pickNode } from './input/pick';
 import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner } from './render/gameui';
-import { createOverlay, updateOverlay } from './render/overlay';
 import { createScene, render, resizeRenderer, setDragLine, updateScene } from './render/scene';
 
 const HUMAN = 0;
@@ -22,7 +21,6 @@ let hintFaded = false;
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const scene = createScene(canvas, state);
-const overlay = createOverlay(state);
 const gameUI = createGameUI();
 gameUI.onPlayAgain(() => {
   state = makeInitialState();
@@ -127,7 +125,6 @@ function frame(now: number) {
 
   setPaused(gameUI, tunables.paused && winner === null);
   updateScene(scene, state, selected);
-  updateOverlay(overlay, scene, state, dt);
   updateHud(state);
   render(scene);
   requestAnimationFrame(frame);

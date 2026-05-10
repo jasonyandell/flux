@@ -1,5 +1,6 @@
 import {
   type Action,
+  type Edge,
   type Flow,
   type GameState,
   type Owner,
@@ -13,15 +14,26 @@ type Force = number[]; // strength contribution per player at one node
 
 const zeroForce = (n: number): Force => Array(n).fill(0);
 
+const adjacencyCache = new WeakMap<readonly Edge[], Set<number>>();
+
+function edgeKey(a: number, b: number): number {
+  return a < b ? a * 1e7 + b : b * 1e7 + a;
+}
+
+function adjacencySet(edges: readonly Edge[]): Set<number> {
+  let s = adjacencyCache.get(edges);
+  if (s) return s;
+  s = new Set();
+  for (const e of edges) s.add(edgeKey(e.a, e.b));
+  adjacencyCache.set(edges, s);
+  return s;
+}
+
 export function applyAction(state: GameState, action: Action): GameState {
   if (action.kind !== 'toggleFlow') return state;
   const src = state.nodes[action.src];
   if (!src || src.owner !== action.player) return state;
-  const adjacent = state.edges.some(e =>
-    (e.a === action.src && e.b === action.dst) ||
-    (e.a === action.dst && e.b === action.src),
-  );
-  if (!adjacent) return state;
+  if (!adjacencySet(state.edges).has(edgeKey(action.src, action.dst))) return state;
   const onEdge = state.flows.findIndex(f =>
     (f.src === action.src && f.dst === action.dst) ||
     (f.src === action.dst && f.dst === action.src),

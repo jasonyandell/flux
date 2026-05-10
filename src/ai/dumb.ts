@@ -3,7 +3,6 @@ import type { Action, GameState, NodeId, Player } from '../game/state';
 export function aiThink(state: GameState, player: Player): Action[] {
   const actions: Action[] = [];
 
-  // Cancel my flows pointing at nodes I now own (target was captured).
   for (const f of state.flows) {
     if (f.player !== player) continue;
     if (state.nodes[f.dst].owner === player) {
@@ -18,27 +17,34 @@ export function aiThink(state: GameState, player: Player): Action[] {
       .map(f => f.src),
   );
 
-  // For each owned, strong, non-sending node: attack weakest non-friendly neighbor.
+  const adj = buildAdjacency(state);
   const myStrong = state.nodes.filter(n => n.owner === player && n.strength > 5);
   for (const src of myStrong) {
     if (srcWithOutgoing.has(src.id)) continue;
-    const targets = neighborsOf(state, src.id)
-      .map(id => state.nodes[id])
-      .filter(n => n.owner !== player);
-    if (targets.length === 0) continue;
-    targets.sort((a, b) =>
-      a.strength - b.strength || (player === 0 ? a.id - b.id : b.id - a.id),
-    );
-    actions.push({ kind: 'toggleFlow', src: src.id, dst: targets[0].id, player });
+    const ns = adj[src.id];
+    let bestId: NodeId = -1;
+    let bestStrength = Infinity;
+    let bestSecondary = 0;
+    for (const id of ns) {
+      const n = state.nodes[id];
+      if (n.owner === player) continue;
+      const secondary = player === 0 ? id : -id;
+      if (n.strength < bestStrength || (n.strength === bestStrength && secondary < bestSecondary)) {
+        bestStrength = n.strength;
+        bestSecondary = secondary;
+        bestId = id;
+      }
+    }
+    if (bestId >= 0) actions.push({ kind: 'toggleFlow', src: src.id, dst: bestId, player });
   }
   return actions;
 }
 
-function neighborsOf(state: GameState, n: NodeId): NodeId[] {
-  const out: NodeId[] = [];
+function buildAdjacency(state: GameState): NodeId[][] {
+  const adj: NodeId[][] = state.nodes.map(() => []);
   for (const e of state.edges) {
-    if (e.a === n) out.push(e.b);
-    else if (e.b === n) out.push(e.a);
+    adj[e.a].push(e.b);
+    adj[e.b].push(e.a);
   }
-  return out;
+  return adj;
 }

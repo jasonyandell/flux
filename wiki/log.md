@@ -6,6 +6,14 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-10 | workspace | hex grid default + instanced renderer]
+
+**Touched pages:** [[hex-grid-default]] [[flux]] [[index]] [[questions/open]]
+**Added:** [[hex-grid-default]] decision page covering the new ~1000-cell hex board, renderer batching, the `WeakMap`-backed adjacency cache in `applyAction`, and the per-call adjacency list in `aiThink`.
+**Updated:** [[flux]] reflects the hex board, instanced renderer, drag-input model, and slower-per-run sim; [[index]] route map; [[questions/open]] notes the stalemate persists at hex scale.
+**Retired:** none. Old 7-node hand-laid graph is gone but lives in git.
+**Questions opened:** none new. Browser was not tested from this session — flagged in commit.
+
 ## [2026-05-10 | workspace | wiki audit against idle-tower]
 
 **Touched pages:** none in wiki body; added top-level `AGENTS.md`, reduced `CLAUDE.md` to a pointer.
