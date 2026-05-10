@@ -5,7 +5,7 @@ import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { eventToWorld, pickNode } from './input/pick';
 import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner } from './render/gameui';
-import { createScene, render, resizeRenderer, setDragLine, updateScene } from './render/scene';
+import { createScene, panBy, render, resizeRenderer, setDragLine, setViewSize, updateScene } from './render/scene';
 
 const HUMAN = 0;
 const AI = 1;
@@ -85,6 +85,21 @@ canvas.addEventListener('pointercancel', (ev) => {
   dragActive = false;
   setDragLine(scene, null, null);
 });
+
+const ZOOM_STEP = 1.1;
+const MIN_VIEW = 1.5;
+const MAX_VIEW = 36;
+
+canvas.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  const factor = ev.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+  const next = Math.max(MIN_VIEW, Math.min(MAX_VIEW, scene.viewSize / factor));
+  if (next === scene.viewSize) return;
+  const worldBefore = eventToWorld(scene, ev);
+  setViewSize(scene, next);
+  const worldAfter = eventToWorld(scene, ev);
+  panBy(scene, worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
+}, { passive: false });
 
 const tunables = {
   paused: false,

@@ -18,7 +18,7 @@ export function pickNode(scene: Scene, ev: PointerEvent): number | null {
   return best === -1 ? null : best;
 }
 
-export function eventToWorld(scene: Scene, ev: PointerEvent): { x: number; y: number } {
+export function eventToWorld(scene: Scene, ev: { clientX: number; clientY: number }): { x: number; y: number } {
   const rect = scene.domElement.getBoundingClientRect();
   worldVec.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
   worldVec.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;

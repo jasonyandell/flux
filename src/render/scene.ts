@@ -183,15 +183,33 @@ export function setDragLine(s: Scene, a: { x: number; y: number } | null, b: { x
   s.dragLine.visible = true;
 }
 
-export function resizeRenderer(s: Scene): void {
-  const w = window.innerWidth, h = window.innerHeight;
-  s.renderer.setSize(w, h, false);
+function updateFrustum(s: Scene): void {
+  const w = s.renderer.domElement.clientWidth || window.innerWidth;
+  const h = s.renderer.domElement.clientHeight || window.innerHeight;
   const aspect = w / h;
   s.camera.left = -aspect * s.viewSize;
   s.camera.right = aspect * s.viewSize;
   s.camera.top = s.viewSize;
   s.camera.bottom = -s.viewSize;
   s.camera.updateProjectionMatrix();
+}
+
+export function resizeRenderer(s: Scene): void {
+  const w = window.innerWidth, h = window.innerHeight;
+  s.renderer.setSize(w, h, false);
+  updateFrustum(s);
+}
+
+export function setViewSize(s: Scene, viewSize: number): void {
+  if (viewSize === s.viewSize) return;
+  s.viewSize = viewSize;
+  updateFrustum(s);
+}
+
+export function panBy(s: Scene, dx: number, dy: number): void {
+  s.camera.position.x += dx;
+  s.camera.position.y += dy;
+  s.camera.updateMatrixWorld();
 }
 
 export function render(s: Scene): void {
