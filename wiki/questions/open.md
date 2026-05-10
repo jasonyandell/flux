@@ -17,7 +17,11 @@ status: active
 
 The scaffold is correct — the heuristic is genuinely too weak to break the symmetric stalemate. Useful as a baseline for any future AI.
 
-Possible directions:
+The hand-written [[../decisions/ai-zoo|ai-zoo]] confirmed and narrowed this: four of six AIs (aggressive, random, greedy-neutral, cluster) all stalemate against each other on the 1000-cell hex board. The family of "weakest-local-neighbor" target selection has a shared attractor. Two cautiously-tuned AIs (defensive, opportunist) lose to all four — they're worse than the floor.
+
+**Planned answer:** [[../topics/neuroevolution|neuroevolution]] — evolve NN controllers in the spectator board rather than hand-write more heuristics. The zoo's stalemate is the baseline an evolved controller must beat to be interesting.
+
+Lower-effort alternatives if neuroevolution is too far:
 
 - AI that targets paths to the enemy base rather than weakest local neighbor (BFS-based prioritization).
 - Stochastic AI seed parameter so headless sims explore the action space.
