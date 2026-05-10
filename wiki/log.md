@@ -6,6 +6,15 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-10 | workspace | wiki audit against idle-tower]
+
+**Touched pages:** none in wiki body; added top-level `AGENTS.md`, reduced `CLAUDE.md` to a pointer.
+**Added:** top-level `AGENTS.md` matching idle-tower's convention (project notes + pointer to wiki).
+**Updated:** `CLAUDE.md` now defers to `AGENTS.md`.
+**Retired:** none.
+**Questions opened:** none.
+**Audit notes:** schema (frontmatter, log format, page conventions, filenames) matches idle-tower's `wiki/AGENTS.md`. Directory layout is an intentional subset — flux omits `trails/` and `playbooks/`, consistent with "do not create pages speculatively". `kind` enum is narrower (no `experiment`, `trail`, `playbook`); fine until those page types are needed.
+
 ## [2026-05-10 | workspace | one flow per edge]
 
 **Touched pages:** [[one-flow-per-edge]] [[continuous-flow-model]] [[index]]
