@@ -26,7 +26,7 @@ export type GameState = {
 export type Action =
   | { kind: 'toggleFlow'; src: NodeId; dst: NodeId; player: Player };
 
-export const REGEN_PER_SEC = 1.0;
+export const REGEN_PER_SEC = 1.1;
 export const TRANSFER_PER_SEC = 3.0;
 export const MAX_STRENGTH = 100;
 export const MIN_STRENGTH_TO_SEND = 0.1;
