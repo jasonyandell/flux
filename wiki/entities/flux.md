@@ -32,7 +32,8 @@ captures, recaptures, eventual collapse to one survivor
 - `src/render/scene.ts` — three.js orthographic top-down view. Nodes are one `InstancedMesh`; edges are one baked `LineSegments`; flows are a per-frame rebuilt `LineSegments` drawing the source-side half of each flow. 12-color palette exported as `COLORS`.
 - `src/render/gameui.ts` — banner / pause / hint overlays. `showBanner` colors per winner; `getWinner` returns the sole remaining player or null.
 - `src/input/pick.ts` — distance-based picking against `scene.nodePositions`; `eventToWorld` for the wheel-zoom cursor anchor.
-- `src/main.ts` — browser entry. Spectator: wheel zoom only, no click input. lil-gui exposes `players` (2/4/6/8/12), `paused`, `aiPeriodSec`, `respawn`. Render at 60Hz; game ticks at 10Hz × `SPEED = 5`.
+- `src/main.ts` — browser entry. Spectator: wheel zoom only, no click input. lil-gui exposes `players` (2/4/6/8/12), `paused`, `aiPeriodSec`, `respawn`. Render at 60Hz; game ticks at 10Hz × `SPEED = 5`. Maintains the ring buffer that drives [[../decisions/stasis-detection|stasis-detection]].
 - `src/sim/run.ts` — headless runner via `tsx`. Supports default, pair (`npm run sim -- agg random 10`), and tournament (`npm run sim -- tournament 3`) modes.
+- `src/sim/stasis.ts` — pure variance-window detector behind the browser's `STASIS` banner. See [[../decisions/stasis-detection|stasis-detection]].
 
 The game model is documented in [[continuous-flow-model]]. The planned next step is [[neuroevolution]].

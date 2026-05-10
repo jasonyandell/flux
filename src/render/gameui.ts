@@ -66,8 +66,16 @@ export function createGameUI(): GameUI {
 
 export function showBanner(ui: GameUI, winner: Player, label?: string): void {
   ui.bannerText.textContent = label ? `${label.toUpperCase()} WINS` : `PLAYER ${winner} WINS`;
+  ui.bannerText.style.fontSize = '64px';
   const hex = COLORS[winner % COLORS.length].toString(16).padStart(6, '0');
   ui.bannerText.style.color = `#${hex}`;
+  ui.banner.style.display = 'flex';
+}
+
+export function showStasisBanner(ui: GameUI): void {
+  ui.bannerText.textContent = 'STASIS';
+  ui.bannerText.style.fontSize = '48px';
+  ui.bannerText.style.color = '#999';
   ui.banner.style.display = 'flex';
 }
 

@@ -6,6 +6,14 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-10 | workspace | stasis detection]
+
+**Touched pages:** [[decisions/stasis-detection]] [[entities/flux]] [[index]] [[questions/open]]
+**Added:** [[decisions/stasis-detection]] documenting the variance-window detector (`STASIS_SAMPLE_PERIOD_TICKS = 5`, `STASIS_WINDOW = 50`, `STASIS_EPSILON = 1.0`), the pure `detectStasis` in `src/sim/stasis.ts`, and the `showStasisBanner` sibling in `src/render/gameui.ts`. `src/main.ts` now keeps a ring buffer of per-player cell counts and freezes `step`/AI when stasis fires; `respawn()` resets the flag and buffer.
+**Updated:** [[entities/flux]] lists `src/sim/stasis.ts` in the implementation frontier; [[index]] adds the decision; [[questions/open]] links to it as a mitigation for the four-AI stalemate.
+**Retired:** none.
+**Questions opened:** none new.
+
 ## [2026-05-10 | workspace | record neuroevolution as the planned next step]
 
 **Touched pages:** [[topics/neuroevolution]] [[questions/open]] [[index]] [[entities/flux]]

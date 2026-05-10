@@ -4,8 +4,9 @@ import { makeInitialState } from './game/graph';
 import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { eventToWorld } from './input/pick';
-import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner } from './render/gameui';
+import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner, showStasisBanner } from './render/gameui';
 import { createScene, panBy, render, resizeRenderer, setViewSize, updateScene } from './render/scene';
+import { detectStasis } from './sim/stasis';
 
 const PLAYER_COUNT_OPTIONS = [2, 4, 6, 8, 12];
 const PLAYER_COLORS_CSS = [
@@ -18,6 +19,10 @@ const TICK_HZ = 10;
 const TICK_DT = 1 / TICK_HZ;
 const SPEED = 5;
 
+const STASIS_SAMPLE_PERIOD_TICKS = 5;
+const STASIS_WINDOW = 50;
+const STASIS_EPSILON = 1.0;
+
 const tunables = {
   paused: false,
   aiPeriodSec: 0.5,
@@ -27,6 +32,9 @@ const tunables = {
 
 let state: GameState = makeInitialState(undefined, undefined, tunables.numPlayers);
 let winner: number | null = null;
+let stasis = false;
+const stasisBuffer: number[][] = [];
+let lastStasisSampleTick = 0;
 let playerAIs: AIName[] = randomAssignment(tunables.numPlayers);
 
 function randomAssignment(n: number): AIName[] {
@@ -40,8 +48,17 @@ function randomAssignment(n: number): AIName[] {
 function respawn() {
   state = makeInitialState(undefined, undefined, tunables.numPlayers);
   winner = null;
+  stasis = false;
+  stasisBuffer.length = 0;
+  lastStasisSampleTick = 0;
   playerAIs = randomAssignment(tunables.numPlayers);
   hideBanner(gameUI);
+}
+
+function sampleCounts(s: GameState): number[] {
+  const counts = new Array(s.numPlayers).fill(0);
+  for (const n of s.nodes) if (n.owner !== null) counts[n.owner]++;
+  return counts;
 }
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
@@ -83,13 +100,22 @@ function frame(now: number) {
   const dt = Math.min(0.25, (now - last) / 1000);
   last = now;
 
-  if (!tunables.paused && winner === null) {
+  if (!tunables.paused && winner === null && !stasis) {
     const scaled = dt * SPEED;
     stepAcc += scaled;
     aiAcc += scaled;
     while (stepAcc >= TICK_DT) {
       state = step(state, TICK_DT);
       stepAcc -= TICK_DT;
+      if (state.tick - lastStasisSampleTick >= STASIS_SAMPLE_PERIOD_TICKS) {
+        lastStasisSampleTick = state.tick;
+        stasisBuffer.push(sampleCounts(state));
+        if (stasisBuffer.length > STASIS_WINDOW) stasisBuffer.shift();
+        if (detectStasis(stasisBuffer, STASIS_EPSILON, STASIS_WINDOW)) {
+          stasis = true;
+          showStasisBanner(gameUI);
+        }
+      }
     }
     if (aiAcc >= tunables.aiPeriodSec) {
       for (let p = 0; p < state.numPlayers; p++) {
@@ -105,7 +131,7 @@ function frame(now: number) {
     }
   }
 
-  setPaused(gameUI, tunables.paused && winner === null);
+  setPaused(gameUI, tunables.paused && winner === null && !stasis);
   updateScene(scene, state, null);
   updateHud(state);
   render(scene);

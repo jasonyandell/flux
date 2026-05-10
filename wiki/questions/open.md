@@ -21,6 +21,8 @@ The hand-written [[../decisions/ai-zoo|ai-zoo]] confirmed and narrowed this: fou
 
 **Planned answer:** [[../topics/neuroevolution|neuroevolution]] — evolve NN controllers in the spectator board rather than hand-write more heuristics. The zoo's stalemate is the baseline an evolved controller must beat to be interesting.
 
+**Mitigation in place:** [[../decisions/stasis-detection|stasis-detection]] — the browser now ends sessions that wedge into the symmetric stalemate rather than running forever.
+
 Lower-effort alternatives if neuroevolution is too far:
 
 - AI that targets paths to the enemy base rather than weakest local neighbor (BFS-based prioritization).
