@@ -16,6 +16,7 @@ const PLAYER_COLORS_CSS = [
 
 const TICK_HZ = 10;
 const TICK_DT = 1 / TICK_HZ;
+const SPEED = 5;
 
 const tunables = {
   paused: false,
@@ -83,8 +84,9 @@ function frame(now: number) {
   last = now;
 
   if (!tunables.paused && winner === null) {
-    stepAcc += dt;
-    aiAcc += dt;
+    const scaled = dt * SPEED;
+    stepAcc += scaled;
+    aiAcc += scaled;
     while (stepAcc >= TICK_DT) {
       state = step(state, TICK_DT);
       stepAcc -= TICK_DT;
