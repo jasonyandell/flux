@@ -6,6 +6,15 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-10 | workspace | attack bonus replaces loop bonus]
+
+**Touched pages:** [[attack-bonus]] [[loop-bonus]] [[continuous-flow-model]] [[index]] [[questions/open]]
+**Added:** [[attack-bonus]] decision page; `ATTACK_BONUS = 0.5` constant in `state.ts`; non-friendly destination multiplier in `step.ts`. Friendly transfer is back to a wash.
+**Updated:** [[continuous-flow-model]] now references [[attack-bonus]] instead of loop bonus; [[index]] route map; [[questions/open]] notes the stalemate persists even with combat acceleration — confirming the failure mode is the heuristic, not the combat constants.
+**Retired:** [[loop-bonus]] (status: retired; one-line pointer to [[attack-bonus]]).
+**Questions opened:** none new.
+**Verification:** by hand. One-sided attack: attacker drains at 2/sec (regen 1 − k 3); passive defender drains at 3.5/sec (regen 1 − k·1.5 = 4.5). Mutual fire: both drain at 6.5/sec (regen 1 − k 3 source − k·1.5 inbound). Sim outcome: still 5/5 draws — the symmetric mirror match isn't broken by combat acceleration alone.
+
 ## [2026-05-10 | workspace | loop bonus on friendly flows]
 
 **Touched pages:** [[loop-bonus]] [[continuous-flow-model]] [[index]]
