@@ -4,7 +4,7 @@ import { makeInitialState } from './game/graph';
 import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { pickNode } from './input/pick';
-import { createGameUI, getWinner, hideBanner, showBanner } from './render/gameui';
+import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner } from './render/gameui';
 import { createOverlay, updateOverlay } from './render/overlay';
 import { createScene, render, resizeRenderer, updateScene } from './render/scene';
 
@@ -18,6 +18,7 @@ let state: GameState = makeInitialState();
 let selected: number | null = null;
 
 let winner: number | null = null;
+let hintFaded = false;
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const scene = createScene(canvas, state);
@@ -42,7 +43,12 @@ canvas.addEventListener('pointerdown', (ev) => {
     return;
   }
   if (selected === nodeId) { selected = null; return; }
+  const before = state.flows;
   state = applyAction(state, { kind: 'toggleFlow', src: selected, dst: nodeId, player: HUMAN });
+  if (!hintFaded && state.flows !== before) {
+    hintFaded = true;
+    fadeHint(gameUI);
+  }
   selected = null;
 });
 
@@ -52,9 +58,10 @@ const tunables = {
   reset: () => { state = makeInitialState(); selected = null; winner = null; hideBanner(gameUI); },
 };
 const gui = new GUI({ title: 'flux' });
-gui.add(tunables, 'paused');
+const pausedCtrl = gui.add(tunables, 'paused');
 gui.add(tunables, 'aiPeriodSec', 0.05, 2, 0.05);
 gui.add(tunables, 'reset').name('reset board');
+gameUI.onPauseClick(() => { tunables.paused = false; pausedCtrl.updateDisplay(); });
 
 let last = performance.now();
 let stepAcc = 0;
@@ -82,6 +89,7 @@ function frame(now: number) {
     }
   }
 
+  setPaused(gameUI, tunables.paused && winner === null);
   updateScene(scene, state, selected);
   updateOverlay(overlay, scene, state, dt);
   updateHud(state);

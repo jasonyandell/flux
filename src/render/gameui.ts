@@ -4,7 +4,10 @@ export type GameUI = {
   banner: HTMLDivElement;
   bannerText: HTMLDivElement;
   bannerButton: HTMLButtonElement;
+  pause: HTMLDivElement;
+  hint: HTMLDivElement;
   onPlayAgain: (cb: () => void) => void;
+  onPauseClick: (cb: () => void) => void;
 };
 
 const HUMAN: Player = 0;
@@ -39,11 +42,26 @@ export function createGameUI(): GameUI {
 
   document.body.appendChild(banner);
 
+  const pause = document.createElement('div');
+  pause.style.cssText =
+    'position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(10,10,10,0.55);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#fff;font-size:56px;letter-spacing:6px;font-weight:bold;cursor:pointer;z-index:9;text-shadow:0 2px 8px rgba(0,0,0,0.8);';
+  pause.textContent = 'PAUSED';
+  document.body.appendChild(pause);
+
+  const hint = document.createElement('div');
+  hint.style.cssText =
+    'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);pointer-events:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#fff;opacity:0.35;letter-spacing:1px;transition:opacity 0.6s ease-out;z-index:5;';
+  hint.textContent = 'click your node, then a neighbor to toggle a flow';
+  document.body.appendChild(hint);
+
   return {
     banner,
     bannerText,
     bannerButton,
+    pause,
+    hint,
     onPlayAgain: (cb) => { bannerButton.onclick = cb; },
+    onPauseClick: (cb) => { pause.onclick = cb; },
   };
 }
 
@@ -56,3 +74,12 @@ export function showBanner(ui: GameUI, winner: Player): void {
 export function hideBanner(ui: GameUI): void {
   ui.banner.style.display = 'none';
 }
+
+export function setPaused(ui: GameUI, paused: boolean): void {
+  ui.pause.style.display = paused ? 'flex' : 'none';
+}
+
+export function fadeHint(ui: GameUI): void {
+  ui.hint.style.opacity = '0';
+}
+
