@@ -1,90 +1,56 @@
 import GUI from 'lil-gui';
-import { aiThink } from './ai/dumb';
+import { AI_NAMES, AIs, type AIName } from './ai';
 import { makeInitialState } from './game/graph';
 import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
-import { eventToWorld, pickNode } from './input/pick';
+import { eventToWorld } from './input/pick';
 import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner } from './render/gameui';
-import { createScene, panBy, render, resizeRenderer, setDragLine, setViewSize, updateScene } from './render/scene';
+import { createScene, panBy, render, resizeRenderer, setViewSize, updateScene } from './render/scene';
 
-const HUMAN = 0;
-const AI = 1;
+const PLAYER_COUNT_OPTIONS = [2, 4, 6, 8, 12];
+const PLAYER_COLORS_CSS = [
+  '#4a90e2', '#e24a4a', '#4ae28a', '#e2c44a',
+  '#a44ae2', '#e2884a', '#4ae2e2', '#e24a88',
+  '#88e24a', '#e2e24a', '#4a88e2', '#a4e24a',
+];
 
 const TICK_HZ = 10;
 const TICK_DT = 1 / TICK_HZ;
 
-let state: GameState = makeInitialState();
-let selected: number | null = null;
+const tunables = {
+  paused: false,
+  aiPeriodSec: 0.5,
+  numPlayers: 6,
+  reset: () => respawn(),
+};
 
+let state: GameState = makeInitialState(undefined, undefined, tunables.numPlayers);
 let winner: number | null = null;
-let hintFaded = false;
+let playerAIs: AIName[] = randomAssignment(tunables.numPlayers);
+
+function randomAssignment(n: number): AIName[] {
+  const out: AIName[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push(AI_NAMES[Math.floor(Math.random() * AI_NAMES.length)]);
+  }
+  return out;
+}
+
+function respawn() {
+  state = makeInitialState(undefined, undefined, tunables.numPlayers);
+  winner = null;
+  playerAIs = randomAssignment(tunables.numPlayers);
+  hideBanner(gameUI);
+}
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const scene = createScene(canvas, state);
 const gameUI = createGameUI();
-gameUI.onPlayAgain(() => {
-  state = makeInitialState();
-  selected = null;
-  winner = null;
-  hideBanner(gameUI);
-});
+gameUI.onPlayAgain(() => respawn());
+fadeHint(gameUI);
 
 window.addEventListener('resize', () => resizeRenderer(scene));
 resizeRenderer(scene);
-
-const DRAG_THRESHOLD_PX = 8;
-let dragStartClient: { x: number; y: number } | null = null;
-let dragActive = false;
-
-canvas.addEventListener('pointerdown', (ev) => {
-  if (winner !== null) return;
-  const nodeId = pickNode(scene, ev);
-  if (nodeId === null) { selected = null; setDragLine(scene, null, null); return; }
-  if (state.nodes[nodeId].owner !== HUMAN) { selected = null; setDragLine(scene, null, null); return; }
-  selected = nodeId;
-  dragStartClient = { x: ev.clientX, y: ev.clientY };
-  dragActive = false;
-  canvas.setPointerCapture(ev.pointerId);
-});
-
-canvas.addEventListener('pointermove', (ev) => {
-  if (selected === null || dragStartClient === null) return;
-  if (!dragActive) {
-    const dx = ev.clientX - dragStartClient.x, dy = ev.clientY - dragStartClient.y;
-    if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
-    dragActive = true;
-  }
-  setDragLine(scene, state.nodes[selected].pos, eventToWorld(scene, ev));
-});
-
-canvas.addEventListener('pointerup', (ev) => {
-  if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
-  if (selected === null) return;
-  const src = selected;
-  const wasDrag = dragActive;
-  selected = null;
-  dragStartClient = null;
-  dragActive = false;
-  setDragLine(scene, null, null);
-  if (!wasDrag) return;
-  const dst = pickNode(scene, ev);
-  if (dst === null || dst === src) return;
-  const before = state.flows;
-  state = applyAction(state, { kind: 'toggleFlow', src, dst, player: HUMAN });
-  if (state.flows === before) return;
-  if (!hintFaded) {
-    hintFaded = true;
-    fadeHint(gameUI);
-  }
-});
-
-canvas.addEventListener('pointercancel', (ev) => {
-  if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
-  selected = null;
-  dragStartClient = null;
-  dragActive = false;
-  setDragLine(scene, null, null);
-});
 
 const ZOOM_STEP = 1.1;
 const MIN_VIEW = 1.5;
@@ -101,15 +67,11 @@ canvas.addEventListener('wheel', (ev) => {
   panBy(scene, worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
 }, { passive: false });
 
-const tunables = {
-  paused: false,
-  aiPeriodSec: 0.5,
-  reset: () => { state = makeInitialState(); selected = null; winner = null; hideBanner(gameUI); },
-};
-const gui = new GUI({ title: 'flux' });
+const gui = new GUI({ title: 'flux — robot wars' });
+gui.add(tunables, 'numPlayers', PLAYER_COUNT_OPTIONS).name('players').onChange(() => respawn());
 const pausedCtrl = gui.add(tunables, 'paused');
-gui.add(tunables, 'aiPeriodSec', 0.05, 2, 0.05);
-gui.add(tunables, 'reset').name('reset board');
+gui.add(tunables, 'aiPeriodSec', 0.05, 2, 0.05).name('ai period (s)');
+gui.add(tunables, 'reset').name('respawn (reshuffle)');
 gameUI.onPauseClick(() => { tunables.paused = false; pausedCtrl.updateDisplay(); });
 
 let last = performance.now();
@@ -128,18 +90,21 @@ function frame(now: number) {
       stepAcc -= TICK_DT;
     }
     if (aiAcc >= tunables.aiPeriodSec) {
-      for (const a of aiThink(state, AI)) state = applyAction(state, a);
+      for (let p = 0; p < state.numPlayers; p++) {
+        const fn = AIs[playerAIs[p]];
+        for (const a of fn(state, p, state.tick)) state = applyAction(state, a);
+      }
       aiAcc = 0;
     }
     const w = getWinner(state);
     if (w !== null) {
       winner = w;
-      showBanner(gameUI, w);
+      showBanner(gameUI, w, playerAIs[w]);
     }
   }
 
   setPaused(gameUI, tunables.paused && winner === null);
-  updateScene(scene, state, selected);
+  updateScene(scene, state, null);
   updateHud(state);
   render(scene);
   requestAnimationFrame(frame);
@@ -148,13 +113,18 @@ function frame(now: number) {
 function updateHud(s: GameState) {
   const hud = document.getElementById('hud');
   if (!hud) return;
-  let p0 = 0, p1 = 0, neutral = 0;
+  const counts = new Array(s.numPlayers).fill(0);
+  let neutral = 0;
   for (const n of s.nodes) {
     if (n.owner === null) neutral++;
-    else if (n.owner === 0) p0++;
-    else if (n.owner === 1) p1++;
+    else counts[n.owner]++;
   }
-  hud.textContent = `tick ${s.tick}   you ${p0}   ai ${p1}   neutral ${neutral}`;
+  let html = `<div>tick ${s.tick}   neutral: ${neutral}</div>`;
+  for (let p = 0; p < s.numPlayers; p++) {
+    const color = PLAYER_COLORS_CSS[p % PLAYER_COLORS_CSS.length];
+    html += `<div><span style="display:inline-block;width:10px;height:10px;background:${color};margin-right:6px;vertical-align:middle"></span>${playerAIs[p]}: ${counts[p]}</div>`;
+  }
+  hud.innerHTML = html;
 }
 
 requestAnimationFrame(frame);

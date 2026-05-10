@@ -11,7 +11,7 @@ export function hexDistance(q1: number, r1: number, q2: number, r2: number): num
   return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
 }
 
-export function makeInitialState(radius = 18, distance = 2): GameState {
+export function makeInitialState(radius = 18, distance = 2, numPlayers = 6): GameState {
   const cells: { q: number; r: number }[] = [];
   for (let q = -radius; q <= radius; q++) {
     const rMin = Math.max(-radius, -q - radius);
@@ -27,10 +27,20 @@ export function makeInitialState(radius = 18, distance = 2): GameState {
     return { id: i, pos: { x, y }, owner: null, strength: 10 };
   });
 
-  const p0 = idByKey.get(`${-radius},0`)!;
-  const p1 = idByKey.get(`${radius},0`)!;
-  nodes[p0].owner = 0; nodes[p0].strength = 30;
-  nodes[p1].owner = 1; nodes[p1].strength = 30;
+  const perimeterIds: number[] = [];
+  for (let i = 0; i < cells.length; i++) {
+    const { q, r } = cells[i];
+    if (Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) === radius) perimeterIds.push(i);
+  }
+  perimeterIds.sort((a, b) => {
+    const pa = nodes[a].pos, pb = nodes[b].pos;
+    return Math.atan2(pa.y, pa.x) - Math.atan2(pb.y, pb.x);
+  });
+  for (let p = 0; p < numPlayers; p++) {
+    const idx = perimeterIds[Math.floor((p * perimeterIds.length) / numPlayers)];
+    nodes[idx].owner = p;
+    nodes[idx].strength = 30;
+  }
 
   const edges: Edge[] = [];
   for (let i = 0; i < cells.length; i++) {
@@ -46,5 +56,5 @@ export function makeInitialState(radius = 18, distance = 2): GameState {
     }
   }
 
-  return { nodes, edges, flows: [], tick: 0, numPlayers: 2 };
+  return { nodes, edges, flows: [], tick: 0, numPlayers };
 }

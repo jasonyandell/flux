@@ -2,7 +2,11 @@ import * as THREE from 'three';
 import type { GameState } from '../game/state';
 import { MAX_STRENGTH } from '../game/state';
 
-const COLORS = [0x4a90e2, 0xe24a4a, 0x4ae28a, 0xe2c44a];
+export const COLORS = [
+  0x4a90e2, 0xe24a4a, 0x4ae28a, 0xe2c44a,
+  0xa44ae2, 0xe2884a, 0x4ae2e2, 0xe24a88,
+  0x88e24a, 0xe2e24a, 0x4a88e2, 0xa4e24a,
+];
 const NEUTRAL = new THREE.Color(0x666666);
 const NODE_BASE_RADIUS = 0.45;
 const VIEW_PADDING = 1.05;

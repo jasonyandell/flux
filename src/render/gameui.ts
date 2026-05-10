@@ -1,4 +1,5 @@
 import type { GameState, Player } from '../game/state';
+import { COLORS } from './scene';
 
 export type GameUI = {
   banner: HTMLDivElement;
@@ -9,8 +10,6 @@ export type GameUI = {
   onPlayAgain: (cb: () => void) => void;
   onPauseClick: (cb: () => void) => void;
 };
-
-const HUMAN: Player = 0;
 
 export function getWinner(state: GameState): Player | null {
   const counts = new Map<Player, number>();
@@ -65,9 +64,10 @@ export function createGameUI(): GameUI {
   };
 }
 
-export function showBanner(ui: GameUI, winner: Player): void {
-  ui.bannerText.textContent = winner === HUMAN ? 'YOU WIN' : 'YOU LOSE';
-  ui.bannerText.style.color = winner === HUMAN ? '#7fc7ff' : '#ff7f7f';
+export function showBanner(ui: GameUI, winner: Player, label?: string): void {
+  ui.bannerText.textContent = label ? `${label.toUpperCase()} WINS` : `PLAYER ${winner} WINS`;
+  const hex = COLORS[winner % COLORS.length].toString(16).padStart(6, '0');
+  ui.bannerText.style.color = `#${hex}`;
   ui.banner.style.display = 'flex';
 }
 
