@@ -4,6 +4,7 @@ import { makeInitialState } from './game/graph';
 import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { pickNode } from './input/pick';
+import { createGameUI, getWinner, hideBanner, showBanner } from './render/gameui';
 import { createOverlay, updateOverlay } from './render/overlay';
 import { createScene, render, resizeRenderer, updateScene } from './render/scene';
 
@@ -16,14 +17,24 @@ const TICK_DT = 1 / TICK_HZ;
 let state: GameState = makeInitialState();
 let selected: number | null = null;
 
+let winner: number | null = null;
+
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const scene = createScene(canvas, state);
 const overlay = createOverlay(state);
+const gameUI = createGameUI();
+gameUI.onPlayAgain(() => {
+  state = makeInitialState();
+  selected = null;
+  winner = null;
+  hideBanner(gameUI);
+});
 
 window.addEventListener('resize', () => resizeRenderer(scene));
 resizeRenderer(scene);
 
 canvas.addEventListener('pointerdown', (ev) => {
+  if (winner !== null) return;
   const nodeId = pickNode(scene, ev);
   if (nodeId === null) { selected = null; return; }
   if (selected === null) {
@@ -38,7 +49,7 @@ canvas.addEventListener('pointerdown', (ev) => {
 const tunables = {
   paused: false,
   aiPeriodSec: 0.5,
-  reset: () => { state = makeInitialState(); selected = null; },
+  reset: () => { state = makeInitialState(); selected = null; winner = null; hideBanner(gameUI); },
 };
 const gui = new GUI({ title: 'flux' });
 gui.add(tunables, 'paused');
@@ -53,7 +64,7 @@ function frame(now: number) {
   const dt = Math.min(0.25, (now - last) / 1000);
   last = now;
 
-  if (!tunables.paused) {
+  if (!tunables.paused && winner === null) {
     stepAcc += dt;
     aiAcc += dt;
     while (stepAcc >= TICK_DT) {
@@ -63,6 +74,11 @@ function frame(now: number) {
     if (aiAcc >= tunables.aiPeriodSec) {
       for (const a of aiThink(state, AI)) state = applyAction(state, a);
       aiAcc = 0;
+    }
+    const w = getWinner(state);
+    if (w !== null) {
+      winner = w;
+      showBanner(gameUI, w);
     }
   }
 
