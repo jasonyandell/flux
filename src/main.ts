@@ -3,10 +3,10 @@ import { aiThink } from './ai/dumb';
 import { makeInitialState } from './game/graph';
 import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
-import { pickNode } from './input/pick';
+import { eventToWorld, pickNode } from './input/pick';
 import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner } from './render/gameui';
 import { createOverlay, updateOverlay } from './render/overlay';
-import { createScene, render, resizeRenderer, updateScene } from './render/scene';
+import { createScene, render, resizeRenderer, setDragLine, updateScene } from './render/scene';
 
 const HUMAN = 0;
 const AI = 1;
@@ -34,22 +34,58 @@ gameUI.onPlayAgain(() => {
 window.addEventListener('resize', () => resizeRenderer(scene));
 resizeRenderer(scene);
 
+const DRAG_THRESHOLD_PX = 8;
+let dragStartClient: { x: number; y: number } | null = null;
+let dragActive = false;
+
 canvas.addEventListener('pointerdown', (ev) => {
   if (winner !== null) return;
   const nodeId = pickNode(scene, ev);
-  if (nodeId === null) { selected = null; return; }
-  if (selected === null) {
-    if (state.nodes[nodeId].owner === HUMAN) selected = nodeId;
-    return;
+  if (nodeId === null) { selected = null; setDragLine(scene, null, null); return; }
+  if (state.nodes[nodeId].owner !== HUMAN) { selected = null; setDragLine(scene, null, null); return; }
+  selected = nodeId;
+  dragStartClient = { x: ev.clientX, y: ev.clientY };
+  dragActive = false;
+  canvas.setPointerCapture(ev.pointerId);
+});
+
+canvas.addEventListener('pointermove', (ev) => {
+  if (selected === null || dragStartClient === null) return;
+  if (!dragActive) {
+    const dx = ev.clientX - dragStartClient.x, dy = ev.clientY - dragStartClient.y;
+    if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
+    dragActive = true;
   }
-  if (selected === nodeId) { selected = null; return; }
+  setDragLine(scene, state.nodes[selected].pos, eventToWorld(scene, ev));
+});
+
+canvas.addEventListener('pointerup', (ev) => {
+  if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+  if (selected === null) return;
+  const src = selected;
+  const wasDrag = dragActive;
+  selected = null;
+  dragStartClient = null;
+  dragActive = false;
+  setDragLine(scene, null, null);
+  if (!wasDrag) return;
+  const dst = pickNode(scene, ev);
+  if (dst === null || dst === src) return;
   const before = state.flows;
-  state = applyAction(state, { kind: 'toggleFlow', src: selected, dst: nodeId, player: HUMAN });
-  if (!hintFaded && state.flows !== before) {
+  state = applyAction(state, { kind: 'toggleFlow', src, dst, player: HUMAN });
+  if (state.flows === before) return;
+  if (!hintFaded) {
     hintFaded = true;
     fadeHint(gameUI);
   }
+});
+
+canvas.addEventListener('pointercancel', (ev) => {
+  if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
   selected = null;
+  dragStartClient = null;
+  dragActive = false;
+  setDragLine(scene, null, null);
 });
 
 const tunables = {

@@ -15,6 +15,7 @@ export type Scene = {
   nodeMatById: Map<number, THREE.MeshBasicMaterial>;
   flowGroup: THREE.Group;
   selectedHighlight: THREE.Mesh;
+  dragLine: THREE.Line;
   domElement: HTMLCanvasElement;
 };
 
@@ -65,12 +66,37 @@ export function createScene(canvas: HTMLCanvasElement, state: GameState): Scene 
   const flowGroup = new THREE.Group();
   scene.add(flowGroup);
 
+  const dragGeom = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0.2),
+    new THREE.Vector3(0, 0, 0.2),
+  ]);
+  const dragMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.2, gapSize: 0.15 });
+  const dragLine = new THREE.Line(dragGeom, dragMat);
+  dragLine.computeLineDistances();
+  dragLine.visible = false;
+  scene.add(dragLine);
+
   return {
     renderer, scene, camera,
     nodeMeshes, nodeMatById,
     flowGroup, selectedHighlight,
+    dragLine,
     domElement: canvas,
   };
+}
+
+export function setDragLine(s: Scene, a: { x: number; y: number } | null, b: { x: number; y: number } | null): void {
+  if (a === null || b === null) {
+    s.dragLine.visible = false;
+    return;
+  }
+  const positions = s.dragLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+  positions.setXYZ(0, a.x, a.y, 0.2);
+  positions.setXYZ(1, b.x, b.y, 0.2);
+  positions.needsUpdate = true;
+  s.dragLine.geometry.computeBoundingSphere();
+  s.dragLine.computeLineDistances();
+  s.dragLine.visible = true;
 }
 
 export function updateScene(s: Scene, state: GameState, selected: number | null): void {
