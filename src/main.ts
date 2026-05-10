@@ -4,6 +4,7 @@ import { makeInitialState } from './game/graph';
 import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { pickNode } from './input/pick';
+import { createOverlay, updateOverlay } from './render/overlay';
 import { createScene, render, resizeRenderer, updateScene } from './render/scene';
 
 const HUMAN = 0;
@@ -17,6 +18,7 @@ let selected: number | null = null;
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 const scene = createScene(canvas, state);
+const overlay = createOverlay(state);
 
 window.addEventListener('resize', () => resizeRenderer(scene));
 resizeRenderer(scene);
@@ -65,6 +67,7 @@ function frame(now: number) {
   }
 
   updateScene(scene, state, selected);
+  updateOverlay(overlay, scene, state, dt);
   updateHud(state);
   render(scene);
   requestAnimationFrame(frame);

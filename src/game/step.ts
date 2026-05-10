@@ -22,13 +22,18 @@ export function applyAction(state: GameState, action: Action): GameState {
     (e.a === action.dst && e.b === action.src),
   );
   if (!adjacent) return state;
-  const i = state.flows.findIndex(f =>
-    f.src === action.src && f.dst === action.dst && f.player === action.player,
+  const onEdge = state.flows.findIndex(f =>
+    (f.src === action.src && f.dst === action.dst) ||
+    (f.src === action.dst && f.dst === action.src),
   );
-  const flows = i >= 0
-    ? state.flows.filter((_, j) => j !== i)
-    : [...state.flows, { src: action.src, dst: action.dst, player: action.player }];
-  return { ...state, flows };
+  if (onEdge < 0) {
+    return { ...state, flows: [...state.flows, { src: action.src, dst: action.dst, player: action.player }] };
+  }
+  const existing = state.flows[onEdge];
+  const exact = existing.src === action.src && existing.dst === action.dst && existing.player === action.player;
+  const flows = state.flows.filter((_, j) => j !== onEdge);
+  if (exact) return { ...state, flows };
+  return { ...state, flows: [...flows, { src: action.src, dst: action.dst, player: action.player }] };
 }
 
 export function step(state: GameState, dt: number): GameState {

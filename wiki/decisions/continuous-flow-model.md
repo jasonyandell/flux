@@ -8,7 +8,7 @@ status: active
 
 ## Decision
 
-Node strength is a continuous scalar. There are no in-flight unit entities. Flows are toggleable boolean rates per ordered (src, dst) pair across an edge.
+Node strength is a continuous scalar. There are no in-flight unit entities. Flows are toggleable boolean rates per ordered (src, dst) pair across an edge, with at most one flow per undirected edge (see [[one-flow-per-edge]]).
 
 Per tick:
 
