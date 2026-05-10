@@ -24,6 +24,7 @@ Decisions:
 - [[decisions/pure-step-function|pure-step-function]] — game logic is a pure `step(state, dt) → state`, shared by browser and headless sim.
 - [[decisions/one-flow-per-edge|one-flow-per-edge]] — at most one flow per undirected edge; reverse means flip.
 - [[decisions/hex-grid-default|hex-grid-default]] — default board is a ~1000-cell hex grid with distance-2 connectivity; renderer uses instancing.
+- [[decisions/loop-bonus|loop-bonus]] — friendly destinations get a `1 + LOOP_BONUS` multiplier so circulation generates strength.
 
 Questions:
 

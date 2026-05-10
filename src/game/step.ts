@@ -4,6 +4,7 @@ import {
   type Flow,
   type GameState,
   type Owner,
+  LOOP_BONUS,
   MAX_STRENGTH,
   MIN_STRENGTH_TO_SEND,
   REGEN_PER_SEC,
@@ -64,7 +65,8 @@ export function step(state: GameState, dt: number): GameState {
     if (src.strength < MIN_STRENGTH_TO_SEND) continue;
     const k = TRANSFER_PER_SEC * dt;
     forces[flow.src][flow.player] -= k;
-    forces[flow.dst][flow.player] += k;
+    const friendly = state.nodes[flow.dst].owner === flow.player;
+    forces[flow.dst][flow.player] += friendly ? k * (1 + LOOP_BONUS) : k;
   }
 
   const nodes = state.nodes.map(node => {

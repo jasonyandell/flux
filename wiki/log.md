@@ -6,6 +6,15 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-10 | workspace | loop bonus on friendly flows]
+
+**Touched pages:** [[loop-bonus]] [[continuous-flow-model]] [[index]]
+**Added:** [[loop-bonus]] decision page; `LOOP_BONUS = 0.5` constant in `state.ts`; friendly-destination multiplier in `step.ts`.
+**Updated:** [[continuous-flow-model]] now describes the friendly-destination multiplier and backlinks to [[loop-bonus]]; [[index]] route map.
+**Retired:** none.
+**Questions opened:** none new. Stalemate sim outcome unchanged — dumb AI doesn't build chains, so the bonus has no effect under it.
+**Verification:** by hand from constants. 3-cycle of friendly-owned cells with three active flows nets `+2.5·dt` per node per tick versus idle baseline of `+1.0·dt` — circulation now grows 2.5× faster than idle.
+
 ## [2026-05-10 | workspace | hex grid default + instanced renderer]
 
 **Touched pages:** [[hex-grid-default]] [[flux]] [[index]] [[questions/open]]

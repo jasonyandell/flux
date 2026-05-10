@@ -13,7 +13,7 @@ Node strength is a continuous scalar. There are no in-flight unit entities. Flow
 Per tick:
 
 - Owned nodes regen strength at a fixed rate.
-- For each active flow, the source loses `TRANSFER_PER_SEC * dt` and the destination gains the same amount if friendly or loses it if enemy/neutral.
+- For each active flow, the source loses `TRANSFER_PER_SEC * dt`. If the destination is friendly it gains `TRANSFER_PER_SEC * dt * (1 + LOOP_BONUS)` — friendly circulation generates strength, see [[loop-bonus]]. Otherwise the destination loses `TRANSFER_PER_SEC * dt`.
 - When a node's strength crosses zero, ownership flips to the largest contributing enemy and the surplus becomes the new owner's strength.
 
 ## Why
