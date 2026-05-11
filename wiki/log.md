@@ -6,6 +6,39 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-11 | workspace | top-bar jitter fix + HUD expando]
+
+**Touched pages:** [[entities/flux]] [[log]]
+**Added:** none new.
+**Updated:**
+- `src/render/gameui.ts`: stats slot in the top bar now has `min-width:22ch` + `font-variant-numeric:tabular-nums`, and the evolve subscript has `min-width:14ch`. The top bar is `transform:translateX(-50%)` centered, so any width change in stats or sub used to slide the evolve button each generation — locking those slots removes the jitter.
+- `src/render/gameui.ts` + `src/main.ts` + `index.html`: the HUD became a compact expando (`▸ tick N · X/Y alive` collapsed, full per-seat list on tap) so the 12-row listing no longer collides with the centered top bar on narrow viewports. `white-space:nowrap` on the top bar keeps `drains battery` from wrapping; the evolve button now stacks `drains battery` as a small subscript under the label.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-10 | workspace | top-bar casual-demo UI]
+
+**Touched pages:** [[entities/flux]] [[log]]
+**Added:** none new.
+**Updated:**
+- `src/render/gameui.ts` exports `createTopBar()` — a centered pill at `top:env(safe-area-inset-top)` with `↻ Restart`, an `Evolve` toggle (subtitle "drains battery"; auto-disables to "no WebGPU" when `initGPU()` returns null), and a live `gen N · best F` readout.
+- `src/main.ts` wires the top bar to `respawn()` and to the existing evolve toggle (mirrors `saveEvolveEnabled` + `startEvolution`), tracks last-rendered values to avoid per-frame DOM thrash, and calls `gui.close()` so lil-gui starts collapsed and the demo's two primary buttons dominate.
+- [[entities/flux]] gameui bullet documents the top bar role.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-10 | workspace | map-style touch input + camera clamp]
+
+**Touched pages:** [[entities/flux]] [[decisions/multi-player-free-for-all]] [[log]]
+**Added:** none new.
+**Updated:**
+- `src/main.ts` now drives camera through a shared `zoomAndPanAt(before, after, factor)` helper. Wheel zoom is unchanged in feel; new pointer handlers track active touches in a flat list, derive centroid + mean spread, and apply pan + pinch in one step. One finger pans, two fingers pinch + pan anchored on the centroid.
+- `src/render/scene.ts` records per-axis `worldHalfWidth`/`worldHalfHeight` at scene creation and exports `clampCamera`. `panBy`, `setViewSize`, and `resizeRenderer` all clamp afterwards. At max zoom out (or when the world fully fits in either axis) the camera is forced to 0 on that axis, which fixes the "zoom in then out leaves the board shifted" bug.
+- [[entities/flux]] input/scene descriptions reflect the pan + pinch model and the bounds clamp.
+- [[decisions/multi-player-free-for-all]] decision body now lists the full camera-input set; the re-enabling-human-play note flags that pointerdown is no longer free for clicks.
+**Retired:** none.
+**Questions opened:** none.
+
 ## [2026-05-10 | workspace | wiki cleanup + session catchup]
 
 **Touched pages:** [[decisions/inbound-bonus]] [[decisions/stasis-detection]] [[todo]] [[questions/open]] [[index]] [[log]]

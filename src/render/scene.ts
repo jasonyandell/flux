@@ -23,6 +23,8 @@ export type Scene = {
   viewSize: number;
   nodeCount: number;
   nodePositions: Float32Array;
+  worldHalfWidth: number;
+  worldHalfHeight: number;
 };
 
 export const NODE_PICK_RADIUS = NODE_BASE_RADIUS;
@@ -42,12 +44,15 @@ export function createScene(canvas: HTMLCanvasElement, state: GameState): Scene 
 
   const scene = new THREE.Scene();
 
-  let maxAbs = 1;
+  let xMax = 1, yMax = 1;
   for (const n of state.nodes) {
-    if (Math.abs(n.pos.x) > maxAbs) maxAbs = Math.abs(n.pos.x);
-    if (Math.abs(n.pos.y) > maxAbs) maxAbs = Math.abs(n.pos.y);
+    if (Math.abs(n.pos.x) > xMax) xMax = Math.abs(n.pos.x);
+    if (Math.abs(n.pos.y) > yMax) yMax = Math.abs(n.pos.y);
   }
+  const maxAbs = Math.max(xMax, yMax);
   const viewSize = maxAbs * VIEW_PADDING;
+  const worldHalfWidth = xMax;
+  const worldHalfHeight = yMax;
 
   const aspect = window.innerWidth / window.innerHeight;
   const camera = new THREE.OrthographicCamera(
@@ -120,6 +125,8 @@ export function createScene(canvas: HTMLCanvasElement, state: GameState): Scene 
     viewSize,
     nodeCount: state.nodes.length,
     nodePositions,
+    worldHalfWidth,
+    worldHalfHeight,
   };
 }
 
@@ -198,22 +205,39 @@ function updateFrustum(s: Scene): void {
   s.camera.updateProjectionMatrix();
 }
 
+export function clampCamera(s: Scene): void {
+  const w = s.renderer.domElement.clientWidth || window.innerWidth;
+  const h = s.renderer.domElement.clientHeight || window.innerHeight;
+  const aspect = w / h;
+  const halfW = aspect * s.viewSize;
+  const halfH = s.viewSize;
+  const xLimit = Math.max(0, s.worldHalfWidth - halfW);
+  const yLimit = Math.max(0, s.worldHalfHeight - halfH);
+  if (s.camera.position.x > xLimit) s.camera.position.x = xLimit;
+  else if (s.camera.position.x < -xLimit) s.camera.position.x = -xLimit;
+  if (s.camera.position.y > yLimit) s.camera.position.y = yLimit;
+  else if (s.camera.position.y < -yLimit) s.camera.position.y = -yLimit;
+  s.camera.updateMatrixWorld();
+}
+
 export function resizeRenderer(s: Scene): void {
   const w = window.innerWidth, h = window.innerHeight;
   s.renderer.setSize(w, h, false);
   updateFrustum(s);
+  clampCamera(s);
 }
 
 export function setViewSize(s: Scene, viewSize: number): void {
   if (viewSize === s.viewSize) return;
   s.viewSize = viewSize;
   updateFrustum(s);
+  clampCamera(s);
 }
 
 export function panBy(s: Scene, dx: number, dy: number): void {
   s.camera.position.x += dx;
   s.camera.position.y += dy;
-  s.camera.updateMatrixWorld();
+  clampCamera(s);
 }
 
 export function render(s: Scene): void {

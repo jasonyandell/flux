@@ -8,7 +8,7 @@ status: active
 
 ## Decision
 
-The default browser mode is N-player spectator: 2/4/6/8/12 AI-controlled seats placed evenly around the hex grid perimeter, each running a randomly-assigned controller from the [[ai-zoo]]. No human seat. Click input is removed; mouse-wheel zoom is retained for inspection.
+The default browser mode is N-player spectator: 2/4/6/8/12 AI-controlled seats placed evenly around the hex grid perimeter, each running a randomly-assigned controller from the [[ai-zoo]]. No human seat. Click input is removed; the only input is map-style camera control — mouse-wheel zoom on cursor, one-finger drag pan, two-finger pinch + pan on centroid — and the camera is clamped against world bounds so the board can't drift off-center.
 
 ## Details
 
@@ -26,4 +26,4 @@ The default browser mode is N-player spectator: 2/4/6/8/12 AI-controlled seats p
 
 ## Re-enabling human play
 
-The dropdown / click-to-flow input that existed before this commit (see git history around the "ai zoo + multi-player free-for-all" commit) is the reference. Add a `humanSeat: -1 | 0..N-1` tunable, gate the pointer handlers on `humanSeat === 0`, and route clicks to `applyAction` with `player = humanSeat`. Removed for cleanliness, not because it was wrong.
+The dropdown / click-to-flow input that existed before this commit (see git history around the "ai zoo + multi-player free-for-all" commit) is the reference. Add a `humanSeat: -1 | 0..N-1` tunable, gate the pointer handlers on `humanSeat === 0`, and route clicks to `applyAction` with `player = humanSeat`. Removed for cleanliness, not because it was wrong. Note: the spectator-mode pan/pinch handlers now also use `pointerdown` — for human play they should distinguish a quick tap (down → up with negligible movement) from a drag, and only forward taps as click actions.

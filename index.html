@@ -14,7 +14,13 @@
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0a0a; color: #ddd; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       #app { display: block; width: 100vw; height: 100vh; touch-action: none; }
-      #hud { position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left)); pointer-events: none; font-size: 12px; opacity: 0.8; }
+      #hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); font-size: 12px; opacity: 0.45; user-select: none; -webkit-user-select: none; max-width: 70vw; transition: opacity 0.2s ease; }
+      #hud:hover { opacity: 0.9; }
+      #hud .row { display: flex; align-items: center; gap: 6px; line-height: 1.5; }
+      #hud .row.dead { opacity: 0.3; }
+      #hud .sw { display: inline-block; width: 8px; height: 8px; border-radius: 1px; }
+      #hud .summary { cursor: pointer; padding: 2px 0; }
+      #hud .details { padding-top: 4px; }
       #install-banner {
         position: fixed;
         left: 50%;

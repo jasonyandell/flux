@@ -4,7 +4,7 @@ import { makeInitialState } from './game/graph';
 import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { eventToWorld } from './input/pick';
-import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner, showStasisBanner } from './render/gameui';
+import { createGameUI, createTopBar, fadeHint, getWinner, hideBanner, setPaused, showBanner, showStasisBanner } from './render/gameui';
 import { createScene, panBy, render, resizeRenderer, setViewSize, updateScene } from './render/scene';
 import { detectStasis } from './sim/stasis';
 import { initGPU } from './gpu/runtime';
@@ -75,6 +75,16 @@ const gameUI = createGameUI();
 gameUI.onPlayAgain(() => respawn());
 fadeHint(gameUI);
 
+const topBar = createTopBar();
+topBar.setEvolveAvailable(false, 'checking GPU…');
+topBar.onRestart(() => respawn());
+topBar.onEvolveToggle((next) => {
+  tunables.evolve = next;
+  topBar.setEvolveOn(next);
+  saveEvolveEnabled(next);
+  if (next) startEvolution();
+});
+
 window.addEventListener('resize', () => resizeRenderer(scene));
 resizeRenderer(scene);
 
@@ -82,18 +92,71 @@ const ZOOM_STEP = 1.1;
 const MIN_VIEW = 1.5;
 const MAX_VIEW = 36;
 
+function zoomAndPanAt(
+  before: { clientX: number; clientY: number },
+  after: { clientX: number; clientY: number },
+  factor: number,
+): void {
+  const worldBefore = eventToWorld(scene, before);
+  if (factor !== 1) {
+    const next = Math.max(MIN_VIEW, Math.min(MAX_VIEW, scene.viewSize / factor));
+    if (next !== scene.viewSize) setViewSize(scene, next);
+  }
+  const worldAfter = eventToWorld(scene, after);
+  panBy(scene, worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
+}
+
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
   const factor = ev.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-  const next = Math.max(MIN_VIEW, Math.min(MAX_VIEW, scene.viewSize / factor));
-  if (next === scene.viewSize) return;
-  const worldBefore = eventToWorld(scene, ev);
-  setViewSize(scene, next);
-  const worldAfter = eventToWorld(scene, ev);
-  panBy(scene, worldBefore.x - worldAfter.x, worldBefore.y - worldAfter.y);
+  zoomAndPanAt(ev, ev, factor);
 }, { passive: false });
 
+type Pointer = { id: number; x: number; y: number };
+const pointers: Pointer[] = [];
+
+function centroidOf(pts: Pointer[]): { clientX: number; clientY: number } {
+  let sx = 0, sy = 0;
+  for (const p of pts) { sx += p.x; sy += p.y; }
+  return { clientX: sx / pts.length, clientY: sy / pts.length };
+}
+
+function spreadOf(pts: Pointer[], c: { clientX: number; clientY: number }): number {
+  if (pts.length < 2) return 0;
+  let sum = 0;
+  for (const p of pts) sum += Math.hypot(p.x - c.clientX, p.y - c.clientY);
+  return sum / pts.length;
+}
+
+canvas.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  canvas.setPointerCapture(ev.pointerId);
+  pointers.push({ id: ev.pointerId, x: ev.clientX, y: ev.clientY });
+});
+
+canvas.addEventListener('pointermove', (ev) => {
+  const p = pointers.find(p => p.id === ev.pointerId);
+  if (!p) return;
+  const beforeCentroid = centroidOf(pointers);
+  const beforeSpread = spreadOf(pointers, beforeCentroid);
+  p.x = ev.clientX;
+  p.y = ev.clientY;
+  const afterCentroid = centroidOf(pointers);
+  const afterSpread = spreadOf(pointers, afterCentroid);
+  const factor = beforeSpread > 0 && afterSpread > 0 ? afterSpread / beforeSpread : 1;
+  zoomAndPanAt(beforeCentroid, afterCentroid, factor);
+});
+
+function releasePointer(ev: PointerEvent) {
+  const i = pointers.findIndex(p => p.id === ev.pointerId);
+  if (i !== -1) pointers.splice(i, 1);
+  if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+}
+canvas.addEventListener('pointerup', releasePointer);
+canvas.addEventListener('pointercancel', releasePointer);
+
 const gui = new GUI({ title: 'flux — robot wars' });
+gui.close();
 gui.add(tunables, 'numPlayers', PLAYER_COUNT_OPTIONS).name('players').onChange(() => {
   respawn();
   rebuildSeatControls();
@@ -123,6 +186,7 @@ rebuildSeatControls();
 const evoFolder = gui.addFolder('evolution');
 evoFolder.add(tunables, 'evolve').name('evolve (run in bg)').listen().onChange((v: boolean) => {
   saveEvolveEnabled(v);
+  topBar.setEvolveOn(v);
   if (v) startEvolution();
 });
 const genCtrl = evoFolder.add(tunables, 'generation').name('generation').listen().disable();
@@ -234,9 +298,11 @@ let evoRunning = false;
   if (!gpuCtx) {
     console.warn('WebGPU unavailable — evolution disabled. The "evolved" AI will use a random genome.');
     tunables.parityResult = 'WebGPU unavailable';
+    topBar.setEvolveAvailable(false, 'no WebGPU');
     return;
   }
   console.log('WebGPU initialized');
+  topBar.setEvolveAvailable(true);
 
   const saved = loadEvolutionState();
   if (saved) {
@@ -249,6 +315,7 @@ let evoRunning = false;
   }
   if (loadEvolveEnabled()) {
     tunables.evolve = true;
+    topBar.setEvolveOn(true);
     startEvolution();
   }
 })();
@@ -262,6 +329,8 @@ function clearSavedEvolution() {
   tunables.bestFitness = 0;
   tunables.allTimeBest = 0;
   setChampion(null);
+  topBar.setEvolveOn(false);
+  topBar.setStats(0, 0);
   console.log('evolution save cleared');
 }
 
@@ -334,6 +403,9 @@ import { getChampion, setChampion } from './gpu/evolved';
 let last = performance.now();
 let stepAcc = 0;
 let aiAcc = 0;
+let topBarGen = -1;
+let topBarBest = -1;
+let topBarEvolveOn = false;
 
 function frame(now: number) {
   const dt = Math.min(0.25, (now - last) / 1000);
@@ -373,25 +445,45 @@ function frame(now: number) {
   setPaused(gameUI, tunables.paused && winner === null && !stasis);
   updateScene(scene, state, null);
   updateHud(state);
+  if (tunables.generation !== topBarGen || tunables.bestFitness !== topBarBest) {
+    topBarGen = tunables.generation;
+    topBarBest = tunables.bestFitness;
+    topBar.setStats(topBarGen, topBarBest);
+  }
+  if (tunables.evolve !== topBarEvolveOn) {
+    topBarEvolveOn = tunables.evolve;
+    topBar.setEvolveOn(topBarEvolveOn);
+  }
   render(scene);
   requestAnimationFrame(frame);
 }
 
+const hudEl = document.getElementById('hud') as HTMLDivElement;
+let hudExpanded = false;
+hudEl.onclick = () => { hudExpanded = !hudExpanded; };
+
 function updateHud(s: GameState) {
-  const hud = document.getElementById('hud');
-  if (!hud) return;
+  if (!hudEl) return;
   const counts = new Array(s.numPlayers).fill(0);
-  let neutral = 0;
+  let neutral = 0, alive = 0;
   for (const n of s.nodes) {
     if (n.owner === null) neutral++;
     else counts[n.owner]++;
   }
-  let html = `<div>tick ${s.tick}   neutral: ${neutral}</div>`;
-  for (let p = 0; p < s.numPlayers; p++) {
-    const color = PLAYER_COLORS_CSS[p % PLAYER_COLORS_CSS.length];
-    html += `<div><span style="display:inline-block;width:10px;height:10px;background:${color};margin-right:6px;vertical-align:middle"></span>${playerAIs[p]}: ${counts[p]}</div>`;
+  for (const c of counts) if (c > 0) alive++;
+  const chevron = hudExpanded ? '▾' : '▸';
+  let html = `<div class="summary">${chevron} tick ${s.tick} · ${alive}/${s.numPlayers} alive</div>`;
+  if (hudExpanded) {
+    html += '<div class="details">';
+    for (let p = 0; p < s.numPlayers; p++) {
+      const color = PLAYER_COLORS_CSS[p % PLAYER_COLORS_CSS.length];
+      const dead = counts[p] === 0;
+      html += `<div class="row${dead ? ' dead' : ''}"><span class="sw" style="background:${color}"></span><span>${playerAIs[p]}</span><span style="margin-left:auto;padding-left:10px">${counts[p]}</span></div>`;
+    }
+    html += `<div class="row dead"><span class="sw" style="background:#666"></span><span>neutral</span><span style="margin-left:auto;padding-left:10px">${neutral}</span></div>`;
+    html += '</div>';
   }
-  hud.innerHTML = html;
+  hudEl.innerHTML = html;
 }
 
 requestAnimationFrame(frame);

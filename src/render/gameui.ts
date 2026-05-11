@@ -91,3 +91,110 @@ export function fadeHint(ui: GameUI): void {
   ui.hint.style.opacity = '0';
 }
 
+export type TopBar = {
+  root: HTMLDivElement;
+  evolveBtn: HTMLButtonElement;
+  evolveSub: HTMLSpanElement;
+  stats: HTMLDivElement;
+  setEvolveOn: (on: boolean) => void;
+  setEvolveAvailable: (available: boolean, reason?: string) => void;
+  setStats: (generation: number, best: number) => void;
+  onRestart: (cb: () => void) => void;
+  onEvolveToggle: (cb: (next: boolean) => void) => void;
+};
+
+export function createTopBar(): TopBar {
+  const root = document.createElement('div');
+  root.id = 'flux-topbar';
+  root.style.cssText =
+    'position:fixed;top:max(10px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);' +
+    'display:flex;align-items:baseline;gap:14px;white-space:nowrap;' +
+    'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;letter-spacing:0.5px;' +
+    'color:#ddd;pointer-events:none;z-index:8;max-width:100vw;';
+
+  const btnCss =
+    'font:inherit;letter-spacing:inherit;color:inherit;background:none;border:0;padding:6px 4px;' +
+    'cursor:pointer;pointer-events:auto;opacity:0.45;transition:opacity 0.2s ease;' +
+    'display:inline-flex;align-items:baseline;gap:6px;';
+
+  const restartBtn = document.createElement('button');
+  restartBtn.type = 'button';
+  restartBtn.style.cssText = btnCss;
+  restartBtn.textContent = '↻ restart';
+  restartBtn.onmouseenter = () => { restartBtn.style.opacity = '0.95'; };
+  restartBtn.onmouseleave = () => { restartBtn.style.opacity = '0.45'; };
+
+  const evolveBtn = document.createElement('button');
+  evolveBtn.type = 'button';
+  evolveBtn.style.cssText =
+    'font:inherit;letter-spacing:inherit;color:inherit;background:none;border:0;padding:4px 4px;' +
+    'cursor:pointer;pointer-events:auto;opacity:0.6;transition:opacity 0.2s ease;' +
+    'display:inline-flex;flex-direction:column;align-items:flex-start;gap:0;line-height:1.15;';
+  const evolveTopRow = document.createElement('span');
+  evolveTopRow.style.cssText = 'display:inline-flex;align-items:baseline;gap:6px;';
+  const evolveDot = document.createElement('span');
+  evolveDot.style.cssText = 'display:inline-block;width:7px;height:7px;border-radius:50%;background:transparent;border:1px solid currentColor;opacity:0.7;transform:translateY(1px);transition:background 0.2s ease, box-shadow 0.2s ease;';
+  const evolveLabel = document.createElement('span');
+  evolveLabel.style.cssText = 'display:inline-block;min-width:8ch;text-align:left;';
+  evolveLabel.textContent = 'evolve';
+  const evolveSub = document.createElement('span');
+  evolveSub.style.cssText = 'font-size:10px;opacity:0.5;letter-spacing:0.4px;display:inline-block;min-width:14ch;text-align:left;';
+  evolveSub.textContent = 'drains battery';
+  evolveTopRow.appendChild(evolveDot);
+  evolveTopRow.appendChild(evolveLabel);
+  evolveBtn.appendChild(evolveTopRow);
+  evolveBtn.appendChild(evolveSub);
+  evolveBtn.onmouseenter = () => { if (!evolveBtn.disabled) evolveBtn.style.opacity = '0.95'; };
+  evolveBtn.onmouseleave = () => { if (!evolveBtn.disabled) evolveBtn.style.opacity = '0.6'; };
+
+  const stats = document.createElement('div');
+  stats.style.cssText = 'opacity:0.4;white-space:nowrap;min-width:22ch;text-align:left;font-variant-numeric:tabular-nums;';
+  stats.textContent = 'gen 0';
+
+  root.appendChild(restartBtn);
+  root.appendChild(evolveBtn);
+  root.appendChild(stats);
+  document.body.appendChild(root);
+
+  let evolveOn = false;
+  const applyEvolveStyle = () => {
+    if (evolveBtn.disabled) {
+      evolveBtn.style.opacity = '0.25';
+      evolveBtn.style.cursor = 'not-allowed';
+      evolveDot.style.background = 'transparent';
+      evolveDot.style.boxShadow = 'none';
+      evolveLabel.textContent = 'evolve';
+    } else if (evolveOn) {
+      evolveBtn.style.opacity = '0.85';
+      evolveBtn.style.cursor = 'pointer';
+      evolveDot.style.background = '#e2c44a';
+      evolveDot.style.boxShadow = '0 0 6px rgba(226,196,74,0.6)';
+      evolveLabel.textContent = 'evolving';
+    } else {
+      evolveBtn.style.opacity = '0.6';
+      evolveBtn.style.cursor = 'pointer';
+      evolveDot.style.background = 'transparent';
+      evolveDot.style.boxShadow = 'none';
+      evolveLabel.textContent = 'evolve';
+    }
+  };
+
+  return {
+    root, evolveBtn, evolveSub, stats,
+    setEvolveOn: (on) => { evolveOn = on; applyEvolveStyle(); },
+    setEvolveAvailable: (available, reason) => {
+      evolveBtn.disabled = !available;
+      evolveBtn.title = available ? '' : (reason ?? 'unavailable');
+      evolveSub.textContent = available ? 'drains battery' : (reason ?? 'unavailable');
+      applyEvolveStyle();
+    },
+    setStats: (generation, best) => {
+      stats.textContent = generation > 0
+        ? `gen ${generation} · best ${best}`
+        : 'gen 0';
+    },
+    onRestart: (cb) => { restartBtn.onclick = cb; },
+    onEvolveToggle: (cb) => { evolveBtn.onclick = () => { if (!evolveBtn.disabled) cb(!evolveOn); }; },
+  };
+}
+
