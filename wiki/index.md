@@ -31,6 +31,7 @@ Decisions:
 - [[decisions/multi-player-free-for-all|multi-player-free-for-all]] — default is 2–12 AI seats on the hex perimeter; spectator mode at 5× speed.
 - [[decisions/stasis-detection|stasis-detection]] — variance-window detector that ends stalemated spectator sessions with a `STASIS` banner; suppressed in 1v1 endgame and cleanup phases.
 - [[decisions/webgpu-evolution|webgpu-evolution]] — fixed-topology neuroevolution on WebGPU compute. Population eval on GPU, JS evolution loop, champion plays as `evolved` in the spectator zoo. WGSL step ≡ JS step parity invariant.
+- [[decisions/python-port|python-port]] — `python/` reimplements `step` and the NN forward pass for offline training. Bit-exact parity with JS is the invariant; NumPy today, MLX later.
 
 Questions:
 

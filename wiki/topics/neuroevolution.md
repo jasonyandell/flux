@@ -49,6 +49,22 @@ Initial architecture: 91 → 32 (tanh) → 19. ~3.5k weights per genome. Small e
 - **Tier 2 — proper NEAT.** ~800–1500 LOC. Innovation numbers, speciation, structural mutations, compatibility distance. Genuinely more interesting evolution.
 - **Tier 3 — rtNEAT.** Time-based selection (oldest most likely to be replaced) + real-time speciation. True NERO-style spectator evolution.
 - **Tier 4 — WebGPU compute.** *In progress.* Forward pass and `step` both run as compute shaders; whole population × all games per generation in parallel. See [[../decisions/webgpu-evolution|webgpu-evolution]]. Tiers 1 and 4 are merged here — Tier 4 is what `src/gpu/` shipped first because the browser is the deployment target.
+- **Tier 5 — offline Python training.** *Foundation landed; evolution loop TBD.* `python/` reimplements `step` + NN forward in NumPy with bit-exact parity against JS. The plan is to host the evolution loop in Python (cheap iteration, MLX acceleration on Apple Silicon) and serialize champions to JSON for the browser to load. See [[../decisions/python-port|python-port]]. The parity invariant is what keeps the offline-train / online-deploy bridge honest.
+
+## Python bridge (Tier 5 status)
+
+What's in `python/` today:
+
+- `flux.state` / `flux.graph` / `flux.step` / `flux.rng` — exact port of `src/game/` + `src/ai/rng.ts`.
+- `flux.genome` — `nn_infer_cell` (Float32Array semantics replicated via NumPy `float32` storage + Python `float` arithmetic), `build_neighbor_table`, `random_genome`, `ai_think`.
+- `python/tests/test_parity.py` ↔ `python/tests/dump_reference.ts` — deterministic 100-tick scenario, SHA-256 hashes every 10 ticks, both sides match.
+
+Not yet ported (explicit follow-ups, NOT part of the parity foundation):
+
+- Evolution loop (rtNEAT continuous replacement or batch generations).
+- Champion JSON load/save on the Python side (the JS format at `public/champions/*.json` is the target).
+- MLX kernels for batched forward pass and step. NumPy first to validate parity; MLX is a swap-in after the algorithm is locked.
+- HTTP or filesystem hot-reload of champions from Python into the browser.
 
 ## Why it fits flux
 

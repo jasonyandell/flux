@@ -37,5 +37,6 @@ captures, recaptures, eventual collapse to one survivor
 - `src/main.ts` — browser entry. Spectator: wheel zoom + pointer pan/pinch via a shared `zoomAndPanAt(before, after, factor)` helper. Tracks active pointers in a flat list and derives centroid + mean spread to drive zoom-and-pan in one step. lil-gui exposes `players` (2/4/6/8/12), `paused`, `aiPeriodSec`, `respawn`. Render at 60Hz; game ticks at 10Hz × `SPEED = 5`. Maintains the ring buffer that drives [[../decisions/stasis-detection|stasis-detection]].
 - `src/sim/run.ts` — headless runner via `tsx`. Supports default, pair (`npm run sim -- agg random 10`), and tournament (`npm run sim -- tournament 3`) modes.
 - `src/sim/stasis.ts` — pure variance-window detector behind the browser's `STASIS` banner. See [[../decisions/stasis-detection|stasis-detection]].
+- `python/` — independent Python port of `step` + NN forward (`flux/{state,graph,step,rng,genome}.py`). Bit-exact parity with JS is the invariant ([[../decisions/python-port|python-port]]). Parity test at `python/tests/test_parity.py` ↔ `python/tests/dump_reference.ts`. NumPy today; MLX-accelerated training comes next.
 
 The game model is documented in [[continuous-flow-model]]. [[neuroevolution]] is in progress via [[../decisions/webgpu-evolution|webgpu-evolution]]; the `evolved` seat is selectable in the spectator zoo.

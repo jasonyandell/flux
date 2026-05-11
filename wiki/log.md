@@ -6,6 +6,31 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-11 | workspace | Python port lands (bit-exact JS parity, foundation only)]
+
+**Touched pages:** [[decisions/python-port]] [[topics/neuroevolution]] [[entities/flux]] [[index]] [[log]]
+**Added:**
+- `python/` — independent reimplementation of the game core and the NN forward pass, managed by `uv`. Modules: `flux/state.py`, `flux/graph.py`, `flux/step.py`, `flux/rng.py`, `flux/genome.py`. NumPy-only; no MLX yet. Parity scenario at `python/tests/test_parity.py` + JS counterpart `python/tests/dump_reference.ts`. Both produce identical SHA-256 hashes every 10 ticks across a deterministic 100-tick run (seeded `mulberry32(42)`, `random_genome(rng, std=2.0)`, `make_initial_state(radius=9, num_players=4)`, two seed `toggleFlow` actions before the loop, a manual toggle at tick 50, NN-driven actions every tick).
+- [[decisions/python-port]] — explicit decision page for the bit-exact-parity bridge: filesystem-JSON champion handoff, NumPy-then-MLX strategy, parity invariant covering `step`, `apply_action`, `mulberry32`, `nn_infer_cell` (Float32Array semantics replicated via NumPy `float32` storage + Python `float` arithmetic), `build_neighbor_table` sort, and `ai_think` flow-reconcile order.
+**Updated:**
+- [[topics/neuroevolution]] — added Tier 5 (offline Python training) and a "Python bridge" section listing what's in `python/` today vs explicit follow-ups (evolution loop, champion JSON I/O, MLX kernels, hot-reload).
+- [[entities/flux]] — added `python/` to the implementation frontier.
+- [[index]] — added [[decisions/python-port]] under Decisions.
+**Mechanics worth pinning:**
+- The trickiest port is `nn_infer_cell`. JS stores `h` and `out` as `Float32Array`, which means every `h[j] +=` reads f32 → up-casts to f64 → adds an f64 RHS expression → stores back as f32. The NumPy port matches this by holding `h` / `out` as `np.float32`, but reading each element with `float(...)` (yields Python `float`, IEEE 754 binary64) and writing back as scalars (NumPy quantizes on store). Each accumulation line must mirror JS sum order exactly because float addition is not associative at f64 precision.
+- `mulberry32` needs `Math.imul` semantics (32-bit signed multiplication). Python replicates with `(a * b) & 0xFFFFFFFF` then reinterpreting bit 31 as sign. JS `>>> 0` is just `& 0xFFFFFFFF`. Validated indirectly by the parity test — if RNG drifts even once the genome differs and all downstream hashes diverge.
+- `build_neighbor_table` JS sort comparator is `(a, b) => pa.x - pb.x || pa.y - pb.y`. Python's `sort(key=lambda nid: (pos.x, pos.y))` is equivalent and stable on the same float tuples.
+- `make_initial_state` perimeter seat placement sorts by `Math.atan2(pos.y, pos.x)`. Python `math.atan2(y, x)` matches bit-for-bit on this hardware (libm has been stable for these ranges across CPython 3.12 / V8).
+- `ai_think` flow reconcile uses a `Map<src, dst>` in JS and a Python `dict` here. Both preserve insertion order (V8 stable since 7.0, CPython since 3.7), so the action emission order matches without sorting.
+**Out of scope / explicit follow-ups:**
+- Evolution loop (rtNEAT continuous or batch).
+- Champion JSON read/write on the Python side.
+- MLX kernels for batched forward pass and step.
+- HTTP / filesystem hot-reload of Python-trained champions into the browser.
+**Verification:** Parity test passes — all 11 hashes byte-identical between Python and JS. `npm run typecheck` clean. `uv sync` produces a working venv on first run.
+**Retired:** none.
+**Questions opened:** what does the Python evolution loop look like (rtNEAT in NumPy first then MLX kernels? or straight to MLX with a NumPy fallback?). Deferred until parity foundation is in use.
+
 ## [2026-05-11 | workspace | five-scene showcase demo lands (pre-sim + playback)]
 
 **Touched pages:** [[topics/showcase-demo]] [[index]] [[log]]

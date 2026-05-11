@@ -3,3 +3,11 @@ dist
 .DS_Store
 *.local
 .vite
+
+# Python (python/)
+python/.venv
+python/**/__pycache__
+python/**/*.pyc
+python/.pytest_cache
+python/.ruff_cache
+python/.mypy_cache
