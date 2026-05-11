@@ -25,8 +25,8 @@ export type SceneSpec = {
 export const SCENES: SceneSpec[] = [
   { label: 'gen0',    caption: 'watch ai battle',            durationSec: 5 },
   { label: 'gen100',  caption: 'the blue one is code',       durationSec: 5 },
-  { label: 'gen200',  caption: 'the others are neural nets', durationSec: 5 },
-  { label: 'gen1000', caption: 'watch them get smarter',     durationSec: 5 },
+  { label: 'gen50',   caption: 'the others are neural nets', durationSec: 5 },
+  { label: 'gen2000', caption: 'watch them get smarter',     durationSec: 5 },
   { label: 'gen20k',  caption: 'watch them win',             durationSec: 5 },
 ];
 

@@ -1,7 +1,7 @@
 {
   "gen0": null,
+  "gen50": "gen50.json",
   "gen100": "gen100.json",
-  "gen200": "gen200.json",
-  "gen1000": "gen1000.json",
+  "gen2000": "gen2000.json",
   "gen20k": "strong.json"
 }

@@ -39,14 +39,14 @@ export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
   popSize: 12,
   numSeatsPerGame: 12,        // match deployment — was 4, caused position-bias in 4-seat training
   gamesPerGenome: 2,
-  ticksPerGame: 500,
+  ticksPerGame: 2000,         // bigger board needs longer games to develop past expansion
   aiPeriodTicks: 5,
   mutationSigma: 0.05,
   elites: 3,
   tournamentK: 3,
   boardRadius: 18,            // match deployment full board (~1027 cells) — was 9 (~271)
   initStd: 0.5,
-  lingerPenalty: 2.0,
+  lingerPenalty: 8.0,         // restore proportional signal — was 2.0, weak on 1027-cell board
   earlyWeight: 0.5,
 };
 

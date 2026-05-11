@@ -3,7 +3,7 @@
 // returned Float32Array into `setChampion` (or `null` for the untrained
 // gen0 scene, which lets `ensureChampion` mint a fresh random genome).
 
-export type SceneLabel = 'gen0' | 'gen100' | 'gen200' | 'gen1000' | 'gen20k';
+export type SceneLabel = 'gen0' | 'gen50' | 'gen100' | 'gen2000' | 'gen20k';
 
 type Index = Record<SceneLabel, string | null>;
 

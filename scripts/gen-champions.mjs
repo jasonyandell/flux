@@ -42,9 +42,9 @@ const outDir = resolve(__dirname, '..', 'public', 'champions');
 mkdirSync(outDir, { recursive: true });
 
 const specs = [
-  { name: 'gen100',  generation: 100,  seed: 100,  std: 0.05 },
-  { name: 'gen200',  generation: 200,  seed: 200,  std: 0.15 },
-  { name: 'gen1000', generation: 1000, seed: 1000, std: 0.30 },
+  { name: 'gen50',   generation: 50,   seed: 50,   std: 0.03 },
+  { name: 'gen100',  generation: 100,  seed: 100,  std: 0.08 },
+  { name: 'gen2000', generation: 2000, seed: 2000, std: 0.40 },
 ];
 
 const savedAt = new Date().toISOString();
