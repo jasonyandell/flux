@@ -55,6 +55,57 @@ export type EvolutionState = {
   fitnessHistory: number[];
 };
 
+const STATE_KEY = 'flux-evolution-state';
+const ENABLED_KEY = 'flux-evolution-enabled';
+
+export function saveEvolutionState(s: EvolutionState): void {
+  try {
+    const payload = {
+      generation: s.generation,
+      bestFitness: s.bestFitness,
+      allTimeBest: s.allTimeBest,
+      champion: Array.from(s.champion),
+      population: s.population.map(g => Array.from(g)),
+      fitnessHistory: s.fitnessHistory,
+    };
+    localStorage.setItem(STATE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.warn('saveEvolutionState failed:', err);
+  }
+}
+
+export function loadEvolutionState(): EvolutionState | null {
+  try {
+    const raw = localStorage.getItem(STATE_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    return {
+      generation: d.generation ?? 0,
+      bestFitness: d.bestFitness ?? 0,
+      allTimeBest: d.allTimeBest ?? 0,
+      champion: new Float32Array(d.champion),
+      population: (d.population as number[][]).map(g => new Float32Array(g)),
+      fitnessHistory: d.fitnessHistory ?? [],
+    };
+  } catch (err) {
+    console.warn('loadEvolutionState failed:', err);
+    return null;
+  }
+}
+
+export function clearEvolutionState(): void {
+  localStorage.removeItem(STATE_KEY);
+  localStorage.removeItem(ENABLED_KEY);
+}
+
+export function saveEvolveEnabled(enabled: boolean): void {
+  try { localStorage.setItem(ENABLED_KEY, enabled ? '1' : '0'); } catch { /* ignore */ }
+}
+
+export function loadEvolveEnabled(): boolean {
+  return localStorage.getItem(ENABLED_KEY) === '1';
+}
+
 export function createInitialPopulation(cfg: EvolutionConfig, rand: () => number): Genome[] {
   const pop: Genome[] = [];
   for (let i = 0; i < cfg.popSize; i++) pop.push(randomGenome(rand, cfg.initStd));

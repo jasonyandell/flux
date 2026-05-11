@@ -8,7 +8,7 @@ import { createGameUI, fadeHint, getWinner, hideBanner, setPaused, showBanner, s
 import { createScene, panBy, render, resizeRenderer, setViewSize, updateScene } from './render/scene';
 import { detectStasis } from './sim/stasis';
 import { initGPU } from './gpu/runtime';
-import { DEFAULT_EVOLUTION_CONFIG, makeInitialEvolutionState, runGeneration, type EvolutionState } from './gpu/evolution';
+import { DEFAULT_EVOLUTION_CONFIG, makeInitialEvolutionState, runGeneration, saveEvolutionState, loadEvolutionState, clearEvolutionState, saveEvolveEnabled, loadEvolveEnabled, type EvolutionState } from './gpu/evolution';
 import { runParityTest } from './gpu/parity';
 
 const PLAYER_COUNT_OPTIONS = [2, 4, 6, 8, 12];
@@ -119,13 +119,17 @@ function rebuildSeatControls() {
 rebuildSeatControls();
 
 const evoFolder = gui.addFolder('evolution');
-evoFolder.add(tunables, 'evolve').name('evolve (run in bg)').onChange((v: boolean) => { if (v) startEvolution(); });
+evoFolder.add(tunables, 'evolve').name('evolve (run in bg)').listen().onChange((v: boolean) => {
+  saveEvolveEnabled(v);
+  if (v) startEvolution();
+});
 const genCtrl = evoFolder.add(tunables, 'generation').name('generation').listen().disable();
 const fitCtrl = evoFolder.add(tunables, 'bestFitness').name('best fitness').listen().disable();
 const allTimeCtrl = evoFolder.add(tunables, 'allTimeBest').name('all-time best').listen().disable();
 void allTimeCtrl;
 evoFolder.add({ save: saveChampionFile }, 'save').name('save champion');
 evoFolder.add({ load: loadChampionFile }, 'load').name('load champion');
+evoFolder.add({ clear: clearSavedEvolution }, 'clear').name('clear save (fresh start)');
 evoFolder.add(tunables, 'parityRun').name('run parity test');
 const parityCtrl = evoFolder.add(tunables, 'parityResult').name('parity').listen().disable();
 void genCtrl; void fitCtrl; void parityCtrl;
@@ -228,10 +232,36 @@ let evoRunning = false;
   if (!gpuCtx) {
     console.warn('WebGPU unavailable — evolution disabled. The "evolved" AI will use a random genome.');
     tunables.parityResult = 'WebGPU unavailable';
-  } else {
-    console.log('WebGPU initialized');
+    return;
+  }
+  console.log('WebGPU initialized');
+
+  const saved = loadEvolutionState();
+  if (saved) {
+    evoState = saved;
+    setChampion(saved.champion);
+    tunables.generation = saved.generation;
+    tunables.bestFitness = Math.round(saved.bestFitness * 100) / 100;
+    tunables.allTimeBest = Math.round(saved.allTimeBest * 100) / 100;
+    console.log(`resumed evolution: gen=${saved.generation}, best=${saved.bestFitness.toFixed(2)}, pop=${saved.population.length}`);
+  }
+  if (loadEvolveEnabled()) {
+    tunables.evolve = true;
+    startEvolution();
   }
 })();
+
+function clearSavedEvolution() {
+  clearEvolutionState();
+  evoState = null;
+  evoRunning = false;
+  tunables.evolve = false;
+  tunables.generation = 0;
+  tunables.bestFitness = 0;
+  tunables.allTimeBest = 0;
+  setChampion(null);
+  console.log('evolution save cleared');
+}
 
 function startEvolution() {
   if (!gpuCtx || evoRunning) return;
@@ -247,6 +277,7 @@ async function loopEvolution() {
       tunables.generation = evoState.generation;
       tunables.bestFitness = Math.round(evoState.bestFitness * 100) / 100;
       tunables.allTimeBest = Math.round(evoState.allTimeBest * 100) / 100;
+      saveEvolutionState(evoState);
     } catch (err) {
       console.error('evolution error:', err);
       tunables.evolve = false;

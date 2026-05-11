@@ -18,15 +18,8 @@ export function getWinner(state: GameState): Player | null {
     counts.set(n.owner, (counts.get(n.owner) ?? 0) + 1);
   }
   const owners = [...counts.entries()].filter(([, c]) => c > 0);
-  if (owners.length === 0) return null;
-  if (owners.length === 1) return owners[0][0];
-  // Dominance: declare winner once one player owns >=95% of non-neutral cells.
-  let total = 0, max = 0, maxP: Player = -1;
-  for (const [p, c] of owners) {
-    total += c;
-    if (c > max) { max = c; maxP = p; }
-  }
-  return total > 0 && max / total >= 0.95 ? maxP : null;
+  if (owners.length !== 1) return null;
+  return owners[0][0];
 }
 
 export function createGameUI(): GameUI {
