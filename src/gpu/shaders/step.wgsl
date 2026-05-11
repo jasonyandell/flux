@@ -14,7 +14,6 @@ struct Params {
   maxStrength: f32,
   minStrengthToSend: f32,
   dt: f32,
-  inboundBonus: f32,
 };
 
 struct FlowEnc {
@@ -49,11 +48,13 @@ fn step_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
   var force: array<f32, MAX_PLAYERS>;
   for (var p: u32 = 0u; p < MAX_PLAYERS; p = p + 1u) { force[p] = 0.0; }
 
+  if (myOwner >= 0) {
+    force[u32(myOwner)] = force[u32(myOwner)] + params.regen * params.dt;
+  }
+
   let flowsBase = game * params.maxFlows;
   let nF = numFlowsIn[game];
   let k = params.transfer * params.dt;
-
-  var inboundFriendly: u32 = 0u;
 
   for (var f: u32 = 0u; f < nF; f = f + 1u) {
     let flow = flowsIn[flowsBase + f];
@@ -71,15 +72,7 @@ fn step_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
       let enemy = dstOwner != flow.player;
       let amt = select(k, k * (1.0 + params.attackBonus), enemy);
       force[u32(flow.player)] = force[u32(flow.player)] + amt;
-      if (!enemy && i32(flow.player) == myOwner) {
-        inboundFriendly = inboundFriendly + 1u;
-      }
     }
-  }
-
-  if (myOwner >= 0) {
-    let bonus = params.inboundBonus * f32(inboundFriendly);
-    force[u32(myOwner)] = force[u32(myOwner)] + (params.regen + bonus) * params.dt;
   }
 
   var newOwner = myOwner;

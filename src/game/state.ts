@@ -31,4 +31,3 @@ export const TRANSFER_PER_SEC = 3.0;
 export const MAX_STRENGTH = 100;
 export const MIN_STRENGTH_TO_SEND = 0.1;
 export const ATTACK_BONUS = 0.5;
-export const INBOUND_BONUS = 0.05; // regen bonus per active inbound friendly flow

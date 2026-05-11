@@ -3,8 +3,10 @@ title: Inbound bonus
 kind: decision
 first_seen: workspace
 last_updated: workspace
-status: active
+status: retired
 ---
+
+**Retired 2026-05-10.** Walked the math after shipping — the wall-breaker / "choo-choo" dynamic was already produced by the three existing mechanics (ATTACK_BONUS, REGEN_PER_SEC, friendly inbound flow delivering +k to destination). Adding +0.05/sec per inbound flow was invisible next to the +3/sec inbound transfer it sat beside, and for hubs the destination is already MAX-capped so the bonus did literally nothing. Reverted in 0xxx_ commit; this page kept for backlinks.
 
 ## Decision
 
