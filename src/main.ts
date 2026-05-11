@@ -127,9 +127,49 @@ const genCtrl = evoFolder.add(tunables, 'generation').name('generation').listen(
 const fitCtrl = evoFolder.add(tunables, 'bestFitness').name('best fitness').listen().disable();
 const allTimeCtrl = evoFolder.add(tunables, 'allTimeBest').name('all-time best').listen().disable();
 void allTimeCtrl;
+evoFolder.add({ save: saveChampionFile }, 'save').name('save champion');
+evoFolder.add({ load: loadChampionFile }, 'load').name('load champion');
 evoFolder.add(tunables, 'parityRun').name('run parity test');
 const parityCtrl = evoFolder.add(tunables, 'parityResult').name('parity').listen().disable();
 void genCtrl; void fitCtrl; void parityCtrl;
+
+function saveChampionFile() {
+  const g = getChampion();
+  if (!g) { console.warn('no champion yet — evolve a generation first'); return; }
+  const payload = {
+    weights: Array.from(g),
+    generation: tunables.generation,
+    bestFitness: tunables.bestFitness,
+    savedAt: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `flux-champion-gen${tunables.generation}-fit${tunables.bestFitness}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function loadChampionFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.onchange = async () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      const weights: number[] = Array.isArray(data) ? data : data.weights;
+      if (!Array.isArray(weights)) throw new Error('no weights array');
+      setChampion(new Float32Array(weights));
+      console.log(`loaded champion: ${weights.length} weights, gen=${data.generation ?? '?'}, fit=${data.bestFitness ?? '?'}`);
+    } catch (err) {
+      console.error('load failed:', err);
+    }
+  };
+  input.click();
+}
 
 let gpuCtx: Awaited<ReturnType<typeof initGPU>> = null;
 let evoState: EvolutionState | null = null;
