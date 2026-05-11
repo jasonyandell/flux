@@ -34,3 +34,7 @@ Decisions:
 Questions:
 
 - [[questions/open|open]] — unresolved questions.
+
+Process:
+
+- [[todo|todo]] — active threads scratchpad (pre-issues).
