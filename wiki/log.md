@@ -6,7 +6,19 @@ last_updated: bootstrap
 status: active
 ---
 
-## [2026-05-11 | champion-curator | champions catalog for 5-scene demo]
+## [2026-05-11 | scene-runner | 5-scene demo state machine, overlay, hot-area framing]
+
+**Touched pages:** [[topics/showcase-demo]] [[log]]
+**Added:**
+- `src/demo/overlay.ts` — pure DOM module. `createOverlay()` builds a fixed-inset, pointer-events-none container with a centered title element (mono, `clamp(40px, 8vw, 96px)`, letter-spacing 8) and a bottom-third caption (mono, `clamp(20px, 3.2vw, 40px)`, letter-spacing 3). Both fade via CSS opacity transitions.
+- `src/demo/runner.ts` — scene state machine. `SCENES` is a pure data list of `{label, caption, durationSec}` for the five gens (`gen0`/`gen100`/`gen200`/`gen1000`/`gen20k`). `createRunner({scene, overlay, getState, loadScene})` returns `{enter, tick, isActive, currentScene}`. Phases: `intro-pan` → `intro-title` ("AI WARS", held 1.5s) → `intro-zoom-out` → `scene-caption-in` → `scene-hold` → `scene-caption-out`, then cycles back to scene 0. `DEMO_SPEED = 100`.
+- Hot-area heuristic: `pickHotArea(state)` computes a length-weighted centroid of cross-owner flow midpoints (i.e., flows attacking enemy cells), falling back to centroid of all flows, then origin. Pre-computed by running the existing pure `step()` for 150 ticks against an off-screen state.
+**Updated:**
+- `src/main.ts` — wires the demo. URL trigger `?demo=1` sets `DEMO_MODE`; in that mode the lil-gui (`gui.hide?.()`), top bar (`#flux-topbar`), HUD (`#hud`), hint, and PWA install banner are all set to `display:none`. The frame loop uses `DEMO_SPEED` instead of `SPEED` while `runner.isActive()`, and suppresses both winner and stasis banners so the scripted scene flow isn't interrupted. The `loadScene` callback chains `loadSceneChampion(label)` → `setChampion(g)` → `respawn()`.
+**Retired:** none.
+**Questions opened:** none — `gen100`/`gen200`/`gen1000` are still placeholder champions (per champion-curator's note); the runner's behavior at those scenes is correct but visually less interesting than `gen20k` until real snapshots land.
+
+
 
 **Touched pages:** [[topics/showcase-demo]] [[log]]
 **Added:**

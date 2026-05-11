@@ -10,8 +10,12 @@ import { detectStasis } from './sim/stasis';
 import { initGPU } from './gpu/runtime';
 import { DEFAULT_EVOLUTION_CONFIG, makeInitialEvolutionState, runGeneration, saveEvolutionState, loadEvolutionState, clearEvolutionState, saveEvolveEnabled, loadEvolveEnabled, type EvolutionState } from './gpu/evolution';
 import { runParityTest } from './gpu/parity';
+import { createOverlay } from './demo/overlay';
+import { createRunner, DEMO_SPEED } from './demo/runner';
+import { loadSceneChampion } from './demo/champions';
 
 const PLAYER_COUNT_OPTIONS = [2, 4, 6, 8, 12];
+const DEMO_MODE = new URLSearchParams(window.location.search).get('demo') === '1';
 const PLAYER_COLORS_CSS = [
   '#4a90e2', '#e24a4a', '#4ae28a', '#e2c44a',
   '#a44ae2', '#e2884a', '#4ae2e2', '#e24a88',
@@ -415,8 +419,10 @@ function frame(now: number) {
   const dt = Math.min(0.25, (now - last) / 1000);
   last = now;
 
+  if (runner?.isActive()) runner.tick(dt);
+
   if (!tunables.paused && winner === null && !stasis) {
-    const scaled = dt * SPEED;
+    const scaled = dt * (runner?.isActive() ? DEMO_SPEED : SPEED);
     stepAcc += scaled;
     aiAcc += scaled;
     while (stepAcc >= TICK_DT) {
@@ -428,7 +434,7 @@ function frame(now: number) {
         if (stasisBuffer.length > STASIS_WINDOW) stasisBuffer.shift();
         if (detectStasis(stasisBuffer, STASIS_EPSILON, STASIS_WINDOW)) {
           stasis = true;
-          showStasisBanner(gameUI);
+          if (!runner?.isActive()) showStasisBanner(gameUI);
         }
       }
     }
@@ -442,7 +448,7 @@ function frame(now: number) {
     const w = getWinner(state);
     if (w !== null) {
       winner = w;
-      showBanner(gameUI, w, playerAIs[w]);
+      if (!runner?.isActive()) showBanner(gameUI, w, playerAIs[w]);
     }
   }
 
@@ -488,6 +494,32 @@ function updateHud(s: GameState) {
     html += '</div>';
   }
   hudEl.innerHTML = html;
+}
+
+// Demo mode wiring: hide chrome, run scripted scenes when `?demo=1`.
+const overlay = DEMO_MODE ? createOverlay() : null;
+const runner = (DEMO_MODE && overlay)
+  ? createRunner({
+      scene,
+      overlay,
+      getState: () => state,
+      loadScene: async (label) => {
+        const g = await loadSceneChampion(label);
+        setChampion(g);
+        respawn();
+      },
+    })
+  : null;
+
+if (DEMO_MODE) {
+  gui.hide?.();
+  const topBarEl = document.getElementById('flux-topbar');
+  if (topBarEl) topBarEl.style.display = 'none';
+  if (hudEl) hudEl.style.display = 'none';
+  if (gameUI.hint) gameUI.hint.style.display = 'none';
+  const installBanner = document.getElementById('install-banner');
+  if (installBanner) installBanner.style.display = 'none';
+  if (runner) void runner.enter();
 }
 
 requestAnimationFrame(frame);

@@ -37,14 +37,14 @@ export type EvolutionConfig = {
 
 export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
   popSize: 12,
-  numSeatsPerGame: 4,
+  numSeatsPerGame: 12,        // match deployment — was 4, caused position-bias in 4-seat training
   gamesPerGenome: 2,
   ticksPerGame: 500,
   aiPeriodTicks: 5,
   mutationSigma: 0.05,
   elites: 3,
   tournamentK: 3,
-  boardRadius: 9, // ~271 cells — fast eval board (per user spec ~250)
+  boardRadius: 18,            // match deployment full board (~1027 cells) — was 9 (~271)
   initStd: 0.5,
   lingerPenalty: 2.0,
   earlyWeight: 0.5,

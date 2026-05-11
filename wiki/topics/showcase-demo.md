@@ -8,89 +8,89 @@ status: active
 
 ## Goal
 
-Tell the evolution-arc story in under two minutes: a hand-written heuristic crushes naïve nets → the lab cooks → a trained net crushes back. The visual is the pitch; flow lines and ownership cascades carry the story without voiceover.
+Tell the evolution-arc story in under a minute: hand-written heuristic versus naïve nets → swap in champions across generations → final champion dominates. The visual is the pitch; flow lines and ownership cascades carry the story without voiceover.
 
 ## The two frames that sold the idea
 
-These are the reference frames the demo has to recreate. They came out of unscripted play and are why this work exists.
+These are the reference frames the demo recreates. They came out of unscripted play and are why this work exists.
 
 ![scene 1 — baseline: the dumb heuristic beats untrained nets, flow lines visible](../media/scene-1-baseline.png)
 
-*Scene 1, baseline. The hand-written `aggressive` (seat 0) versus eleven untrained `evolved` nets. The shape is the point — strength-scaled nodes plus colored half-edges read as living vasculature.*
+*Baseline. The hand-written `aggressive` (seat 0) versus eleven untrained `evolved` nets. The shape is the point — strength-scaled nodes plus colored half-edges read as living vasculature.*
 
 ![scene 3 — trained: a champion net dominates, multi-color border skirmishes around the edges](../media/scene-3-trained.png)
 
-*Scene 3, after evolution. One champion expands as a deliberate blue mass; the other seats are reduced to coloured perimeter skirmishes. Same engine, same rules — only the genome changed.*
+*After evolution. One champion expands as a deliberate blue mass; the other seats are reduced to coloured perimeter skirmishes. Same engine, same rules — only the genome changed.*
 
 ## Two ways to ship it
 
-| | (A) edited video | (B) in-browser scripted demo *(recommended)* |
+| | (A) edited video | (B) in-browser scripted demo *(canonical)* |
 |---|---|---|
-| medium | mp4/webm | live URL, e.g. `/?demo=1` |
+| medium | mp4/webm | live URL — `/?demo=1` |
 | dependency | ffmpeg + screen recorder | nothing new — runs the deployed app |
-| size | ~5–10 MB | ~50 KB extra (champion JSON × 2–3) |
+| size | ~5–10 MB | ~290 KB extra (four champion JSONs) |
 | editable | re-record + re-edit per change | bump a constant or swap a champion JSON |
 | works where? | everywhere, including social previews | anywhere JS runs |
 | smoke-testable in CI | no | yes — Playwright walks the demo |
 | canonical? | secondary | **primary** |
 
-We commit to (B). (A) stays in the toolbox as a derivative — once (B) exists, point Playwright at it to record a reproducible video for places JS can't reach.
+We ship (B). (A) stays as a derivative — point Playwright at the demo URL to record a reproducible video for places JS can't reach.
 
-## The arc (~75s, scripted scenes)
+## The arc (~30s, five scenes + intro)
 
-Three scenes, each a scripted state for the live sim. Each scene has: champion to load, seats, camera plan, speed, exit condition, next-scene trigger.
+Seat 0 is always `aggressive`; the other eleven seats are `evolved` and all read the same global champion. Each scene swaps the champion via `setChampion()` (from `src/gpu/evolved.ts`) and `respawn()`s. Sim runs at `DEMO_SPEED = 100×` (vs. `SPEED = 5` in the live app), so 5 wall-clock seconds is ~500 sim seconds.
 
-| scene | champion | seats | speed | camera | exits when |
-|---|---|---|---|---|---|
-| 1 — baseline | untrained / random genome | seat 0 = `aggressive`, others = `evolved` | 60–120× | wide; one push-in on the aggressive frontier | banner `AGGRESSIVE WINS` |
-| 2 — training | n/a (montage) | n/a | n/a | full-canvas with a soft `gen N · best F` reveal; either time-lapse the real evolution loop or step through 3–4 canned generations (gen 5 → 20 → 50 → 200) | counter reaches a target gen / fixed timeout |
-| 3 — emergence | fully-trained champion | same seat config as scene 1 | 60–120× | wide; one push-in on the evolved/aggressive border skirmish | banner `EVOLVED WINS` |
+| scene | label | caption | duration | champion file |
+|---|---|---|---|---|
+| 1 | `gen0`    | "watch ai battle"            | 5s | `null` — fresh random genome via `ensureChampion()` |
+| 2 | `gen100`  | "the blue one is code"       | 5s | `gen100.json` *(placeholder, see below)* |
+| 3 | `gen200`  | "the others are neural nets" | 5s | `gen200.json` *(placeholder)* |
+| 4 | `gen1000` | "watch them get smarter"     | 5s | `gen1000.json` *(placeholder)* |
+| 5 | `gen20k`  | "watch them win"             | 5s | `strong.json` — real trained champion |
 
-Target wall-clock: 5s per full sim run at 60×–120× speedup (`SPEED` constant in `main.ts` currently 5; a `demoSpeed` override raises it for the demo). A two-minute headless run compresses to ~3–4s on the screen.
+Captions are lowercase by design. The runner cycles back to scene 1 after scene 5, so the demo loops indefinitely.
 
-## What this needs from the codebase
+### Intro framing
 
-Small surface, can land incrementally:
+Before scene 1, the runner runs `step()` on an off-screen state for 150 ticks at `dt = 0.1` and computes a **hot area** — the length-weighted centroid of *cross-owner* flow midpoints (attacks across borders; the visually interesting flows). Falls back to centroid of all flows, then to origin if there are no flows yet. The camera pans + zooms to that point over 1s, holds the "AI WARS" title card for 1.5s, then zooms back to the wide view (0.7s) before scene 1 begins.
 
-1. **Deterministic seed.** `makeInitialState(...)` currently uses `Math.random` for board layout and seat placement. Accept a seed (already plumbed through `graph.ts` for some calls — verify and propagate). Surface as `?seed=N` URL param so a scene can pin its layout.
-2. **Canned champions.** Add 2–3 saved `Float32Array` genomes to `public/champions/` (`untrained.json`, `mid.json`, `champion.json`). The "load champion" button already accepts this format. A scene loader calls `setChampion(new Float32Array(weights))` from `gpu/evolved.ts`.
-3. **Demo speed override.** A `?demoSpeed=N` URL param (or scene field) that swaps `SPEED` for the duration of a scene. At 60×+ the existing flow-line rebuild per frame is still cheap (one `LineSegments` rewrite per tick — see [[../entities/flux]] render frontier).
-4. **Cinema mode.** Toggle (key `c` or `?cinema=1`) that hides HUD, top bar, lil-gui. Optional: hide the banner too and use a custom on-canvas one for the demo.
-5. **Scene runner.** New module `src/demo/runner.ts`. Pure data list of `Scene` objects (champion, seats, speed, seed, camera keyframes, exit condition); a tiny state machine in `main.ts` advances scenes on each scene's `exits when`. ~150 lines tops.
-6. **Camera keyframes.** Reuse the existing `setViewSize` / `panBy` / `clampCamera` ([[../entities/flux]]). A scene's camera plan is just `(t_in_scene_seconds → {viewSize, x, y})` interpolated. Don't build an animation framework; lerp two keyframes and call it.
+Phase sequence per cycle: `intro-pan` (1.0s) → `intro-title` (1.5s, title card "AI WARS") → `intro-zoom-out` (0.7s) → for each scene: `scene-caption-in` (0.6s) → `scene-hold` (5s − 2×0.6s) → `scene-caption-out` (0.6s) → next scene.
 
-None of these block each other. Order of operations: (4) → (2) → (3) → (1) → (5) → (6).
+## What landed
+
+Files under `src/demo/` and `public/champions/`:
+
+- **`src/demo/runner.ts`** — scene state machine. Exports `createRunner({scene, overlay, getState, loadScene})`, `SCENES` (the data list above), `DEMO_SPEED = 100`, `pickHotArea(state)`. Camera moves via existing `setViewSize` / `panBy` / `clampCamera` from [[../entities/flux]] (`src/render/scene.ts`); lerp + ease-in-out is inlined, no animation framework.
+- **`src/demo/overlay.ts`** — pure DOM. `createOverlay()` returns `{showTitle, hideTitle, showCaption, hideCaption, destroy}`. Title is centered mono (`clamp(40px, 8vw, 96px)`, letter-spacing 8); caption sits in the bottom third (`clamp(20px, 3.2vw, 40px)`, letter-spacing 3). Both fade via CSS opacity transitions; container is `pointer-events:none` so input still reaches the canvas.
+- **`src/demo/champions.ts`** — `loadSceneChampion(label) → Promise<Float32Array | null>`. Reads `public/champions/index.json`, fetches the mapped file, parses `weights`. Returns `null` for `gen0` so `ensureChampion()` in `src/gpu/evolved.ts` mints a fresh random genome.
+- **`src/main.ts`** — `?demo=1` URL trigger sets `DEMO_MODE`. In that mode lil-gui (`gui.hide?.()`), `#flux-topbar`, `#hud`, the hint, and `#install-banner` are all `display:none`. The frame loop calls `runner.tick(dt)`, swaps `SPEED → DEMO_SPEED` while `runner.isActive()`, and suppresses winner + stasis banners so the scripted flow isn't interrupted.
+
+Champions in `public/champions/`:
+
+| file | size | source |
+|---|---|---|
+| `gen100.json`  | 75K | placeholder, `mulberry32(100)`  + Gaussian `std=0.05` |
+| `gen200.json`  | 73K | placeholder, `mulberry32(200)`  + Gaussian `std=0.15` |
+| `gen1000.json` | 72K | placeholder, `mulberry32(1000)` + Gaussian `std=0.30` |
+| `strong.json`  | 68K | real saved champion — copy of `flux-champion-gen12228-fit215.75.json`, fitness 215.75 |
+| `index.json`   | — | scene-label → filename map, with `gen0: null` |
+
+**Honest caveat:** `gen100` / `gen200` / `gen1000` are *not* real intermediate training snapshots. They're random Gaussian genomes seeded for visual variety — increasing `std` across the three files makes successive scenes look subtly different from `gen0` without actually carrying any training signal. The five-scene arc reads as a progression, but mechanically only `gen0` (untrained) and `gen20k` (trained) reflect real artifacts. Regenerate the placeholders via `node scripts/gen-champions.mjs` — fully deterministic.
 
 ## Playwright's role
 
-Two uses, both downstream of (B) existing:
+Two uses, both downstream of the demo URL existing:
 
-- **Reproducible recording.** Headed Playwright opens `/?demo=1&seed=42`, waits for scene 3 to finish, runs `cmd+shift+5`-equivalent via `page.video()` or `ffmpeg` driving a `chromium --use-fake-ui-for-media-stream` capture. Output is a clean mp4 with no editor in the loop.
-- **CI smoke test.** A test that opens the demo URL, asserts the three scene transitions happen in order with the expected banners (`AGGRESSIVE WINS` then `EVOLVED WINS`). If a balance change ever breaks the arc, CI catches it.
+- **Reproducible recording.** Headed Playwright opens `/?demo=1`, waits for scene 5 to finish, records via `page.video()` or an ffmpeg-driven `chromium --use-fake-ui-for-media-stream`. Output is a clean mp4 with no editor in the loop.
+- **CI smoke test.** A test that opens the demo URL and asserts the five scene captions appear in order. If the runner ever breaks, CI catches it. (Not yet wired.)
 
 ## Open questions
 
-- Champion-training cadence: do we re-train the canned champions on every release, or pin to a single curated trio? Probably pin; re-curate when balance constants change.
-- Scene 2 (training montage): use the real GPU evolution loop *running live* for X seconds, or pre-rendered champion-stepping through gens? Live is more honest but won't work on devices without WebGPU; pre-rendered always plays. Probably pre-rendered for the demo URL, real GPU for the deployed app.
-- Audio? Probably no. The visual is enough; audio is a production tax without a payoff.
-- Does the demo URL also get a "skip to live" button? Yes — at any point, exit the demo state machine and hand control back to the user.
-
-## Champions catalog
-
-Files in `public/champions/` and their scene mappings (see `index.json`):
-
-| scene label | file | source |
-|---|---|---|
-| `gen0` | `null` (no file) | runner calls `setChampion(null)`; `ensureChampion()` in `src/gpu/evolved.ts` mints a fresh random genome on first read |
-| `gen100` | `gen100.json` | placeholder, `mulberry32(100)` + `std=0.05` |
-| `gen200` | `gen200.json` | placeholder, `mulberry32(200)` + `std=0.15` |
-| `gen1000` | `gen1000.json` | placeholder, `mulberry32(1000)` + `std=0.30` |
-| `gen20k` | `strong.json` | real saved champion (copy of `flux-champion-gen12228-fit215.75.json`, fitness 215.75) |
-
-Placeholders carry `"note": "placeholder, random-seeded"` in the payload. Regenerate via `node scripts/gen-champions.mjs` — fully deterministic.
-
-Loader: `src/demo/champions.ts` exports `loadSceneChampion(label)` → `Promise<Float32Array | null>`. Pure module, no `three` / `lil-gui` / DOM. Scene runner feeds the result into `setChampion` from `src/gpu/evolved.ts`.
+- Replace the placeholder genomes with real intermediate snapshots? Would require checkpointing the evolution loop at gens 100 / 200 / 1000 and saving each as a JSON. Cheap once we re-run training.
+- Cinema-mode toggle independent of `?demo=1`? Right now the demo is the only way to hide chrome. A `c` keybind or `?cinema=1` was floated but not built.
+- Deterministic seed for the board layout? `?seed=N` was discussed; not implemented in this pass. The demo currently uses whatever `makeInitialState()` produces from `Math.random`.
+- "Skip to live" button mid-demo? Not built. Today you exit by reloading without `?demo=1`.
 
 ## Status
 
-Plan only. No code yet. Next step is one PR landing items (4) cinema mode and (2) canned champions — those are the highest-information, lowest-risk pieces. Everything after is iteration on top.
+Implementation landed. The five-scene runner exists in `src/demo/`, gated by `?demo=1`; champions sit in `public/champions/`. `npm run typecheck` clean. Browser/visual verification is on the user — agents did not poke at it.
