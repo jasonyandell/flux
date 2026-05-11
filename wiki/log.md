@@ -6,30 +6,33 @@ last_updated: bootstrap
 status: active
 ---
 
-## [2026-05-11 | scene-runner | 5-scene demo state machine, overlay, hot-area framing]
+## [2026-05-11 | workspace | five-scene showcase demo lands (pre-sim + playback)]
 
-**Touched pages:** [[topics/showcase-demo]] [[log]]
+**Touched pages:** [[topics/showcase-demo]] [[index]] [[log]]
 **Added:**
-- `src/demo/overlay.ts` — pure DOM module. `createOverlay()` builds a fixed-inset, pointer-events-none container with a centered title element (mono, `clamp(40px, 8vw, 96px)`, letter-spacing 8) and a bottom-third caption (mono, `clamp(20px, 3.2vw, 40px)`, letter-spacing 3). Both fade via CSS opacity transitions.
-- `src/demo/runner.ts` — scene state machine. `SCENES` is a pure data list of `{label, caption, durationSec}` for the five gens (`gen0`/`gen100`/`gen200`/`gen1000`/`gen20k`). `createRunner({scene, overlay, getState, loadScene})` returns `{enter, tick, isActive, currentScene}`. Phases: `intro-pan` → `intro-title` ("AI WARS", held 1.5s) → `intro-zoom-out` → `scene-caption-in` → `scene-hold` → `scene-caption-out`, then cycles back to scene 0. `DEMO_SPEED = 100`.
-- Hot-area heuristic: `pickHotArea(state)` computes a length-weighted centroid of cross-owner flow midpoints (i.e., flows attacking enemy cells), falling back to centroid of all flows, then origin. Pre-computed by running the existing pure `step()` for 150 ticks against an off-screen state.
+- `src/demo/runner.ts` — scene state machine with **pre-sim + snapshot playback**. Each scene runs an off-screen game once via `presimGame()` (300 ticks of `step(s, 0.1)` + the 12-seat AI applying actions every 5 ticks; breaks out early on a single-owner win; yields every 50 ticks via `setTimeout(0)`), recording every tick into a `GameState[]`. Playback maps wall-clock `t = sceneElapsed / 5s` to `snapshots[Math.floor(t * expectedLength)]` and hands the result to `updateScene`. No `step()` calls during playback — frame rate is decoupled from sim cost. `expectedLength` locks in to the actual recorded length once pre-sim finishes, so winner-early-exits compress correctly and partial pre-sims clamp gracefully to the latest available frame. `SCENES` is a pure data list of `{label, caption, durationSec}` for `gen0`/`gen100`/`gen200`/`gen1000`/`gen20k`, 5s each, lowercase captions. Public API: `createRunner({scene, overlay})` returns `{enter, tick, isActive, currentSnapshot, currentScene}`. Also exports `pickHotArea(state)` — length-weighted centroid of cross-owner flow midpoints, falling back to all-flow centroid, then origin. Phases: `intro-pan` (1.0s) → `intro-title` ("AI WARS", 1.5s) → `intro-zoom-out` (0.7s) → per scene: `scene-caption-in` (0.6s) → `scene-hold` (3.8s) → `scene-caption-out` (0.6s); loops scene 0 after scene 4. Scene-phase trio share a single monotonic `sceneElapsed` so snapshot sampling is continuous.
+- `src/demo/overlay.ts` — pure DOM. `createOverlay()` returns `{showTitle, hideTitle, showCaption, hideCaption, destroy}`. Fixed-inset, `pointer-events:none` container; centered mono title (`clamp(40px,8vw,96px)`, letter-spacing 8) and bottom-third caption (`clamp(20px,3.2vw,40px)`, letter-spacing 3). Both fade via CSS opacity transitions.
+- `src/demo/champions.ts` — pure fetch helper. `loadSceneChampion(label) → Promise<Float32Array | null>` reads `public/champions/index.json`, fetches the mapped file, parses `weights`. Returns `null` for `gen0` so `ensureChampion()` in `src/gpu/evolved.ts` mints a fresh random genome. The runner owns calling this (no callback contract with `main.ts`).
+- `public/champions/strong.json` — copy of `flux-champion-gen12228-fit215.75.json` (fitness 215.75). Maps to the `gen20k` scene; the only real trained genome in the catalog.
+- `public/champions/gen100.json` / `gen200.json` / `gen1000.json` — deterministic *placeholder* genomes seeded by `mulberry32(100|200|1000)` with Gaussian `std` 0.05 / 0.15 / 0.30 respectively. Marked `"note": "placeholder, random-seeded"`. **Not** real intermediate training snapshots — they exist purely for visual variety across the five scenes. Regenerate via `node scripts/gen-champions.mjs`.
+- `public/champions/index.json` — scene-label → filename map (`gen0: null`, rest point at the JSONs above).
+- `scripts/gen-champions.mjs` — Node-runnable generator. Inlines `mulberry32` + Gaussian sampling so it needs no TS toolchain.
 **Updated:**
-- `src/main.ts` — wires the demo. URL trigger `?demo=1` sets `DEMO_MODE`; in that mode the lil-gui (`gui.hide?.()`), top bar (`#flux-topbar`), HUD (`#hud`), hint, and PWA install banner are all set to `display:none`. The frame loop uses `DEMO_SPEED` instead of `SPEED` while `runner.isActive()`, and suppresses both winner and stasis banners so the scripted scene flow isn't interrupted. The `loadScene` callback chains `loadSceneChampion(label)` → `setChampion(g)` → `respawn()`.
-**Retired:** none.
-**Questions opened:** none — `gen100`/`gen200`/`gen1000` are still placeholder champions (per champion-curator's note); the runner's behavior at those scenes is correct but visually less interesting than `gen20k` until real snapshots land.
-
-
-
-**Touched pages:** [[topics/showcase-demo]] [[log]]
-**Added:**
-- `public/champions/strong.json` — copy of the only viable saved champion (`flux-champion-gen12228-fit215.75.json`, fitness 215.75). Maps to the `gen20k` scene.
-- `public/champions/gen100.json` / `gen200.json` / `gen1000.json` — deterministic placeholder genomes seeded by `mulberry32` with `std` 0.05 / 0.15 / 0.30 respectively. Marked `"note": "placeholder, random-seeded"`. Regen via `node scripts/gen-champions.mjs`.
-- `public/champions/index.json` — scene-label → filename map. `gen0` is `null` so the runner can call `setChampion(null)` and let `ensureChampion()` in `src/gpu/evolved.ts` mint the untrained genome.
-- `scripts/gen-champions.mjs` — Node-runnable generator. Inlines `mulberry32` + `gaussian` so it needs no TS toolchain.
-- `src/demo/champions.ts` — pure fetch helper. Exports `loadSceneChampion(label)` returning `Promise<Float32Array | null>`. Imported by scene-runner.
-**Updated:** [[topics/showcase-demo]] gains a "Champions catalog" subsection listing the files + scene mapping.
-**Retired:** none.
-**Questions opened:** none — placeholder genomes are a stopgap; replace with real intermediate snapshots if/when we re-run the evolution loop and checkpoint gens 100/200/1000.
+- `src/main.ts` — `?demo=1` URL trigger sets `DEMO_MODE`. In that mode lil-gui (`gui.hide?.()`), `#flux-topbar`, `#hud`, the hint, and `#install-banner` are all `display:none`. The frame loop's runner branch is dead-simple: `runner.tick(dt)` → `updateScene(scene, runner.currentSnapshot(), null)` → `render(scene)`. The normal sim path is skipped entirely while the runner is active, so the live `state` variable, winner detection, and stasis detection all sit dormant — no banner suppression hack required.
+- [[topics/showcase-demo]] rewritten end-to-end: replaces the old 3-scene baseline/training/emergence plan with the shipped 5-scene gen-progression arc, documents the pre-sim + playback architecture, drops the speculative "what this needs from the codebase" list in favor of a "what landed" section, adds an honest caveat that `gen100`/`gen200`/`gen1000` are random-seeded placeholders rather than real intermediate snapshots, and consolidates the champions catalog with file sizes + sources.
+- [[index]] — showcase-demo route-map line updated to reflect the shipped reality (`?demo=1`, five 5s scenes, hot-area intro + "AI WARS" title card).
+**Mechanics worth pinning:**
+- Pre-sims must run **sequentially** because `setChampion()` is module-global state in `src/gpu/evolved.ts` — they're chained as a promise during `enter()`. Scene 0's pre-sim is awaited before the intro begins; scenes 1–4 race against playback wall-clock and almost always finish in time (each is ~300 cheap `step()` calls; the intro animation alone is ~3.2s).
+- Memory: 5 × ~301 snapshots × ~271 nodes. Cheap because `step` doesn't mutate, so snapshots share most structure by reference.
+**Retired:**
+- The old 3-scene plan (baseline → training montage → emergence). Lives in git; the topic page now describes the shipped flow.
+- An earlier version of the runner that stepped the live sim at `DEMO_SPEED = 100` and used `getState`/`loadScene` callbacks from `main.ts`. Replaced mid-iteration by the pre-sim + playback architecture — frame rate is now decoupled from sim cost, which matters on slow devices and makes the 5s-per-scene budget exact.
+**Questions opened:**
+- Replace placeholder genomes with real checkpoints if/when we re-run training and snapshot gens 100/200/1000.
+- Cinema-mode toggle independent of `?demo=1` (not built; was floated as `c` keybind / `?cinema=1`).
+- Deterministic `?seed=N` for board layout (not built in this pass; `makeInitialState()` still uses `Math.random`).
+- "Skip to live" button mid-demo (not built; reload without `?demo=1` is the current exit).
+**Verification:** `npm run typecheck` clean. Browser/visual verification deferred to the user — no agent loaded the demo URL.
 
 ## [2026-05-11 | workspace | showcase-demo topic page]
 

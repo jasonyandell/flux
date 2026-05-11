@@ -11,8 +11,7 @@ import { initGPU } from './gpu/runtime';
 import { DEFAULT_EVOLUTION_CONFIG, makeInitialEvolutionState, runGeneration, saveEvolutionState, loadEvolutionState, clearEvolutionState, saveEvolveEnabled, loadEvolveEnabled, type EvolutionState } from './gpu/evolution';
 import { runParityTest } from './gpu/parity';
 import { createOverlay } from './demo/overlay';
-import { createRunner, DEMO_SPEED } from './demo/runner';
-import { loadSceneChampion } from './demo/champions';
+import { createRunner } from './demo/runner';
 
 const PLAYER_COUNT_OPTIONS = [2, 4, 6, 8, 12];
 const DEMO_MODE = new URLSearchParams(window.location.search).get('demo') === '1';
@@ -419,10 +418,17 @@ function frame(now: number) {
   const dt = Math.min(0.25, (now - last) / 1000);
   last = now;
 
-  if (runner?.isActive()) runner.tick(dt);
+  if (runner?.isActive()) {
+    runner.tick(dt);
+    const snap = runner.currentSnapshot();
+    if (snap) updateScene(scene, snap, null);
+    render(scene);
+    requestAnimationFrame(frame);
+    return;
+  }
 
   if (!tunables.paused && winner === null && !stasis) {
-    const scaled = dt * (runner?.isActive() ? DEMO_SPEED : SPEED);
+    const scaled = dt * SPEED;
     stepAcc += scaled;
     aiAcc += scaled;
     while (stepAcc >= TICK_DT) {
@@ -434,7 +440,7 @@ function frame(now: number) {
         if (stasisBuffer.length > STASIS_WINDOW) stasisBuffer.shift();
         if (detectStasis(stasisBuffer, STASIS_EPSILON, STASIS_WINDOW)) {
           stasis = true;
-          if (!runner?.isActive()) showStasisBanner(gameUI);
+          showStasisBanner(gameUI);
         }
       }
     }
@@ -448,7 +454,7 @@ function frame(now: number) {
     const w = getWinner(state);
     if (w !== null) {
       winner = w;
-      if (!runner?.isActive()) showBanner(gameUI, w, playerAIs[w]);
+      showBanner(gameUI, w, playerAIs[w]);
     }
   }
 
@@ -499,16 +505,7 @@ function updateHud(s: GameState) {
 // Demo mode wiring: hide chrome, run scripted scenes when `?demo=1`.
 const overlay = DEMO_MODE ? createOverlay() : null;
 const runner = (DEMO_MODE && overlay)
-  ? createRunner({
-      scene,
-      overlay,
-      getState: () => state,
-      loadScene: async (label) => {
-        const g = await loadSceneChampion(label);
-        setChampion(g);
-        respawn();
-      },
-    })
+  ? createRunner({ scene, overlay })
   : null;
 
 if (DEMO_MODE) {
