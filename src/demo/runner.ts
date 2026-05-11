@@ -280,7 +280,7 @@ async function presimGame(
         for (const a of fn(s, p, s.tick)) s = applyAction(s, a);
       }
     }
-    if (SNAPSHOT_STRIDE === 1 || t % SNAPSHOT_STRIDE === 0) out.push(s);
+    if (t % SNAPSHOT_STRIDE === 0) out.push(s);
     if (winnerOf(s) !== null) break;
     if ((t + 1) % PRESIM_BATCH === 0) await new Promise((r) => setTimeout(r, 0));
   }
