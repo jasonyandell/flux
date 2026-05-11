@@ -1,6 +1,6 @@
 // flux service worker — minimal cache-first shell with network fallback.
 // Version bumps invalidate old caches on activate.
-const CACHE = 'flux-v1';
+const CACHE = 'flux-v2';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
@@ -18,6 +18,11 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
+
+  // Mutable data (champion JSONs, replays): don't intercept. Cache-first would
+  // pin the old `champions/index.json` in place across deploys, so the demo
+  // would silently load stale genome mappings.
+  if (url.pathname.startsWith('/champions/') || url.pathname.startsWith('/replays/')) return;
 
   // Navigation requests: network first, fall back to cached shell (offline).
   if (req.mode === 'navigate') {
