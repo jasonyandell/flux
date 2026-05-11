@@ -2,17 +2,121 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="flux" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>flux</title>
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0a0a; color: #ddd; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-      #app { display: block; width: 100vw; height: 100vh; }
-      #hud { position: fixed; top: 8px; left: 8px; pointer-events: none; font-size: 12px; opacity: 0.8; }
+      #app { display: block; width: 100vw; height: 100vh; touch-action: none; }
+      #hud { position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left)); pointer-events: none; font-size: 12px; opacity: 0.8; }
+      #install-banner {
+        position: fixed;
+        left: 50%;
+        bottom: max(12px, env(safe-area-inset-bottom));
+        transform: translateX(-50%);
+        display: none;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        background: rgba(20, 20, 28, 0.92);
+        border: 1px solid #2a2a3a;
+        border-radius: 10px;
+        color: #ddd;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        z-index: 10;
+        max-width: calc(100vw - 24px);
+      }
+      #install-banner.show { display: flex; }
+      #install-banner button {
+        font: inherit;
+        color: #ddd;
+        background: #2a2a3a;
+        border: 1px solid #3a3a4a;
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      #install-banner button.primary { background: #4a90e2; border-color: #4a90e2; color: #0a0a0a; }
+      #install-banner button:hover { filter: brightness(1.1); }
+      #install-banner .msg { line-height: 1.3; }
     </style>
   </head>
   <body>
     <canvas id="app"></canvas>
     <div id="hud"></div>
+    <div id="install-banner" role="dialog" aria-label="Install flux">
+      <span class="msg" id="install-msg">Install flux as an app</span>
+      <button class="primary" id="install-yes" type="button">Install</button>
+      <button id="install-no" type="button" aria-label="Dismiss">Dismiss</button>
+    </div>
+    <script>
+      // PWA install + service worker bootstrap. Pure DOM, no deps.
+      (function () {
+        var DISMISS_KEY = 'flux:install-dismissed';
+        var banner = document.getElementById('install-banner');
+        var msg = document.getElementById('install-msg');
+        var yes = document.getElementById('install-yes');
+        var no = document.getElementById('install-no');
+        var deferred = null;
+        var dismissed = false;
+        try { dismissed = localStorage.getItem(DISMISS_KEY) === '1'; } catch (e) {}
+
+        function isStandalone() {
+          return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+        }
+        function isIos() {
+          return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+        }
+        function show(text, withInstall) {
+          if (dismissed || isStandalone()) return;
+          msg.textContent = text;
+          yes.style.display = withInstall ? '' : 'none';
+          banner.classList.add('show');
+        }
+        function hide() { banner.classList.remove('show'); }
+
+        window.addEventListener('beforeinstallprompt', function (e) {
+          e.preventDefault();
+          deferred = e;
+          show('Install flux as an app', true);
+        });
+
+        window.addEventListener('appinstalled', function () {
+          deferred = null;
+          hide();
+        });
+
+        yes.addEventListener('click', function () {
+          if (!deferred) { hide(); return; }
+          deferred.prompt();
+          deferred.userChoice.finally(function () { deferred = null; hide(); });
+        });
+
+        no.addEventListener('click', function () {
+          dismissed = true;
+          try { localStorage.setItem(DISMISS_KEY, '1'); } catch (e) {}
+          hide();
+        });
+
+        // iOS Safari never fires beforeinstallprompt; show a manual hint.
+        if (isIos() && !isStandalone() && !dismissed) {
+          setTimeout(function () { show('Install: tap Share, then Add to Home Screen', false); }, 1500);
+        }
+
+        if ('serviceWorker' in navigator) {
+          window.addEventListener('load', function () {
+            navigator.serviceWorker.register('/sw.js').catch(function () {});
+          });
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
