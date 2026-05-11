@@ -32,6 +32,7 @@ export type EvolutionConfig = {
   boardRadius: number;
   initStd: number;
   lingerPenalty: number;     // fitness deduction per opponent cell remaining at game end
+  earlyWeight: number;       // fitness weight on midpoint cell count (rewards early dominance)
 };
 
 export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
@@ -45,7 +46,8 @@ export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
   tournamentK: 3,
   boardRadius: 9, // ~271 cells — fast eval board (per user spec ~250)
   initStd: 0.5,
-  lingerPenalty: 0.5,
+  lingerPenalty: 2.0,
+  earlyWeight: 0.5,
 };
 
 export type EvolutionState = {
@@ -384,6 +386,14 @@ export async function runGeneration(
   let cur: 'A' | 'B' = 'A';
   const cellsX = Math.ceil(cells / 64);
   const gamesX = Math.ceil(numGames / 64);
+
+  // Staging for midpoint sample. Captures owner state after ticksPerGame/2 steps.
+  const midStaging = device.createBuffer({
+    size: cells * numGames * 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const midTick = Math.floor(cfg.ticksPerGame / 2);
+
   for (let t = 0; t < cfg.ticksPerGame; t++) {
     const enc = device.createCommandEncoder();
     if (t % cfg.aiPeriodTicks === 0) {
@@ -406,37 +416,52 @@ export async function runGeneration(
     pass2.end();
     queue.submit([enc.finish()]);
     cur = cur === 'A' ? 'B' : 'A';
+
+    if (t + 1 === midTick) {
+      const ownerSrcMid = cur === 'A' ? ownerA : ownerB;
+      const encMid = device.createCommandEncoder();
+      encMid.copyBufferToBuffer(ownerSrcMid, 0, midStaging, 0, cells * numGames * 4);
+      queue.submit([encMid.finish()]);
+    }
   }
 
-  // Read back owner buffer to compute per-seat cell counts.
+  // Read back final + midpoint owner buffers.
   const ownerSrc = cur === 'A' ? ownerA : ownerB;
-  const staging = device.createBuffer({
+  const finalStaging = device.createBuffer({
     size: cells * numGames * 4,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   {
     const enc = device.createCommandEncoder();
-    enc.copyBufferToBuffer(ownerSrc, 0, staging, 0, cells * numGames * 4);
+    enc.copyBufferToBuffer(ownerSrc, 0, finalStaging, 0, cells * numGames * 4);
     queue.submit([enc.finish()]);
   }
-  await staging.mapAsync(GPUMapMode.READ);
-  const ownerFinal = new Int32Array(staging.getMappedRange().slice(0));
-  staging.unmap(); staging.destroy();
+  await Promise.all([
+    midStaging.mapAsync(GPUMapMode.READ),
+    finalStaging.mapAsync(GPUMapMode.READ),
+  ]);
+  const ownerMid = new Int32Array(midStaging.getMappedRange().slice(0));
+  const ownerFinal = new Int32Array(finalStaging.getMappedRange().slice(0));
+  midStaging.unmap(); midStaging.destroy();
+  finalStaging.unmap(); finalStaging.destroy();
 
   // Compute per-(game, seat) cell counts and aggregate fitness per genome.
   const fitness = new Float32Array(cfg.popSize);
   const games = new Float32Array(cfg.popSize);
   for (let game = 0; game < numGames; game++) {
-    const counts = new Array(cfg.numSeatsPerGame).fill(0);
+    const countsMid = new Array(cfg.numSeatsPerGame).fill(0);
+    const countsEnd = new Array(cfg.numSeatsPerGame).fill(0);
     for (let i = 0; i < cells; i++) {
-      const o = ownerFinal[game * cells + i];
-      if (o >= 0 && o < cfg.numSeatsPerGame) counts[o]++;
+      const oMid = ownerMid[game * cells + i];
+      const oEnd = ownerFinal[game * cells + i];
+      if (oMid >= 0 && oMid < cfg.numSeatsPerGame) countsMid[oMid]++;
+      if (oEnd >= 0 && oEnd < cfg.numSeatsPerGame) countsEnd[oEnd]++;
     }
-    const totalOwned = counts.reduce((a, b) => a + b, 0);
+    const totalEnd = countsEnd.reduce((a, b) => a + b, 0);
     for (let seat = 0; seat < cfg.numSeatsPerGame; seat++) {
       const genome = seatGenome[game * cfg.numSeatsPerGame + seat];
-      const opponents = totalOwned - counts[seat];
-      fitness[genome] += counts[seat] - cfg.lingerPenalty * opponents;
+      const opponentsEnd = totalEnd - countsEnd[seat];
+      fitness[genome] += countsEnd[seat] + cfg.earlyWeight * countsMid[seat] - cfg.lingerPenalty * opponentsEnd;
       games[genome] += 1;
     }
   }

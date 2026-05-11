@@ -39,7 +39,7 @@ Initial architecture: 91 → 32 (tanh) → 19. ~3.5k weights per genome. Small e
 
 1. Population size: 12–50 genomes.
 2. Each game: assign N genomes (N = `numPlayers`) to seats randomly. Run to completion or tick cap.
-3. Fitness: territory at game end (number of cells owned); ties broken by survival time. Cross-game ELO-like accumulation if multiple games per genome.
+3. Fitness: `end_cells + earlyWeight * mid_cells - lingerPenalty * opponent_cells_at_end`. Two samples (midpoint and end) give a time-integrated signal; the linger penalty punishes leaving holdouts alive. Current defaults: `earlyWeight = 0.5`, `lingerPenalty = 2.0`.
 4. After each game, replace the bottom k (k = 1 for rtNEAT-style continuous, k = 1–3 for simpler batch) with mutated copies of top performers.
 5. Mutations: gaussian noise on weights. Structural mutations (add node, add connection) are NEAT-proper but optional for v1.
 
