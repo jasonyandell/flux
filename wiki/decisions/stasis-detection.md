@@ -18,7 +18,13 @@ The browser declares **stasis** when per-player cell counts stop moving for a wi
 
 ## Method
 
-Ring buffer of the last `STASIS_WINDOW` samples; each sample is a `number[]` of per-player cell counts. Population variance per player across the window. If `max(variances) < epsilon` and the buffer is full, declare stasis.
+Ring buffer of the last `STASIS_WINDOW` samples; each sample is a `number[]` of per-player cell counts. Three early-return suppressions before the variance check:
+
+1. **Buffer not yet full** — still accumulating samples.
+2. **1v1 endgame** — only one or two players have any cells. The 1v1 finishing moves matter and `getWinner` will fire when the last opponent dies; no need to short-circuit.
+3. **Cleanup phase** — the runner-up player holds fewer than 5 cells. The leader has genuinely earned dominance and is just mopping up scraps. Absolute count, not a percentage (a percentage-based threshold was rejected as too lenient — early-game dominance must still be earned).
+
+After the suppressions, declare stasis if `max(per-player variance) < STASIS_EPSILON` across the full window.
 
 ## Defaults
 
@@ -34,7 +40,12 @@ In `src/main.ts`:
 
 ## Limits
 
-This is a simple statistical test, not a proof. It fires on long oscillation-free plateaus and misses rare slow drifts. That's acceptable for a v1; tune `STASIS_EPSILON` or the window if false positives appear.
+This is a simple statistical test, not a proof. It fires on long oscillation-free plateaus and misses rare slow drifts. False-positive cases observed and fixed:
+
+- *Cleanup-phase plateaus* (one player owns everything, a handful of stragglers stable for ages) — fixed by the runner-up-cell threshold suppression.
+- *1v1 endgame oscillations* (two players trading micro-territory in tricky moves) — fixed by the alive-count suppression.
+
+Tune `STASIS_EPSILON` or the window if new false positives appear.
 
 ## Why
 

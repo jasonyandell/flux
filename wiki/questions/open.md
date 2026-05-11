@@ -23,7 +23,7 @@ The hand-written [[../decisions/ai-zoo|ai-zoo]] confirmed and narrowed this: fou
 
 **Validation observed (2026-05-10):** running the WebGPU evolution loop produces champions that *sometimes* win against the hand-written zoo on the multi-player board — not consistently, but reproducibly enough to call the approach validated. The evolved controllers do appear to find policies the four-AI "weakest-local-neighbor" family does not.
 
-**Mitigation in place:** [[../decisions/stasis-detection|stasis-detection]] — the browser now ends sessions that wedge into the symmetric stalemate rather than running forever.
+**Mitigation in place:** [[../decisions/stasis-detection|stasis-detection]] — the browser ends sessions that wedge into the symmetric stalemate rather than running forever. Suppressed in the 1v1 endgame (let the trick-shots play out) and during cleanup phases (one player has earned overwhelming dominance, just mopping up).
 
 Lower-effort alternatives if neuroevolution is too far:
 

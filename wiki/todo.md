@@ -28,11 +28,9 @@ History lives in [[log|log.md]]. Theory-shaped questions live in [[questions/ope
 
 ## Open — game model / bugs
 
-- **Stasis edge case from screenshot (2026-05-10).** Three holdout cells the leader couldn't kill in a 1022-cell win; STASIS fired when the game was effectively over. Possibly reachability or AI-targeting impl issue rather than a real stalemate. User flagged as "may just be an impl bug." Hours of investigation. Reverted threshold-based papering-over in favor of actual fix.
-
 - **Graph topology variants.** From [[questions/open]]: multiple parallel routes as a structural alternative to a single central choke. Untested — could change AI dynamics meaningfully but no concrete plan.
 
-- **Constant tuning** (`REGEN_PER_SEC`, `TRANSFER_PER_SEC`, `ATTACK_BONUS`). From [[questions/open]]. Probably moot now that evolution finds winning strategies on current constants; revisit if game pacing is off.
+- **Further constant tuning.** `REGEN_PER_SEC` already bumped 1.0 → 1.1 for pacing. `TRANSFER_PER_SEC` and `ATTACK_BONUS` are untouched and probably fine; revisit only if game pacing shifts under heavier evolution.
 
 ## Process
 
