@@ -6,6 +6,34 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-10 | workspace | wiki cleanup + session catchup]
+
+**Touched pages:** [[decisions/inbound-bonus]] [[decisions/stasis-detection]] [[todo]] [[questions/open]] [[index]] [[log]]
+**Added:** none new.
+**Updated:**
+- [[decisions/inbound-bonus]] trimmed to a one-paragraph retired marker.
+- [[decisions/stasis-detection]] documents all three suppression rules — buffer-not-full, 1v1 endgame, and cleanup phase (runner-up < 5 cells, absolute not percentage).
+- [[todo]] drops the resolved stasis-screenshot item and refreshes the constant-tuning note (`REGEN_PER_SEC` 1.0 → 1.1 already shipped).
+- [[questions/open]] mitigation note describes both stasis suppression rules.
+- [[index]] drops the retired-pointer line for `inbound-bonus`.
+**Retired:** none (`inbound-bonus` was retired earlier this session).
+**Questions opened:** none.
+
+**Session catchup** — code changes shipped earlier without their own log entries, summarized here:
+
+- `SPEED = 5` scaler in `main.ts` for 5× spectator playback.
+- `REGEN_PER_SEC` bumped 1.0 → 1.1 for pacing.
+- Per-seat AI dropdowns in lil-gui; default board is 12 seats, seat 0 = `aggressive`, rest = `evolved`.
+- Capture folder in lil-gui: PNG snapshots and WebM recordings via `MediaRecorder` on the canvas stream.
+- Champion save/load buttons writing/reading `flux-champion-genN-fitF.json`. Sim runner reads `FLUX_CHAMPION_JSON=path` for head-to-head tests.
+- `localStorage` backup of full evolution state with auto-resume on reload; toggle state persists; clear-save button in lil-gui.
+- Sim `tournament` subcommand cells print `P0/P1/draws` instead of just P0 wins.
+- Evolution fitness gains `lingerPenalty = 0.5` per remaining opponent cell.
+- Evolution `boardRadius` 8 → 9 (~271 cells) per user spec.
+- Stasis exemptions added in steps: first 1v1 (alive ≤ 2), then cleanup (runner-up < 5). Consolidated in [[decisions/stasis-detection]].
+- `INBOUND_BONUS` shipped then reverted within the session — see retired [[decisions/inbound-bonus]] for the math walk.
+- `wiki/todo.md` added as an active-threads holding pen.
+
 ## [2026-05-10 | workspace | webgpu neuroevolution MVP]
 
 **Touched pages:** [[decisions/webgpu-evolution]] [[topics/neuroevolution]] [[entities/flux]] [[index]]

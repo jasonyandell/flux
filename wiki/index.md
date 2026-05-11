@@ -26,10 +26,9 @@ Decisions:
 - [[decisions/one-flow-per-edge|one-flow-per-edge]] — at most one flow per undirected edge; reverse means flip.
 - [[decisions/hex-grid-default|hex-grid-default]] — default board is a ~1000-cell hex grid with distance-2 connectivity; renderer uses instancing.
 - [[decisions/attack-bonus|attack-bonus]] — non-friendly destinations get a `1 + ATTACK_BONUS` multiplier so attacks deal more damage than they cost.
-- ~~[[decisions/inbound-bonus|inbound-bonus]]~~ — retired; the wall-breaker dynamic emerges from existing mechanics, no separate bonus needed.
 - [[decisions/ai-zoo|ai-zoo]] — six hand-written heuristics registered under `src/ai/`; tournament shows four converge to the same play.
 - [[decisions/multi-player-free-for-all|multi-player-free-for-all]] — default is 2–12 AI seats on the hex perimeter; spectator mode at 5× speed.
-- [[decisions/stasis-detection|stasis-detection]] — variance-window detector that ends stalemated spectator sessions with a `STASIS` banner.
+- [[decisions/stasis-detection|stasis-detection]] — variance-window detector that ends stalemated spectator sessions with a `STASIS` banner; suppressed in 1v1 endgame and cleanup phases.
 - [[decisions/webgpu-evolution|webgpu-evolution]] — fixed-topology neuroevolution on WebGPU compute. Population eval on GPU, JS evolution loop, champion plays as `evolved` in the spectator zoo. WGSL step ≡ JS step parity invariant.
 
 Questions:
