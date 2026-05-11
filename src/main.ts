@@ -308,6 +308,7 @@ let evoRunning = false;
   if (saved) {
     evoState = saved;
     setChampion(saved.champion);
+    setRoster(saved.population);
     tunables.generation = saved.generation;
     tunables.bestFitness = Math.round(saved.bestFitness * 100) / 100;
     tunables.allTimeBest = Math.round(saved.allTimeBest * 100) / 100;
@@ -329,6 +330,7 @@ function clearSavedEvolution() {
   tunables.bestFitness = 0;
   tunables.allTimeBest = 0;
   setChampion(null);
+  setRoster(null);
   topBar.setEvolveOn(false);
   topBar.setStats(0, 0);
   console.log('evolution save cleared');
@@ -348,6 +350,8 @@ async function loopEvolution() {
       tunables.generation = evoState.generation;
       tunables.bestFitness = Math.round(evoState.bestFitness * 100) / 100;
       tunables.allTimeBest = Math.round(evoState.allTimeBest * 100) / 100;
+      setChampion(evoState.champion);
+      setRoster(evoState.population);
       saveEvolutionState(evoState);
     } catch (err) {
       console.error('evolution error:', err);
@@ -375,7 +379,7 @@ async function runParity() {
 }
 
 // Expose a few hooks for headless testing / debugging.
-import { getChampion, setChampion } from './gpu/evolved';
+import { getChampion, setChampion, setRoster } from './gpu/evolved';
 (window as unknown as { fluxTest?: object }).fluxTest = {
   runParity: async () => {
     if (!gpuCtx) {
