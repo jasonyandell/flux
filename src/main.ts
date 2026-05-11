@@ -44,10 +44,12 @@ let winner: number | null = null;
 let stasis = false;
 const stasisBuffer: number[][] = [];
 let lastStasisSampleTick = 0;
-let playerAIs: AIName[] = allEvolved(tunables.numPlayers);
+let playerAIs: AIName[] = defaultAssignment(tunables.numPlayers);
 
-function allEvolved(n: number): AIName[] {
-  return Array(n).fill('evolved' as AIName);
+function defaultAssignment(n: number): AIName[] {
+  const out: AIName[] = Array(n).fill('evolved' as AIName);
+  out[0] = 'aggressive';
+  return out;
 }
 
 function respawn() {
@@ -56,7 +58,7 @@ function respawn() {
   stasis = false;
   stasisBuffer.length = 0;
   lastStasisSampleTick = 0;
-  playerAIs = allEvolved(tunables.numPlayers);
+  playerAIs = defaultAssignment(tunables.numPlayers);
   hideBanner(gameUI);
   rebuildSeatControls();
 }
