@@ -1,6 +1,12 @@
 export function detectStasis(samples: readonly number[][], epsilon: number, windowSize: number): boolean {
   if (samples.length < windowSize || samples.length === 0) return false;
 
+  // 1v1 endgame: let it play out — that's where the tricky finishing moves live.
+  const latest = samples[samples.length - 1];
+  let alive = 0;
+  for (const c of latest) if (c > 0) alive++;
+  if (alive <= 2) return false;
+
   const numPlayers = samples[0].length;
   for (let p = 0; p < numPlayers; p++) {
     let sum = 0;
