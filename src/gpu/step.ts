@@ -2,6 +2,7 @@
 
 import {
   ATTACK_BONUS,
+  INBOUND_BONUS,
   MAX_STRENGTH,
   MIN_STRENGTH_TO_SEND,
   REGEN_PER_SEC,
@@ -77,7 +78,7 @@ export function createGPUStep(ctx: GPUCtx, cfg: StepConfig): GPUStep {
   const numFlowsA = mkU32(cfg.numGames);
   const numFlowsB = mkU32(cfg.numGames);
 
-  // Pack params: cells, maxFlows, numGames, numPlayers (u32), then 6 f32.
+  // Pack params: cells, maxFlows, numGames, numPlayers (u32), then 7 f32 (+pad).
   const params = new ArrayBuffer(48);
   const dv = new DataView(params);
   dv.setUint32(0, cellsPerGame, true);
@@ -90,6 +91,7 @@ export function createGPUStep(ctx: GPUCtx, cfg: StepConfig): GPUStep {
   dv.setFloat32(28, MAX_STRENGTH, true);
   dv.setFloat32(32, MIN_STRENGTH_TO_SEND, true);
   dv.setFloat32(36, cfg.dt, true);
+  dv.setFloat32(40, INBOUND_BONUS, true);
   device.queue.writeBuffer(paramsBuf, 0, params);
 
   const layout = device.createBindGroupLayout({

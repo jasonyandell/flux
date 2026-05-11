@@ -5,6 +5,7 @@ import {
   type GameState,
   type Owner,
   ATTACK_BONUS,
+  INBOUND_BONUS,
   MAX_STRENGTH,
   MIN_STRENGTH_TO_SEND,
   REGEN_PER_SEC,
@@ -53,8 +54,19 @@ export function step(state: GameState, dt: number): GameState {
   const N = state.numPlayers;
   const forces: Force[] = state.nodes.map(() => zeroForce(N));
 
+  // Count active inbound friendly flows per cell (used for the inbound regen bonus).
+  const inboundFriendly = new Array(state.nodes.length).fill(0);
+  for (const flow of state.flows) {
+    const src = state.nodes[flow.src];
+    if (src.owner !== flow.player) continue;
+    if (src.strength < MIN_STRENGTH_TO_SEND) continue;
+    if (state.nodes[flow.dst].owner === flow.player) inboundFriendly[flow.dst]++;
+  }
+
   for (const node of state.nodes) {
-    if (node.owner !== null) forces[node.id][node.owner] += REGEN_PER_SEC * dt;
+    if (node.owner === null) continue;
+    const bonus = INBOUND_BONUS * inboundFriendly[node.id];
+    forces[node.id][node.owner] += (REGEN_PER_SEC + bonus) * dt;
   }
 
   const aliveFlows: Flow[] = [];
