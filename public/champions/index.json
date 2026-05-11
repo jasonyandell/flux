@@ -2,6 +2,6 @@
   "gen0": null,
   "gen50": "gen50.json",
   "gen100": "gen100.json",
-  "gen2000": "gen2000.json",
+  "gen2000": "stalemate.json",
   "gen20k": "strong.json"
 }

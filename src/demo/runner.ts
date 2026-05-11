@@ -1,4 +1,4 @@
-import type { GameState } from '../game/state';
+import type { GameState, Owner } from '../game/state';
 import { applyAction, step } from '../game/step';
 import { type SceneLabel, loadSceneChampion } from './champions';
 import { setChampion } from '../gpu/evolved';
@@ -20,14 +20,17 @@ export type SceneSpec = {
   label: SceneLabel;
   caption: string;
   durationSec: number;
+  tickBudget?: number;
+  stopOnWinner?: boolean;
+  stillUrl?: string;
 };
 
 export const SCENES: SceneSpec[] = [
   { label: 'gen0',    caption: 'watch ai battle',            durationSec: 5 },
   { label: 'gen100',  caption: 'the blue one is code',       durationSec: 5 },
   { label: 'gen50',   caption: 'the others are neural nets', durationSec: 5 },
-  { label: 'gen2000', caption: 'watch them get smarter',     durationSec: 5 },
-  { label: 'gen20k',  caption: 'watch them win',             durationSec: 5 },
+  { label: 'gen2000', caption: 'they start to learn (gen 150)', durationSec: 5 },
+  { label: 'gen20k',  caption: 'they win (gen 12k)',          durationSec: 5 },
 ];
 
 const TICK_HZ = 10;
@@ -39,6 +42,17 @@ const PRESIM_BATCH = 50;
 const SNAPSHOT_STRIDE = 5;        // store every 5th tick; ~1000 frames per scene cap
 const NUM_PLAYERS = 12;
 const INTRO_TICKS = 150;
+
+// Adaptive churn truncation. Each sample period, measure total cells-changing-
+// hands since the previous sample (Σ_p |count[p][t] - count[p][t-1]|). Keep a
+// sliding window's mean = "current churn rate". Track the peak churn rate ever
+// reached. When current drops below CHURN_RATIO × peak, the system has frozen
+// relative to its own liveliest moment — declare stalemate. Then continue only
+// until the stalemate tail is at most STALEMATE_TAIL_FRAC of total kept ticks.
+const STASIS_SAMPLE_PERIOD = 5;
+const STASIS_WINDOW = 50;
+const CHURN_RATIO = 0.15;
+const STALEMATE_TAIL_FRAC = 0.30;
 
 const INTRO_PAN_SEC = 1.0;
 const INTRO_TITLE_SEC = 1.5;
@@ -105,6 +119,7 @@ export function createRunner(opts: {
       makeInitialState(undefined, undefined, NUM_PLAYERS),
       seats,
       INTRO_TICKS,
+      true,
       introSnapshots,
     );
     introLastSnap = introSnapshots[introSnapshots.length - 1] ?? null;
@@ -240,18 +255,28 @@ export function createRunner(opts: {
   }
 
   async function presimScene(p: ScenePresim): Promise<void> {
+    p.snapshots.length = 0;
+    if (p.spec.stillUrl) {
+      // Skip the live presim entirely — load the trainer's baked final state
+      // and freeze on it for the scene's duration. Guarantees what training
+      // measured is what the user sees.
+      const still = await loadStill(p.spec.stillUrl);
+      p.snapshots.push(still);
+      p.expectedLength = 1;
+      return;
+    }
     const champion = await loadSceneChampion(p.spec.label);
     setChampion(champion);
-    p.snapshots.length = 0;
-    p.expectedLength = PRESIM_TICK_BUDGET + 1;
+    const budget = p.spec.tickBudget ?? PRESIM_TICK_BUDGET;
+    const stopOnWinner = p.spec.stopOnWinner ?? true;
+    p.expectedLength = budget + 1;
     await presimGame(
       makeInitialState(undefined, undefined, NUM_PLAYERS),
       seats,
-      PRESIM_TICK_BUDGET,
+      budget,
+      stopOnWinner,
       p.snapshots,
     );
-    // Lock in the actual recorded length so playback's t→idx mapping uses
-    // the true span (winner-early-exits shrink it; otherwise unchanged).
     p.expectedLength = p.snapshots.length;
   }
 
@@ -268,10 +293,15 @@ async function presimGame(
   initial: GameState,
   seats: AIName[],
   tickBudget: number,
+  stopOnWinner: boolean,
   out: GameState[],
 ): Promise<void> {
   let s = initial;
   out.push(s);
+  let lastCounts: number[] | null = null;
+  const deltaBuf: number[] = [];
+  let peakWindowMean = 0;
+  let truncateAt: number | null = null;
   for (let t = 0; t < tickBudget; t++) {
     s = step(s, TICK_DT);
     if (t % AI_PERIOD_TICKS === 0) {
@@ -281,9 +311,35 @@ async function presimGame(
       }
     }
     if (t % SNAPSHOT_STRIDE === 0) out.push(s);
-    if (winnerOf(s) !== null) break;
+    if (stopOnWinner && winnerOf(s) !== null) break;
+    if (truncateAt === null && t % STASIS_SAMPLE_PERIOD === 0) {
+      const curr = sampleOwnerCounts(s);
+      if (lastCounts !== null) {
+        let d = 0;
+        for (let p = 0; p < curr.length; p++) d += Math.abs(curr[p] - lastCounts[p]);
+        deltaBuf.push(d);
+        if (deltaBuf.length > STASIS_WINDOW) deltaBuf.shift();
+        if (deltaBuf.length === STASIS_WINDOW) {
+          let sum = 0;
+          for (const v of deltaBuf) sum += v;
+          const windowMean = sum / deltaBuf.length;
+          if (windowMean > peakWindowMean) peakWindowMean = windowMean;
+          if (peakWindowMean > 0 && windowMean < CHURN_RATIO * peakWindowMean) {
+            truncateAt = Math.ceil(t / (1 - STALEMATE_TAIL_FRAC));
+          }
+        }
+      }
+      lastCounts = curr;
+    }
+    if (truncateAt !== null && t >= truncateAt) break;
     if ((t + 1) % PRESIM_BATCH === 0) await new Promise((r) => setTimeout(r, 0));
   }
+}
+
+function sampleOwnerCounts(s: GameState): number[] {
+  const counts = new Array<number>(s.numPlayers).fill(0);
+  for (const n of s.nodes) if (n.owner !== null) counts[n.owner]++;
+  return counts;
 }
 
 function sampleSnapshot(
@@ -324,6 +380,36 @@ function lerp(a: number, b: number, t: number): number {
 
 function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+type StillPayload = {
+  tick: number;
+  numPlayers: number;
+  boardConfig: { radius: number; distance: number; numPlayers: number };
+  owners: Owner[];
+  strengths: number[];
+  flows: [number, number, number][];
+  expected?: { atTick: number; alive: number; maxShare: number };
+};
+
+async function loadStill(url: string): Promise<GameState> {
+  const env = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
+  const base = env?.BASE_URL ?? '/';
+  const res = await fetch(`${base}${url}`);
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  const data = (await res.json()) as StillPayload;
+  const { radius, distance, numPlayers } = data.boardConfig;
+  const state = makeInitialState(radius, distance, numPlayers);
+  if (state.nodes.length !== data.owners.length) {
+    throw new Error(`still ${url}: node count mismatch (${state.nodes.length} vs ${data.owners.length})`);
+  }
+  for (let i = 0; i < state.nodes.length; i++) {
+    state.nodes[i].owner = data.owners[i];
+    state.nodes[i].strength = data.strengths[i];
+  }
+  state.flows = data.flows.map(([src, dst, player]) => ({ src, dst, player }));
+  state.tick = data.tick;
+  return state;
 }
 
 export function pickHotArea(state: GameState): { x: number; y: number } {

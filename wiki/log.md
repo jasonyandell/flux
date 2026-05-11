@@ -6,6 +6,34 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-11 | workspace | demo script tightened: stalemate genome + adaptive churn truncation]
+
+**Touched pages:** [[topics/showcase-demo]] [[log]]
+**Added:**
+- `public/champions/stalemate.json` — user-saved gen 153 from in-app GPU evolution in a different browser; now drives the `gen2000` scene via live presim instead of the trainer's still.
+**Updated:**
+- `src/demo/runner.ts` — final script + per-scene knobs:
+  - Captions: scene 4 "they start to learn (gen 150)" and scene 5 "they win (gen 12k)" replace the older "watch them get smarter" / "watch them win" — gen numbers now reference what the underlying genome actually is (stalemate.json is gen 153 rounded; strong.json is gen 12228 rounded). Scene 3 caption "the others are neural nets" now lands on `gen50` instead of `gen200` so the gen label matches the sluggish-net look.
+  - Per-scene `SceneSpec` knobs: `tickBudget`, `stopOnWinner`, `stillUrl`.
+  - Adaptive churn truncation replaces a brief per-player variance check. Inter-sample Σ|Δcount|, rolling 50-sample mean, peak-tracking — when current churn drops under 15% of the peak window mean, declare stalemate and continue only until the flat tail is ≤30% of total kept ticks. Catches oscillating equilibria the per-player variance check missed (seats swapping cells around a frozen system). Suppression rules in `src/sim/stasis.ts` deliberately *not* reused — they're for in-game UX, not playback truncation.
+  - `stillUrl` loader (`loadStill()`) rebuilds GameState from a baked `{boardConfig, owners[], strengths[], flows[]}` JSON. Was wired briefly to bypass a sim-vs-render divergence on `gen2000`; currently unused (stalemate.json live presim works) but kept for future single-frame scenes.
+- `scripts/train-stalemate.ts` — after solving, re-runs the winner with recording on and dumps `public/champions/gen2000-still.json` (the trainer's final-state ground truth).
+- `public/champions/index.json` — `gen2000 → "stalemate.json"`; old `gen200` / `gen1000` entries dropped in favor of `gen50`.
+- `public/champions/gen50.json` (new) replaces `gen200.json` / `gen1000.json` (deleted). Regenerated via `scripts/gen-champions.mjs` with updated specs (std 0.03 / 0.08 / 0.40).
+- [[topics/showcase-demo]] arc table, pre-sim architecture, champions catalog, and open questions all reflect the above.
+**Retired:** the gen 0 → 100 → 200 → 1000 → 20k label sequence (replaced by 0 → 100 → 50 → 2000 → 20k narrative ordering); the per-player variance stalemate detector (replaced by adaptive churn); the original "watch them get smarter" / "watch them win" captions.
+**Questions opened:** Sim-vs-render parity validation framework — champion JSONs carrying `expected: {atTick, alive, maxShare}` and a `npm run sanity` script. Discussed in detail mid-session but not built. The session's actual workaround for one specific divergence was the `stillUrl` still-frame mechanism — that's tactical, not the general fix.
+
+## [2026-05-11 | champion-curator | gen2000 trained for stalemate at tick 4000]
+
+**Touched pages:** [[topics/showcase-demo]] [[log]]
+**Added:**
+- `scripts/train-stalemate.ts` — CPU-only mini-evolver (no GPU). Warm-starts from `public/champions/strong.json` with σ=0.4, pop=16, ~30 gen / 10 min hard cap, mirrors `presimGame()`'s 10Hz step + AI-every-5-ticks loop from `src/demo/runner.ts`. Fitness composite rewards `aliveCount ≥ 2` and `max_share ≤ 60%` at tick 4000.
+- `public/champions/gen2000.json` overwritten — solved at gen 1 (40.5s wall-clock): alive=4, max_share=48.5%, fitness=34.00. Same `{weights, generation, bestFitness, savedAt, note}` payload shape as the other champions.
+**Updated:** [[topics/showcase-demo]] Champions catalog now lists `gen2000.json` as a real CPU-evolved artifact; the "honest caveat" paragraph distinguishes it from the random-seeded placeholders.
+**Retired:** the prior `gen2000.json` placeholder (random `mulberry32(2000)` + `std=0.40`) — fully replaced.
+**Questions opened:** none — the trained genome is deterministic per seed but warm-start mutation paths through `gaussian()` mean reruns differ slightly; if the user wants a reproducible regen, the seed `0xC0FFEE_2000` is in the script.
+
 ## [2026-05-11 | workspace | python evolution direction: MLX from the jump]
 
 **Touched pages:** [[decisions/python-port]] [[topics/neuroevolution]] [[todo]] [[log]]

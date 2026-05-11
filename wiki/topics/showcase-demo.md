@@ -42,22 +42,31 @@ Seat 0 is always `aggressive`; the other eleven seats are `evolved` and all read
 
 | scene | label | caption | duration | champion file |
 |---|---|---|---|---|
-| 1 | `gen0`    | "watch ai battle"            | 5s | `null` — fresh random genome via `ensureChampion()` |
-| 2 | `gen100`  | "the blue one is code"       | 5s | `gen100.json` *(placeholder, see below)* |
-| 3 | `gen200`  | "the others are neural nets" | 5s | `gen200.json` *(placeholder)* |
-| 4 | `gen1000` | "watch them get smarter"     | 5s | `gen1000.json` *(placeholder)* |
-| 5 | `gen20k`  | "watch them win"             | 5s | `strong.json` — real trained champion |
+| 1 | `gen0`    | "watch ai battle"                 | 5s | `null` — fresh random genome via `ensureChampion()` |
+| 2 | `gen100`  | "the blue one is code"            | 5s | `gen100.json` *(placeholder, see below)* |
+| 3 | `gen50`   | "the others are neural nets"      | 5s | `gen50.json`  *(placeholder)* |
+| 4 | `gen2000` | "they start to learn (gen 150)"   | 5s | `stalemate.json` — user-evolved gen 153 (saved from in-app GPU loop) |
+| 5 | `gen20k`  | "they win (gen 12k)"              | 5s | `strong.json` — real saved champion (gen 12228) |
 
-Captions are lowercase by design. The runner cycles back to scene 1 after scene 5, so the demo loops indefinitely.
+Captions are lowercase by design. Scene 4's caption rounds gen 153 → "gen 150"; scene 5's rounds gen 12228 → "gen 12k". The runner cycles back to scene 1 after scene 5, so the demo loops indefinitely. Scene ordering is intentionally narrative-first (introduce the code seat before the NN seats) and breaks numerical gen order — scene 3 is gen 50, scene 2 is gen 100.
 
 ### Pre-sim + playback architecture
 
 The demo does **not** step the sim live. Doing so would couple frame rate to sim cost and stutter on slow devices. Instead each scene is a **pre-computed snapshot array**, played back frame-by-frame in exactly 5s wall-clock:
 
-1. **Pre-sim phase (off-screen).** Set the champion via `setChampion()`. Build initial state with `makeInitialState(undefined, undefined, 12)`. Loop `step(s, 0.1)` + (every 5 ticks) the 12-seat AI thinks (`applyAction` for every action each seat returns) for `PRESIM_TICK_BUDGET = 300` ticks (or until a single owner remains). Push every tick into `snapshots: GameState[]`. Yield via `await new Promise(r => setTimeout(r, 0))` every 50 ticks so the main thread breathes.
+1. **Pre-sim phase (off-screen).** Set the champion via `setChampion()`. Build initial state with `makeInitialState(undefined, undefined, 12)`. Loop `step(s, 0.1)` + (every 5 ticks) the 12-seat AI thinks (`applyAction` for every action each seat returns) for `PRESIM_TICK_BUDGET = 5000` ticks (or until early-exit — see below). Push every `SNAPSHOT_STRIDE = 5` ticks into `snapshots: GameState[]` (caps frames per scene at ~1000). Yield via `await new Promise(r => setTimeout(r, 0))` every 50 ticks so the main thread breathes.
 2. **Playback phase (5s wall-clock).** Each frame compute `t = sceneElapsed / 5s`, pick `snapshots[Math.floor(t * expectedLength)]` (clamped to actual length so partial pre-sims gracefully stall on the latest available frame), hand it to `updateScene(scene, snap, null)`. No `step()` calls during playback. Frame rate is decoupled from sim cost.
 
-Because `setChampion()` is module-global state in `src/gpu/evolved.ts`, the five scene pre-sims must run **sequentially** — kicked off as a chained promise during `enter()`. Scene 0's pre-sim is awaited before the intro animation begins; scenes 1–4 race against playback wall-clock and almost always finish in time (each pre-sim is ~300 cheap `step()` calls; the intro animation alone is ~3.2s). `expectedLength` locks in once a pre-sim finishes — if a scene ends in a single-owner win early, `expectedLength` shrinks accordingly so playback's `t→idx` mapping uses the true span. Memory cost is ~5 × ~301 snapshots × ~271 nodes; cheap because `step` doesn't mutate, so snapshots share most structure by reference.
+**Early-exit conditions** (any one stops the pre-sim loop):
+- **Winner emerges.** A single non-null owner remains. Default `stopOnWinner = true`; per-scene `SceneSpec.stopOnWinner` can flip it false.
+- **Adaptive churn truncation.** Every `STASIS_SAMPLE_PERIOD = 5` ticks, compute the inter-sample delta sum `Σ_p |count[p][t] - count[p][t-1]|`. Keep a rolling `STASIS_WINDOW = 50` of those deltas; the window mean is the **current churn rate**. Track the peak window-mean ever reached this game. When current drops below `CHURN_RATIO = 0.15` of peak — i.e., movement has decayed to 15% of the liveliest moment — declare stalemate. Continue until the kept tick range satisfies `(t - t_stalemate) / t ≤ STALEMATE_TAIL_FRAC = 0.30`, then break. Result: stalemate tail occupies ≤ 30% of total kept ticks regardless of how long the game took to settle. We deliberately do **not** reuse `src/sim/stasis.ts` `detectStasis()` — it suppresses 1v1 endgame and cleanup phases for in-game UX, but for playback we want to truncate any flat region.
+
+Because `setChampion()` is module-global state in `src/gpu/evolved.ts`, the five scene pre-sims must run **sequentially** — kicked off as a chained promise during `enter()`. Scene 0's pre-sim is awaited before the intro animation begins; scenes 1–4 race against playback wall-clock and almost always finish in time. `expectedLength` locks in once a pre-sim finishes — if a scene early-exits (winner or churn truncation), `expectedLength` shrinks accordingly so playback's `t→idx` mapping uses the true span. Memory cost: with 5-tick stride, ≤ 1000 frames × ~1027 nodes per scene; cheap because `step` doesn't mutate, so snapshots share most structure by reference.
+
+**Per-scene overrides (`SceneSpec` optional fields):**
+- `tickBudget` — override `PRESIM_TICK_BUDGET` for this scene.
+- `stopOnWinner` — set false if the scene should keep stepping past winner (useful when truncation will catch the flat tail instead).
+- `stillUrl` — load a baked final-state JSON instead of pre-simming live. Loader rebuilds the GameState by calling `makeInitialState(radius, distance, numPlayers)` from the still's `boardConfig`, then overriding `owners`, `strengths`, and `flows` per the file. Used historically for `gen2000` while we baked the trainer's output; currently unused (replaced by `stalemate.json` live presim) but kept in the loader for future single-frame scenes.
 
 ### Intro framing
 
@@ -78,13 +87,14 @@ Champions in `public/champions/`:
 
 | file | size | source |
 |---|---|---|
-| `gen100.json`  | 75K | placeholder, `mulberry32(100)`  + Gaussian `std=0.05` |
-| `gen200.json`  | 73K | placeholder, `mulberry32(200)`  + Gaussian `std=0.15` |
-| `gen1000.json` | 72K | placeholder, `mulberry32(1000)` + Gaussian `std=0.30` |
-| `strong.json`  | 68K | real saved champion — copy of `flux-champion-gen12228-fit215.75.json`, fitness 215.75 |
-| `index.json`   | — | scene-label → filename map, with `gen0: null` |
+| `gen50.json`    | 76K | placeholder, `mulberry32(50)`   + Gaussian `std=0.03` — sluggish-looking early-net feel |
+| `gen100.json`   | 74K | placeholder, `mulberry32(100)`  + Gaussian `std=0.08` |
+| `gen2000.json`  | 73K | CPU-evolved from `strong.json` (warm-start σ=0.4) for stalemate at tick 4000 — kept on disk as a fallback but not currently wired to any scene |
+| `stalemate.json`| 71K | user-saved gen 153 from in-app GPU evolution in a separate browser; currently the `gen2000` scene loads this |
+| `strong.json`   | 68K | real saved champion — copy of `flux-champion-gen12228-fit215.75.json`, fitness 215.75 |
+| `index.json`    | — | scene-label → filename map; `gen0: null` |
 
-**Honest caveat:** `gen100` / `gen200` / `gen1000` are *not* real intermediate training snapshots. They're random Gaussian genomes seeded for visual variety — increasing `std` across the three files makes successive scenes look subtly different from `gen0` without actually carrying any training signal. The five-scene arc reads as a progression, but mechanically only `gen0` (untrained) and `gen20k` (trained) reflect real artifacts. Regenerate the placeholders via `node scripts/gen-champions.mjs` — fully deterministic.
+**Honest caveat:** `gen50` and `gen100` are *not* real intermediate training snapshots — they're random Gaussian genomes seeded for visual variety. The captions reference "gen 50" and "gen 100" for narrative pacing, not as ground-truth training generations. The truly trained genomes in the demo are `stalemate.json` (the user's saved gen 153 from a real GPU run) and `strong.json` (the gen 12228 champion). Regenerate the placeholders via `node scripts/gen-champions.mjs`. Regenerate the trainer-output `gen2000.json` via `npx tsx scripts/train-stalemate.ts` (warm-starts from `strong.json`, mini-evolves against a "alive ≥ 2 AND max_share ≤ 60% at tick 4000" fitness; the trainer also dumps a `gen2000-still.json` final-state snapshot for use with the runner's `stillUrl` mechanism — both files are deterministic per seed).
 
 ## Playwright's role
 
@@ -95,9 +105,10 @@ Two uses, both downstream of the demo URL existing:
 
 ## Open questions
 
-- Replace the placeholder genomes with real intermediate snapshots? Would require checkpointing the evolution loop at gens 100 / 200 / 1000 and saving each as a JSON. Cheap once we re-run training.
-- Cinema-mode toggle independent of `?demo=1`? Right now the demo is the only way to hide chrome. A `c` keybind or `?cinema=1` was floated but not built.
-- Deterministic seed for the board layout? `?seed=N` was discussed; not implemented in this pass. The demo currently uses whatever `makeInitialState()` produces from `Math.random`.
+- Add a second "and smarter" scene? User plans to save a second stalemate genome that stabilizes at a *different* tick than `stalemate.json`. Whichever stabilizes earlier becomes "they start to learn"; the later one becomes "and smarter". File would land as `public/champions/stalemate2.json` (or similar), wired as a new SceneSpec.
+- Validation framework for sim-vs-render parity? Discussed but not built. Plan: champion JSONs gain an `expected: {atTick, alive, maxShare}` block written by the trainer; runner asserts at end-of-presim and `console.error`s on drift; `npm run sanity` script re-runs every JSON headless and confirms its own `expected` block. Caught a regression once already (the trainer's stalemate stuck for ~25 minutes in browser but matched in headless because the live presim diverged — fixed by baking a still). Worth doing properly.
+- Cinema-mode toggle independent of `?demo=1`? A `c` keybind or `?cinema=1` was floated but not built.
+- Deterministic seed for the board layout? `?seed=N` was discussed; not implemented. Demo uses whatever `makeInitialState()` produces from its (currently `Math.random`-free) default path.
 - "Skip to live" button mid-demo? Not built. Today you exit by reloading without `?demo=1`.
 
 ## Status
