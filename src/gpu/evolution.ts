@@ -42,7 +42,7 @@ export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
   mutationSigma: 0.05,
   elites: 3,
   tournamentK: 3,
-  boardRadius: 8, // ~217 cells — faster than the full 1000-cell board
+  boardRadius: 9, // ~271 cells — fast eval board (per user spec ~250)
   initStd: 0.5,
 };
 
