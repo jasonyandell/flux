@@ -31,6 +31,7 @@ export type EvolutionConfig = {
   tournamentK: number;
   boardRadius: number;
   initStd: number;
+  lingerPenalty: number;     // fitness deduction per opponent cell remaining at game end
 };
 
 export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
@@ -44,6 +45,7 @@ export const DEFAULT_EVOLUTION_CONFIG: EvolutionConfig = {
   tournamentK: 3,
   boardRadius: 9, // ~271 cells — fast eval board (per user spec ~250)
   initStd: 0.5,
+  lingerPenalty: 0.5,
 };
 
 export type EvolutionState = {
@@ -430,9 +432,11 @@ export async function runGeneration(
       const o = ownerFinal[game * cells + i];
       if (o >= 0 && o < cfg.numSeatsPerGame) counts[o]++;
     }
+    const totalOwned = counts.reduce((a, b) => a + b, 0);
     for (let seat = 0; seat < cfg.numSeatsPerGame; seat++) {
       const genome = seatGenome[game * cfg.numSeatsPerGame + seat];
-      fitness[genome] += counts[seat];
+      const opponents = totalOwned - counts[seat];
+      fitness[genome] += counts[seat] - cfg.lingerPenalty * opponents;
       games[genome] += 1;
     }
   }
