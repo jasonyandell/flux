@@ -49,7 +49,7 @@ Initial architecture: 91 → 32 (tanh) → 19. ~3.5k weights per genome. Small e
 - **Tier 2 — proper NEAT.** ~800–1500 LOC. Innovation numbers, speciation, structural mutations, compatibility distance. Genuinely more interesting evolution.
 - **Tier 3 — rtNEAT.** Time-based selection (oldest most likely to be replaced) + real-time speciation. True NERO-style spectator evolution.
 - **Tier 4 — WebGPU compute.** *In progress.* Forward pass and `step` both run as compute shaders; whole population × all games per generation in parallel. See [[../decisions/webgpu-evolution|webgpu-evolution]]. Tiers 1 and 4 are merged here — Tier 4 is what `src/gpu/` shipped first because the browser is the deployment target.
-- **Tier 5 — offline Python training.** *Foundation landed; evolution loop TBD.* `python/` reimplements `step` + NN forward in NumPy with bit-exact parity against JS. The plan is to host the evolution loop in Python (cheap iteration, MLX acceleration on Apple Silicon) and serialize champions to JSON for the browser to load. See [[../decisions/python-port|python-port]]. The parity invariant is what keeps the offline-train / online-deploy bridge honest.
+- **Tier 5 — offline MLX training.** *Parity foundation landed; MLX evolution loop is the next thread.* `python/` reimplements `step` + NN forward in NumPy with bit-exact parity against JS — that's the algorithm-correctness anchor and it stays. The evolution loop itself is being built directly on MLX (Apple Silicon GPU acceleration, no NumPy-evolution interim). Champions serialize to the existing `public/champions/` JSON format for the browser to load. See [[../decisions/python-port|python-port]]. MLX runs `float32` so bit-exact JS parity isn't an MLX invariant — tolerance-based parity against the NumPy reference is, and the shared JSON format is what keeps the offline-train / online-deploy bridge honest.
 
 ## Python bridge (Tier 5 status)
 
@@ -61,10 +61,11 @@ What's in `python/` today:
 
 Not yet ported (explicit follow-ups, NOT part of the parity foundation):
 
-- Evolution loop (rtNEAT continuous replacement or batch generations).
-- Champion JSON load/save on the Python side (the JS format at `public/champions/*.json` is the target).
-- MLX kernels for batched forward pass and step. NumPy first to validate parity; MLX is a swap-in after the algorithm is locked.
+- **MLX evolution loop.** Same algorithm as `src/gpu/evolution.ts` (population, tournament selection, gaussian mutation, midpoint + end fitness with linger penalty), vectorized in MLX for big-board / many-genome scale. MLX is the compute backend from day one — there is no NumPy-evolution-loop step in between. The NumPy `flux` module stays as the algorithm reference the MLX side validates against (tolerance-based, since MLX is `float32`).
+- Champion JSON load/save on the Python side (the JS format at `public/champions/*.json` is the target; that's the deployment bridge).
 - HTTP or filesystem hot-reload of champions from Python into the browser.
+
+The browser's WebGPU evolution ([[../decisions/webgpu-evolution|webgpu-evolution]]) remains the in-browser path. The MLX loop and the WebGPU loop coexist; they share the genome layout, the fitness shape, and the champion JSON format.
 
 ## Why it fits flux
 

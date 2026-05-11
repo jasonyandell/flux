@@ -6,6 +6,17 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-11 | workspace | python evolution direction: MLX from the jump]
+
+**Touched pages:** [[decisions/python-port]] [[topics/neuroevolution]] [[todo]] [[log]]
+**Added:** none new.
+**Updated:**
+- [[decisions/python-port]] reframed: NumPy parity is the algorithm reference (done); MLX is the compute backend for the evolution loop from the start.
+- [[topics/neuroevolution]] Tier 5 / Python bridge subsections drop the "NumPy first, MLX later" framing.
+- [[todo]] MLX evolution loop is the active next thread.
+**Retired:** none.
+**Questions opened:** MLX float32 vs JS float64 — bit-exact parity won't hold; tolerance-based parity is the new invariant for the MLX side.
+
 ## [2026-05-11 | workspace | Python port lands (bit-exact JS parity, foundation only)]
 
 **Touched pages:** [[decisions/python-port]] [[topics/neuroevolution]] [[entities/flux]] [[index]] [[log]]

@@ -12,7 +12,9 @@ History lives in [[log|log.md]]. Theory-shaped questions live in [[questions/ope
 
 ## Open — AI / evolution
 
-- **Python pipeline.** Discussed architecture: MLX evolution loop on Apple Silicon, league-style mixing of past champions (AlphaZero-inspired), filesystem bridge via JSON `champions/` directory consumed by the browser. Three forks pending decision:
+- **MLX evolution loop (active next thread).** Port the evolution loop to Python with MLX as the compute backend. Same algorithm as `src/gpu/evolution.ts` — population, tournament selection, gaussian mutation, midpoint + end fitness with linger penalty — but vectorized in MLX for big-board / many-genome scale on Apple Silicon. Champion output in the existing `public/champions/*.json` format so the browser loads them unchanged. Parity invariant: agrees with the NumPy `flux` module on identical inputs within tolerance (MLX is `float32`, JS/NumPy reference is `float64`, so bit-exactness isn't on the table — same algorithm, same fitness signal). The browser's WebGPU evolution stays as the in-browser path; the two coexist.
+
+- **Python pipeline forks (downstream of the MLX loop).** Discussed architecture: league-style mixing of past champions (AlphaZero-inspired), filesystem bridge via JSON `champions/` directory consumed by the browser. Three forks pending decision:
   - League sampling strategy: pure-random vs latest-N-only vs Elo-weighted bracketed.
   - Server: Vite-static (existing dev server serves `python/champions/`) vs separate Python `http.server`.
   - Browser automation level: manual "record next tournament" button vs scripted loops for unattended runs.

@@ -16,15 +16,21 @@ The Python side is independent of `src/`. It imports nothing from TypeScript. Th
 
 [[neuroevolution]] tier 4 lives in WebGPU because the browser is the deployment target. But training is GPU-bound and laptops want MLX. The Python port is the on-ramp:
 
-1. NumPy port today, bit-exact against JS. (This page.)
-2. MLX-accelerated forward pass and step kernel later.
-3. Champion genomes serialize to JSON; either side loads either side's champions and plays them in any runtime — browser, headless JS sim, Python sim, MLX trainer.
+1. NumPy port, bit-exact against JS — landed. The `flux` package under `python/` is the algorithm-correctness reference. It stays as the ground truth for "does the algorithm behave the way JS does."
+2. MLX evolution loop — the next thread. MLX is the compute backend for the actual training loop from the start; there is no NumPy-evolution-loop interim.
+3. Champion genomes serialize to JSON in the existing `public/champions/` format; either side loads either side's champions and plays them in any runtime — browser, headless JS sim, Python sim, MLX trainer.
 
-The bridge is filesystem JSON (the existing `public/champions/` format). No HTTP, no IPC, no shared memory. Cross-language reproducibility is the unit test.
+The bridge is filesystem JSON. No HTTP, no IPC, no shared memory. Cross-language reproducibility is the unit test.
 
 ## The parity invariant
 
-**The Python sim must produce bit-identical state to the JS sim for any deterministic seeded scenario.** If they diverge, the Python side is wrong (JS is the reference of truth). The invariant covers:
+**Two flavors of parity, one ground truth.**
+
+The NumPy `flux` module's invariant is strict: bit-identical state to the JS sim for any deterministic seeded scenario. JS (`Float32Array` storage with `float64` arithmetic) is the reference of truth; if NumPy and JS diverge, NumPy is wrong. This is the algorithm-correctness anchor.
+
+The MLX evolution loop's invariant is looser: MLX defaults to `float32` arithmetic, so it can't agree with JS (`float64` arithmetic) bit-for-bit. The discipline is **tolerance-based agreement with the NumPy reference** on identical inputs — e.g., per-cell strength delta < 1e-3 over 100 ticks, and a `random_genome` produces the same action distribution over a fixed scenario within statistical noise. Same algorithm, same fitness signal, same champion JSON format — not the same bytes.
+
+The strict invariant covers:
 
 - `make_initial_state` — cell ordering, perimeter polar-angle sort, seat placement, edge enumeration order.
 - `step` — force accumulation order, capture-on-zero-crossing, `MIN_STRENGTH_TO_SEND`, `ATTACK_BONUS`.
@@ -38,12 +44,11 @@ The parity test at `python/tests/test_parity.py` (Python) and `python/tests/dump
 
 ## What's NOT in scope on this page
 
-- Evolution loop (rtNEAT or batch — separate decision when it lands).
+- The MLX evolution loop itself — algorithm, mutation operators, population layout, fitness shape (separate decision page when it lands).
 - Champion JSON read/write on the Python side.
-- MLX kernels.
-- HTTP / IPC bridges.
+- HTTP / IPC bridges (filesystem JSON is the only bridge).
 
-Those come later. This page documents only the foundation: parity-validated reimplementation of game + NN forward pass in Python.
+This page documents the foundation (parity-validated reimplementation of game + NN forward pass in Python) and the parity contract that the MLX evolution loop must meet.
 
 ## Tradeoffs
 
