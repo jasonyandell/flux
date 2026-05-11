@@ -6,6 +6,27 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-11 | champion-curator | champions catalog for 5-scene demo]
+
+**Touched pages:** [[topics/showcase-demo]] [[log]]
+**Added:**
+- `public/champions/strong.json` — copy of the only viable saved champion (`flux-champion-gen12228-fit215.75.json`, fitness 215.75). Maps to the `gen20k` scene.
+- `public/champions/gen100.json` / `gen200.json` / `gen1000.json` — deterministic placeholder genomes seeded by `mulberry32` with `std` 0.05 / 0.15 / 0.30 respectively. Marked `"note": "placeholder, random-seeded"`. Regen via `node scripts/gen-champions.mjs`.
+- `public/champions/index.json` — scene-label → filename map. `gen0` is `null` so the runner can call `setChampion(null)` and let `ensureChampion()` in `src/gpu/evolved.ts` mint the untrained genome.
+- `scripts/gen-champions.mjs` — Node-runnable generator. Inlines `mulberry32` + `gaussian` so it needs no TS toolchain.
+- `src/demo/champions.ts` — pure fetch helper. Exports `loadSceneChampion(label)` returning `Promise<Float32Array | null>`. Imported by scene-runner.
+**Updated:** [[topics/showcase-demo]] gains a "Champions catalog" subsection listing the files + scene mapping.
+**Retired:** none.
+**Questions opened:** none — placeholder genomes are a stopgap; replace with real intermediate snapshots if/when we re-run the evolution loop and checkpoint gens 100/200/1000.
+
+## [2026-05-11 | workspace | showcase-demo topic page]
+
+**Touched pages:** [[topics/showcase-demo]] [[index]] [[log]]
+**Added:** [[topics/showcase-demo]] — first-class plan for the evolution-arc demo. Compares an edited video (A) against an in-browser scripted demo (B), recommends (B), and lists the small surface the codebase needs: deterministic seed, canned champions in `public/champions/`, `?demoSpeed=N` override, cinema mode (hide all chrome), a `src/demo/runner.ts` scene state machine, and lerp'd camera keyframes reusing the existing clamp. Playwright is used downstream for reproducible video capture and as a CI smoke test of the scene transitions. First entries in `wiki/media/`: `scene-1-baseline.png` (the heuristic-dominates frame) and `scene-3-trained.png` (the champion-dominates frame), embedded at the top of the page as reference frames the scene runner has to recreate.
+**Updated:** [[index]] now lists `showcase-demo` under topics.
+**Retired:** none.
+**Questions opened:** training cadence for canned champions (per-release re-train vs pinned trio); whether scene 2's training montage uses live GPU evolution or pre-rendered stepping.
+
 ## [2026-05-11 | workspace | top-bar jitter fix + HUD expando]
 
 **Touched pages:** [[entities/flux]] [[log]]

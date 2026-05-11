@@ -18,6 +18,7 @@ Topics:
 
 - [[topics/galcon-like|galcon-like]] — the genre and its lineage.
 - [[topics/neuroevolution|neuroevolution]] — planned next step; rtNEAT-style real-time evolution of NN controllers.
+- [[topics/showcase-demo|showcase-demo]] — the evolution-arc demo: scripted in-browser scenes, canned champions, Playwright for capture + CI.
 
 Decisions:
 

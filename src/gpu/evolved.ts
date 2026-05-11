@@ -3,7 +3,11 @@ import { buildNeighborTable, nnInferCell, randomGenome, type Genome, NN_OUT_DIM,
 import { mulberry32 } from '../ai/rng';
 
 // Champion genome lives in module state. Evolution loop writes here; aiThink reads.
+// Roster is an optional per-seat override so each `evolved` seat can play a
+// different genome (e.g. the full population) — without it, every seat clones
+// the champion and the multi-seat game is just one policy mirrored N times.
 let champion: Genome | null = null;
+let roster: Genome[] | null = null;
 let neighborCache: { state: GameState; nb: Int32Array } | null = null;
 
 export function setChampion(g: Genome | null): void {
@@ -12,6 +16,10 @@ export function setChampion(g: Genome | null): void {
 
 export function getChampion(): Genome | null {
   return champion;
+}
+
+export function setRoster(genomes: Genome[] | null): void {
+  roster = genomes && genomes.length > 0 ? genomes : null;
 }
 
 export function ensureChampion(): Genome {
@@ -39,7 +47,7 @@ function neighborsFor(state: GameState): Int32Array {
 // install the desired flow state — replacing any existing flows from this seat
 // that point elsewhere.
 export function aiThink(state: GameState, player: Player, _seed = 0): Action[] {
-  const genome = ensureChampion();
+  const genome = roster ? roster[player % roster.length] : ensureChampion();
   const nb = neighborsFor(state);
   const actions: Action[] = [];
 
