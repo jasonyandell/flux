@@ -6,6 +6,17 @@ last_updated: bootstrap
 status: active
 ---
 
+## [2026-05-11 | workspace | three skills for next-session iteration]
+
+**Touched pages:** [[topics/showcase-demo]] [[log]]
+**Added:** none in-repo. Three Claude Code skills landed in `~/.claude/skills/` (cross-project, not committed here):
+- `flux-demo` — project-specific. The 4-file ripple, caption conventions, churn knobs, cinema chrome, team patterns for editing this demo.
+- `presim-playback` — pattern. The pre-sim → snapshot → wall-clock playback architecture, sequential pre-sim discipline, hot-area framing, adaptive churn truncation, `stillUrl` escape hatch. Reusable for any pure-`step()` simulator.
+- `mini-trainer` — pattern. CPU-only headless evolution trainer scaffold (tsx) targeting a custom fitness function, warm-started from a saved genome.
+**Updated:** [[topics/showcase-demo]] gains an "Iteration shortcuts" section pointing at the three skills so future-Claude knows the shortcuts exist before re-deriving them.
+**Retired:** none.
+**Questions opened:** none. The skills encode the sim-vs-render parity discussion as an open question but don't yet implement it — that's still worth doing as `expected: {atTick, alive, maxShare}` JSON contract + `npm run sanity` validator.
+
 ## [2026-05-11 | workspace | demo script tightened: stalemate genome + adaptive churn truncation]
 
 **Touched pages:** [[topics/showcase-demo]] [[log]]

@@ -111,6 +111,16 @@ Two uses, both downstream of the demo URL existing:
 - Deterministic seed for the board layout? `?seed=N` was discussed; not implemented. Demo uses whatever `makeInitialState()` produces from its (currently `Math.random`-free) default path.
 - "Skip to live" button mid-demo? Not built. Today you exit by reloading without `?demo=1`.
 
+## Iteration shortcuts (user-invocable skills)
+
+Three Claude Code skills capture this demo's conventions so the next session doesn't rediscover them:
+
+- **`flux-demo`** — project-specific. Use when editing this demo (add/swap/reorder scenes, swap genomes, regenerate placeholders, retune captions, tune the per-scene knobs). Encodes the 4-file ripple (`SCENES` ↔ `SceneLabel` ↔ `index.json` ↔ champion file), caption rounding rules, adaptive-churn constants, cinema-chrome list, and team patterns.
+- **`presim-playback`** — pattern. Use when shipping a similar scripted demo in *any* project with a pure `step(state, dt) → state` simulator. Captures the architecture (snapshot recording → wall-clock playback, sequential pre-sim discipline, hot-area framing, adaptive churn truncation, `stillUrl` fallback).
+- **`mini-trainer`** — pattern. Use when scaffolding a CPU-only (tsx) evolution trainer that targets a custom fitness function. Warm-starts from a saved genome, anneals mutation sigma, hard time cap, optional final-state still output.
+
+Skills live in `~/.claude/skills/` (cross-project, not in this repo). Invoke via `Skill` tool when the user's ask matches.
+
 ## Status
 
 Implementation landed. The five-scene runner exists in `src/demo/`, gated by `?demo=1`; champions sit in `public/champions/`. `npm run typecheck` clean. Browser/visual verification is on the user — agents did not poke at it.
