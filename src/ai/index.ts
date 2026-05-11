@@ -5,6 +5,7 @@ import { aiThink as defensive } from './defensive';
 import { aiThink as greedyNeutral } from './greedy-neutral';
 import { aiThink as opportunist } from './opportunist';
 import { aiThink as random } from './random';
+import { aiThink as evolved } from '../gpu/evolved';
 
 export type AIFn = (state: GameState, player: Player, seed?: number) => Action[];
 
@@ -14,7 +15,8 @@ export type AIName =
   | 'defensive'
   | 'greedy-neutral'
   | 'opportunist'
-  | 'cluster';
+  | 'cluster'
+  | 'evolved';
 
 export const AIs: Record<AIName, AIFn> = {
   aggressive,
@@ -23,8 +25,9 @@ export const AIs: Record<AIName, AIFn> = {
   'greedy-neutral': greedyNeutral,
   opportunist,
   cluster,
+  evolved,
 };
 
 export const AI_NAMES: AIName[] = [
-  'aggressive', 'random', 'defensive', 'greedy-neutral', 'opportunist', 'cluster',
+  'aggressive', 'random', 'defensive', 'greedy-neutral', 'opportunist', 'cluster', 'evolved',
 ];

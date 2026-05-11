@@ -11,7 +11,7 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "types": ["node"],
+    "types": ["node", "@webgpu/types"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
   "include": ["src"]

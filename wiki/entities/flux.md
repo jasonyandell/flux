@@ -28,7 +28,8 @@ captures, recaptures, eventual collapse to one survivor
   - `state.ts` — types and tunable constants (`REGEN_PER_SEC`, `TRANSFER_PER_SEC`, `MAX_STRENGTH`, `MIN_STRENGTH_TO_SEND`, `ATTACK_BONUS`).
   - `graph.ts` — hex grid generator with axial coordinates, configurable radius/distance/numPlayers. Player seats are perimeter cells sorted by polar angle.
   - `step.ts` — `step(state, dt) → state` and `applyAction(state, action) → state`. `applyAction` caches edge adjacency in a `WeakMap` keyed on the edges array.
-- `src/ai/` — [[ai-zoo]]. Six pure heuristics (`aggressive`, `random`, `defensive`, `greedy-neutral`, `opportunist`, `cluster`) plus shared `utils.ts` and seeded `rng.ts`. `index.ts` registers them. Each is `(state, player, seed?) => Action[]`.
+- `src/ai/` — [[ai-zoo]]. Six pure heuristics (`aggressive`, `random`, `defensive`, `greedy-neutral`, `opportunist`, `cluster`) plus shared `utils.ts` and seeded `rng.ts`. `index.ts` registers them, plus the `evolved` controller exported from `src/gpu/evolved.ts`. Each is `(state, player, seed?) => Action[]`.
+- `src/gpu/` — WebGPU runtime + compute kernels for [[../decisions/webgpu-evolution|webgpu-evolution]]. `runtime.ts` returns a `{device, queue}` or `null` (falls back when WebGPU is missing). `shaders/step.wgsl` ports `step.ts` 1:1 across a games-batch; `shaders/nn.wgsl` runs the 91→32→19 per-cell forward pass and rebuilds flows from the action map. `evolution.ts` orchestrates a generation (upload weights, run N games for K ticks, read back owner buffer, tournament + mutation). `genome.ts` defines layout and a matching JS forward pass. `evolved.ts` exposes `aiThink` (uses the current champion genome) and a `setChampion` setter the evolution loop drives. `parity.ts` exposes `runParityTest` — the WGSL step must match the JS step within `1e-3` on strength and exact on owner/flow set.
 - `src/render/scene.ts` — three.js orthographic top-down view. Nodes are one `InstancedMesh`; edges are one baked `LineSegments`; flows are a per-frame rebuilt `LineSegments` drawing the source-side half of each flow. 12-color palette exported as `COLORS`.
 - `src/render/gameui.ts` — banner / pause / hint overlays. `showBanner` colors per winner; `getWinner` returns the sole remaining player or null.
 - `src/input/pick.ts` — distance-based picking against `scene.nodePositions`; `eventToWorld` for the wheel-zoom cursor anchor.
@@ -36,4 +37,4 @@ captures, recaptures, eventual collapse to one survivor
 - `src/sim/run.ts` — headless runner via `tsx`. Supports default, pair (`npm run sim -- agg random 10`), and tournament (`npm run sim -- tournament 3`) modes.
 - `src/sim/stasis.ts` — pure variance-window detector behind the browser's `STASIS` banner. See [[../decisions/stasis-detection|stasis-detection]].
 
-The game model is documented in [[continuous-flow-model]]. The planned next step is [[neuroevolution]].
+The game model is documented in [[continuous-flow-model]]. [[neuroevolution]] is in progress via [[../decisions/webgpu-evolution|webgpu-evolution]]; the `evolved` seat is selectable in the spectator zoo.

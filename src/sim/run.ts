@@ -1,8 +1,16 @@
 import process from 'node:process';
+import fs from 'node:fs';
 import { AI_NAMES, AIs, type AIFn, type AIName } from '../ai';
 import { makeInitialState } from '../game/graph';
 import type { GameState, Player } from '../game/state';
 import { applyAction, step } from '../game/step';
+import { setChampion } from '../gpu/evolved';
+
+if (process.env.FLUX_CHAMPION_JSON) {
+  const data = JSON.parse(fs.readFileSync(process.env.FLUX_CHAMPION_JSON, 'utf8'));
+  setChampion(new Float32Array(data));
+  console.log(`loaded champion: ${data.length} weights`);
+}
 
 const TICK_DT = 0.1;
 const MAX_TICKS = 5000;

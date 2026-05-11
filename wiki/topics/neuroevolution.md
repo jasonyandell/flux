@@ -45,10 +45,10 @@ Initial architecture: 91 → 32 (tanh) → 19. ~3.5k weights per genome. Small e
 
 ## Effort tiers
 
-- **Tier 1 — fixed topology, evolved weights only.** ~300 LOC. Genome = `Float32Array` of weights. Forward pass per cell = two matmuls. Already powerful for this game space.
+- **Tier 1 — fixed topology, evolved weights only.** *In progress.* Genome = `Float32Array` of weights. Forward pass per cell = two matmuls. Already powerful for this game space.
 - **Tier 2 — proper NEAT.** ~800–1500 LOC. Innovation numbers, speciation, structural mutations, compatibility distance. Genuinely more interesting evolution.
 - **Tier 3 — rtNEAT.** Time-based selection (oldest most likely to be replaced) + real-time speciation. True NERO-style spectator evolution.
-- **Tier 4 — WebGPU compute.** Forward pass becomes a single matmul in a compute shader; whole population × all cells per game per dispatch. Needed only if CPU evaluation can't keep up past tier 2.
+- **Tier 4 — WebGPU compute.** *In progress.* Forward pass and `step` both run as compute shaders; whole population × all games per generation in parallel. See [[../decisions/webgpu-evolution|webgpu-evolution]]. Tiers 1 and 4 are merged here — Tier 4 is what `src/gpu/` shipped first because the browser is the deployment target.
 
 ## Why it fits flux
 
