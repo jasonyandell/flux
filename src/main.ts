@@ -130,6 +130,57 @@ evoFolder.add(tunables, 'parityRun').name('run parity test');
 const parityCtrl = evoFolder.add(tunables, 'parityResult').name('parity').listen().disable();
 void genCtrl; void fitCtrl; void parityCtrl;
 
+const captureFolder = gui.addFolder('capture');
+const captureState = { recording: false };
+captureFolder.add({ snap: snapshotPng }, 'snap').name('snapshot (png)');
+captureFolder.add(captureState, 'recording').name('record (webm)').listen().onChange((v: boolean) => {
+  if (v) startRecording(); else stopRecording();
+});
+
+let mediaRecorder: MediaRecorder | null = null;
+let recordedChunks: Blob[] = [];
+
+function timestamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}
+
+function snapshotPng() {
+  scene.renderer.domElement.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `flux-${timestamp()}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+}
+
+function startRecording() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') return;
+  const stream = scene.renderer.domElement.captureStream(60);
+  recordedChunks = [];
+  const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  const mimeType = types.find(t => MediaRecorder.isTypeSupported(t)) ?? 'video/webm';
+  mediaRecorder = new MediaRecorder(stream, { mimeType });
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `flux-recording-${timestamp()}.webm`;
+    a.click();
+    URL.revokeObjectURL(url);
+    mediaRecorder = null;
+  };
+  mediaRecorder.start();
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+}
+
 function saveChampionFile() {
   const g = getChampion();
   if (!g) { console.warn('no champion yet — evolve a generation first'); return; }
