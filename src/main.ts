@@ -29,7 +29,7 @@ const STASIS_EPSILON = 1.0;
 const tunables = {
   paused: false,
   aiPeriodSec: 0.5,
-  numPlayers: 6,
+  numPlayers: 12,
   reset: () => respawn(),
   evolve: false,
   generation: 0,
@@ -44,14 +44,10 @@ let winner: number | null = null;
 let stasis = false;
 const stasisBuffer: number[][] = [];
 let lastStasisSampleTick = 0;
-let playerAIs: AIName[] = randomAssignment(tunables.numPlayers);
+let playerAIs: AIName[] = allEvolved(tunables.numPlayers);
 
-function randomAssignment(n: number): AIName[] {
-  const out: AIName[] = [];
-  for (let i = 0; i < n; i++) {
-    out.push(AI_NAMES[Math.floor(Math.random() * AI_NAMES.length)]);
-  }
-  return out;
+function allEvolved(n: number): AIName[] {
+  return Array(n).fill('evolved' as AIName);
 }
 
 function respawn() {
@@ -60,8 +56,9 @@ function respawn() {
   stasis = false;
   stasisBuffer.length = 0;
   lastStasisSampleTick = 0;
-  playerAIs = randomAssignment(tunables.numPlayers);
+  playerAIs = allEvolved(tunables.numPlayers);
   hideBanner(gameUI);
+  rebuildSeatControls();
 }
 
 function sampleCounts(s: GameState): number[] {
