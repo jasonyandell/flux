@@ -29,6 +29,10 @@ export type ReplayPlayer = {
   status(): string;
   /** Switch to a different index URL (e.g. greatest-hits.json). Resets cache. */
   setIndexUrl(url: string): void;
+  /** Game ticks per recorded frame (header.tickStride), or 0 if no replay. */
+  tickStride(): number;
+  /** Milliseconds of game time per game tick (header.dtPerTickMs). */
+  dtPerTickMs(): number;
 };
 
 export type ReplayPlayerOpts = {
@@ -163,6 +167,8 @@ export function createReplayPlayer(opts: ReplayPlayerOpts): ReplayPlayer {
       setStatus('stopped');
     },
     status() { return statusMsg; },
+    tickStride() { return replay ? replay.header.tickStride : 0; },
+    dtPerTickMs() { return replay ? replay.header.dtPerTickMs : 0; },
     setIndexUrl(url: string) {
       if (url === indexUrl) return;
       indexUrl = url;

@@ -12,7 +12,10 @@ History lives in [[log|log.md]]. Theory-shaped questions live in [[questions/ope
 
 ## Open — AI / evolution
 
-- **PPO policy commitment.** Training is running but policy entropy still sits at ~2.92 vs log(19)=2.94 (near uniform random) while `explained_variance ≈ 0.74`. The value head is learning; the policy hasn't started concentrating probability mass. Watch `action_entropy` dropping as the leading indicator. If it stays flat for many more iters, candidates to try: larger `--entropy-coef` ramp-down, longer rollouts, reward reshape (right now `mean_total_reward = 21.58` is a structural constant in symmetric self-play).
+- **Regen-flow training run** (`ppo-regen-r5-p3`). Active. Radius=5 / 3 seats / G=8 / max_ticks=3000 / self-play / tick-by-tick replays. Initial iters already show `ev → 0.78` in <10 iters (the smaller board converges fast). Open questions: does policy entropy drop here where it didn't on the bigger board? What strategies emerge under symmetric damage + linear regen scaling?
+- **Overage propagation through caps for regen-flow.** Discussed in the design but not implemented. Capped cells could pass inflow overage through their outflows additively, turning saturated loops into power generators. Current code discards overage at cap. See [[decisions/regen-flow-rules]] § What still needs deciding.
+- **Regen-flow rules in the live browser.** `step_regen.ts` exists but isn't wired into the live sim (browser still uses `step.ts` for human play). Replays render fine without it since they're just frame playback.
+- **PPO policy commitment on transfer-flow.** The radius=9 12-seat run sat at entropy ≈ 2.92 vs log(19)=2.94 (near uniform random) with `explained_variance ≈ 0.74`. Value head was learning; policy hadn't committed. Open question whether that run is worth resuming or the regen-flow path supersedes it. Probably retired by regen-flow's better signal.
 
 - **`mx.compile` on the PPO train step.** Perf subagent measured ~30% in isolation. Not landed yet — current ~5s/iter is acceptable. See [[decisions/ppo-gnn]] § Performance.
 

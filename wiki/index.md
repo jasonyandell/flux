@@ -36,6 +36,7 @@ Decisions:
 - [[decisions/v2-vision|v2-vision]] — 3-hop receptive field experiment (181 input, 36 neighbors). v1 stays intact; v2 trains in parallel.
 - [[decisions/v3-gnn|v3-gnn]] — 2-layer GCN policy on radius-9 boards. NEAT-evolved variant proved weak (credit assignment was the bottleneck, not architecture).
 - [[decisions/ppo-gnn|ppo-gnn]] — PPO + v3's GCN backbone + value head, trained via MLX autograd. Self-play 12-seat FFA, dense per-AI-tick cell-delta reward. Currently the active training path.
+- [[decisions/regen-flow-rules|regen-flow-rules]] — second game ruleset. Outflow has no health cost; sender forfeits regen. Damage is symmetric. Linear regen scaling with strength. Capture is deterministic strength=1. Existing transfer-flow ruleset stays as the default; replays carry `ruleset` tag.
 
 Questions:
 

@@ -6,6 +6,38 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-12 | workspace | regen-flow ruleset shipped as a second game]
+
+**Touched pages:** [[decisions/regen-flow-rules]] [[index]] [[todo]] [[log]]
+
+**Added:**
+- `src/game/step_regen.ts` — TS reference implementation. Same `GameState` / `Flow` shape; new step semantics. Linear regen scaling, sender forfeits regen, symmetric damage, deterministic capture at strength=1.
+- `python/flux/step_regen.py` — Python parity mirror.
+- `python/flux/mlx_step_regen.py` — batched MLX kernel for training. Reuses `build_flows_from_actions` (flow tensor shape unchanged).
+- [[decisions/regen-flow-rules]] — new decision page covering mechanics, strategic consequences, file map, and what still needs deciding (overage propagation through caps, K>1 in training, reward shaping).
+
+**Updated:**
+- `python/scripts/train_ppo.py` — accepts `--ruleset {transfer, regen-flow}`. Dispatches `step_fn` based on the flag; default checkpoint becomes `python/checkpoints/ppo-regen/latest.npz` when the new ruleset is selected. Replays land at `public/replays/train_ppo_regen_*.flxr` and the metadata gains `ruleset: "regen-flow"`. Index entries gain the same field so the browser can distinguish.
+
+**Why:** Across v1/v2/v3/PPO it became clear the transfer-flow model conflates "I'm sending strength" with "I'm losing strength." That made loops self-defeating (every member bleeds) and made symmetric attack/defense ambiguous. Regen-flow separates the two: sending forfeits regen but doesn't drain health, damage is symmetric, and `regen(s)` scales linearly with strength (slope 2.0) so big idle cells fatten faster than they can project. Loops with heterogeneous member strengths pump strength downstream — the "loops gain energy" insight is now actually true.
+
+**Initial numbers** — `ppo-regen-r5-p3` (radius 5, 3 seats, G=8, max_ticks=3000, tick-by-tick replays):
+- Iter time ~3.5s (vs ~5s at radius 9). Smaller board, faster.
+- `mean_total_reward = 29.33` (vs the structural 21.58 on transfer-flow self-play).
+- `explained_variance` climbs `0.20 → 0.78` in 8 iters. The value head converges fast at this scale.
+- `pol_loss` consistently negative (~-0.1) — policy moving in the advantage direction.
+
+**Mechanics worth pinning:**
+- `regen(s) = 0.5 · (1 + 2·(s − 1))` — linear in strength. At s=1, regen=0.5; at s=10, regen=9.5.
+- A sending cell with K outflows: each outflow delivers `regen(s)/K · dt`. K>1 supported by the TS path but never produced by PPO training (one outflow per cell per action).
+- Capture is deterministic strength=1, no inheritance of attacker overage.
+- Overage propagation through caps not yet implemented — currently discarded.
+- Replay binary format unchanged. Only metadata JSON gains the `ruleset` field. Older replays implicitly = `"transfer"`.
+
+**Retired:** none. Transfer-flow stays the live-browser default and the historical replay record.
+
+**Questions opened:** see [[todo]] § Open AI/evolution — overage propagation, browser live-play wiring, retirement of the transfer-flow PPO path.
+
 ## [2026-05-11 | workspace | PPO + GNN trains end-to-end; greatest-hits replay cycle; full wandb instrumentation]
 
 **Touched pages:** [[decisions/ppo-gnn]] [[decisions/replay-rendering]] [[todo]] [[index]] [[log]]

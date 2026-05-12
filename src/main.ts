@@ -483,7 +483,15 @@ function frame(now: number) {
       // when the next replay is expected to drop.
       const savedAtStr = typeof meta.saved_at === 'string' ? meta.saved_at : null;
       const savedAtMs = savedAtStr ? Date.parse(savedAtStr) : NaN;
-      if (tunables.greatestHits) {
+      const stride = replayPlayer.tickStride();
+      const dtPerTickMs = replayPlayer.dtPerTickMs() || 100;
+      if (stride === 1) {
+        // Tick-by-tick replay: target one game tick per browser frame.
+        // frameWallSec = (stride * dtPerTickMs / 1000) / speed = 1/60.
+        // → speed = (dtPerTickMs / 1000) * 60.
+        tunables.replaySpeed = Math.max(1, Math.round((dtPerTickMs / 1000) * 60));
+        replaySpeedCtrl.updateDisplay();
+      } else if (tunables.greatestHits) {
         // Greatest hits: max-DPS cycle. Target ~2s per replay so each one
         // gets a glance before moving on; speed is whatever it takes.
         const decisionTick = typeof meta.decision_tick === 'number'

@@ -34,6 +34,7 @@ from flux.mlx_batch import (  # noqa: E402
     build_flows_from_actions,
     step_batched,
 )
+from flux.mlx_step_regen import step_batched_regen  # noqa: E402
 from flux.ppo import GNNActorCritic  # noqa: E402
 from flux.replay import ReplayHeader, ReplayWriter  # noqa: E402
 from flux.state import Flow, GameNode, GameState  # noqa: E402
@@ -150,6 +151,7 @@ def collect_rollout(
     config: PPOConfig,
     neighbors_np: np.ndarray,
     rng_key: mx.array,
+    step_fn=step_batched,
 ) -> tuple[Rollout, list[GameState], mx.array]:
     """Run G games in parallel for up to config.max_ticks ticks. Returns the
     rollout buffer + a list of frames (for the recorded game = index 0) + the
@@ -185,9 +187,10 @@ def collect_rollout(
     rewards_log: list[np.ndarray] = []
     dones_log: list[np.ndarray] = []
 
-    # For recording a single game's frames (game 0).
+    # For recording a single game's frames (game 0). One game tick per
+    # replay frame so playback can be studied at refresh-rate resolution.
     frames: list[GameState] = []
-    record_stride = 10
+    record_stride = 1
     decision_tick = np.full(G, config.max_ticks, dtype=np.int64)
 
     # Track cells per seat for delta reward.
@@ -250,7 +253,7 @@ def collect_rollout(
             )
 
         # Step.
-        new_owner, new_strength, new_flow_valid = step_batched(
+        new_owner, new_strength, new_flow_valid = step_fn(
             owner, strength, flow_src, flow_dst, flow_player, flow_valid,
             live_mask, P, 0.1,
         )
@@ -258,10 +261,41 @@ def collect_rollout(
         strength = new_strength
         flow_valid = new_flow_valid
 
+        # Per-tick frame recording (game 0). One game tick = one replay frame
+        # so playback can be studied at refresh-rate resolution.
+        if t % record_stride == 0:
+            mx.eval(owner, strength, flow_valid)
+            owner_np_now = np.array(owner, copy=False)
+            owner_g = owner_np_now[0]
+            strength_g = np.array(strength, copy=False)[0]
+            fs0 = np.array(flow_src, copy=False)[0]
+            fd0 = np.array(flow_dst, copy=False)[0]
+            fp0 = np.array(flow_player, copy=False)[0]
+            fv0 = np.array(flow_valid, copy=False)[0]
+            game_flows = tuple(
+                Flow(src=int(fs0[k]), dst=int(fd0[k]), player=int(fp0[k]))
+                for k in range(fv0.shape[0]) if bool(fv0[k])
+            )
+            frames.append(GameState(
+                nodes=tuple(
+                    GameNode(id=n.id, pos=n.pos,
+                             owner=None if int(owner_g[i]) == -1 else int(owner_g[i]),
+                             strength=float(strength_g[i]))
+                    for i, n in enumerate(base.nodes)
+                ),
+                edges=base.edges,
+                flows=game_flows,
+                tick=t,
+                num_players=P,
+            ))
+        else:
+            owner_np_now = None  # only computed on the AI-tick branch below
+
         # AI-tick reward: cells delta per seat (only for live games).
         if t % config.ai_period_ticks == 0:
-            mx.eval(owner, strength)
-            owner_np_now = np.array(owner, copy=False)
+            if owner_np_now is None:
+                mx.eval(owner, strength)
+                owner_np_now = np.array(owner, copy=False)
             live_np = np.array(live_mask, copy=False)
             cells_now = _cells_per_seat(owner_np_now, P)
             delta = (cells_now - prev_cells).astype(np.float32)
@@ -271,34 +305,6 @@ def collect_rollout(
             delta = delta * live_np.reshape(G, 1).astype(np.float32)
             rewards_log.append(delta.copy())
             prev_cells = cells_now
-
-            # Frame recording (game 0).
-            owner_g = owner_np_now[0]
-            strength_g = np.array(strength, copy=False)[0]
-            if t % record_stride == 0:
-                # Pull game-0 flows so the replay renders directional arrows.
-                # flow_src/dst/player don't mutate between AI ticks; flow_valid
-                # is the post-step mask returned by step_batched.
-                fs0 = np.array(flow_src, copy=False)[0]
-                fd0 = np.array(flow_dst, copy=False)[0]
-                fp0 = np.array(flow_player, copy=False)[0]
-                fv0 = np.array(flow_valid, copy=False)[0]
-                game_flows = tuple(
-                    Flow(src=int(fs0[k]), dst=int(fd0[k]), player=int(fp0[k]))
-                    for k in range(fv0.shape[0]) if bool(fv0[k])
-                )
-                frames.append(GameState(
-                    nodes=tuple(
-                        GameNode(id=n.id, pos=n.pos,
-                                 owner=None if int(owner_g[i]) == -1 else int(owner_g[i]),
-                                 strength=float(strength_g[i]))
-                        for i, n in enumerate(base.nodes)
-                    ),
-                    edges=base.edges,
-                    flows=game_flows,
-                    tick=t,
-                    num_players=P,
-                ))
 
             # Win check + live-mask update.
             alive = _alive_per_game(owner_np_now, P)
@@ -565,7 +571,7 @@ def write_replay(path: Path, frames: list[GameState], radius: int, num_players: 
         radius=radius, distance=2,
         num_players=num_players,
         num_nodes=len(frames[0].nodes),
-        tick_stride=10, dt_per_tick_ms=100,
+        tick_stride=1, dt_per_tick_ms=100,
         metadata=metadata,
     )
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -728,13 +734,24 @@ def main() -> None:
     ap.add_argument("--aggressive-seat", type=int, default=0)
     ap.add_argument("--no-cell-delta", action="store_true")
     ap.add_argument("--terminal-win-bonus", type=float, default=50.0)
-    ap.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT_PATH)
+    ap.add_argument("--checkpoint", type=Path, default=None,
+                    help="defaults to checkpoints/ppo/latest.npz for transfer ruleset, "
+                         "checkpoints/ppo-regen/latest.npz for regen-flow")
+    ap.add_argument("--ruleset", choices=("transfer", "regen-flow"), default="transfer",
+                    help="game rules. 'transfer' = original (sender bleeds health). "
+                         "'regen-flow' = new rules (sender forfeits regen, symmetric damage).")
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--wandb-project", default="flux")
     ap.add_argument("--wandb-run-name", default=None)
     ap.add_argument("--seed", type=int, default=int(time.time()) & 0xFFFFFFFF)
     args = ap.parse_args()
+
+    if args.checkpoint is None:
+        sub = "ppo-regen" if args.ruleset == "regen-flow" else "ppo"
+        args.checkpoint = REPO_ROOT / "python" / "checkpoints" / sub / "latest.npz"
+
+    step_fn = step_batched_regen if args.ruleset == "regen-flow" else step_batched
 
     config = PPOConfig(
         radius=args.radius, num_players=args.num_players,
@@ -790,7 +807,9 @@ def main() -> None:
             iteration += 1
 
             t0 = time.time()
-            rollout, frames, rng_key = collect_rollout(model, config, neighbors_np, rng_key)
+            rollout, frames, rng_key = collect_rollout(
+                model, config, neighbors_np, rng_key, step_fn=step_fn,
+            )
             t_rollout = time.time() - t0
 
             t1 = time.time()
@@ -861,11 +880,13 @@ def main() -> None:
             # Replay write (game 0).
             if frames:
                 stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-                name = f"train_ppo_{stamp}_i{iteration:05d}.flxr"
+                tag = "ppo_regen" if args.ruleset == "regen-flow" else "ppo"
+                name = f"train_{tag}_{stamp}_i{iteration:05d}.flxr"
                 replay_path = out_dir / name
                 metadata = {
-                    "kind": "train_ppo",
-                    "model": "ppo",
+                    "kind": f"train_{tag}",
+                    "model": tag,
+                    "ruleset": args.ruleset,
                     "iteration": iteration,
                     "generation": iteration,           # for browser top-bar compatibility
                     "best_fitness": mean_reward,
@@ -876,7 +897,8 @@ def main() -> None:
                         write_replay(p, fr, r, np_, m),
                         append_index(out_dir, {
                             "file": p.name, "saved_at": m["saved_at"],
-                            "kind": "train_ppo", "model": "ppo",
+                            "kind": f"train_{tag}", "model": tag,
+                            "ruleset": args.ruleset,
                             "iteration": iteration,
                             "generation": iteration,
                             "radius": r, "num_players": np_,
