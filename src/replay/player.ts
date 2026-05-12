@@ -128,12 +128,14 @@ export function createReplayPlayer(opts: ReplayPlayerOpts): ReplayPlayer {
       if (frameIdx + 1 < replay.frames.length) {
         frameIdx++;
       } else {
-        // End of replay — try to advance to the next entry in the cached
-        // index (walking back through history). If it's a different file
-        // from current, queue it; otherwise hold on the last frame.
-        const next = pickNextReplay();
-        if (next && next !== replayName) {
-          pendingFile = next;
+        // End of replay — queue the next entry to play. Prefer whatever
+        // pollIndex already queued (typically the newest replay that dropped
+        // mid-game); fall back to walking back through history.
+        if (!pendingFile) {
+          const next = pickNextReplay();
+          if (next && next !== replayName) {
+            pendingFile = next;
+          }
         }
         frameAccSec = 0;
         break;
@@ -153,8 +155,13 @@ export function createReplayPlayer(opts: ReplayPlayerOpts): ReplayPlayer {
       const now = performance.now();
       // Fire-and-forget index polling; never block frame.
       void pollIndex(now);
-      // If we have a pending file and aren't loading, start loading.
-      if (pendingFile && !loading) void loadPending();
+      // Only swap in a pending file when the current replay is finished (or
+      // no replay loaded). Lets us watch full games end-to-end instead of
+      // jumping to the newest drop mid-game.
+      const atEnd = replay !== null && frameIdx + 1 >= replay.frames.length;
+      if (pendingFile && !loading && (replay === null || atEnd)) {
+        void loadPending();
+      }
       advance(dt);
     },
     start() {

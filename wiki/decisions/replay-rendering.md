@@ -54,15 +54,29 @@ No `step()` is called in this mode. The browser is rendering Python's output, no
 
 A curated cycle mode exists alongside the live-newest mode. `python/scripts/build_greatest_hits.py` walks `public/replays/*.flxr`, parses the FLXR header for `num_frames` and `metadata.best_fitness`, filters to positive-fitness games with at least 200 recorded frames, sorts longest-first (fitness as tiebreaker), and writes the top 30 to `public/replays/greatest-hits.json`.
 
-Browser side: a `greatestHits` lil-gui tunable calls `replayPlayer.setIndexUrl()` to swap between `replays/index.json` (live newest-first) and `replays/greatest-hits.json` (curated cycle). In greatest-hits mode the auto-speed targets ~2 seconds per replay for max-DPS phone viewing; the live mode keeps the original "playback ≈ 30% of the drop interval" formula.
+Browser side: a `greatestHits` lil-gui tunable calls `replayPlayer.setIndexUrl()` to swap between `replays/index.json` (live newest-first) and `replays/greatest-hits.json` (curated cycle). In greatest-hits mode the auto-speed targets ~2 seconds per replay for max-DPS phone viewing.
 
 Camera resets to origin on every replay swap so panning from one game doesn't carry into the next.
 
+## Playback cadence
+
+Replays are recorded with a configurable `record_stride` (default 10) — each recorded frame represents `record_stride · 0.1s` of game time. The FLXR header's `tick_stride` stores this.
+
+The browser's auto-speed targets **one recorded frame per browser frame at ~60Hz** regardless of stride. So a `tick_stride=1` (tick-by-tick) replay plays each game tick in one browser frame; a `tick_stride=10` replay plays 10 game ticks per browser frame. Same wall-clock per recorded frame either way — the user picks the visualization resolution by choosing stride at train time. Greatest-hits mode overrides this with its 2s-per-game max-DPS target.
+
+The replay player **plays each game to its last frame before swapping**. If a newer replay drops mid-game, it's queued via `pendingFile` and loaded only at end-of-replay. This lets you watch full games instead of jumping to the newest drop the moment it lands.
+
 ## Flow arrows
 
-Replays render directional arrows for each active flow at the rendering tick. Each flow is drawn as three line segments (shaft + two arrowhead wings) at z=0.3, above the cell layer, with a gradient from 25% brightness at the source-cell side to full brightness at the arrowhead. The arrowhead reads as direction; the gradient reads as motion away from the source.
+Replays render directional arrows for each active flow at the rendering tick. Each flow is drawn as **three line segments per stack** (shaft + two arrowhead wings) at z=0.3 above the cell layer, with a gradient from a dim source-side colour to a brighter tip.
 
-Edge mesh contrast was also bumped (`0x1a1a1a → 0x2a3548`) so the graph topology is visible on a phone screen.
+**Per-flow visual emphasis scales with source-cell strength** (a proxy for outgoing power):
+- **Stacked thickness**: 1–5 perpendicularly-offset copies of each flow (WebGL line widths are uniformly ignored across browsers, so stacking is the practical thickness substitute). Strong flows render as a thick band, weak ones as a single line.
+- **Reach**: weak flows shaft to the midpoint; strong flows push their tips closer to the destination (up to ~80% of the way).
+- **Arrowhead size**: scales 0.7×–1.3× with source strength.
+- **Brightness gradient**: dim at the source-side end, brighter at the tip, with overall brightness rising with strength.
+
+Edge mesh contrast was also bumped (`0x1a1a1a → 0x2a3548`) so the graph topology is visible on a phone screen. Node base radius dropped 20% (`0.45 → 0.36`) to leave more visual room between cells now that flow arrows are emphasized.
 
 ## Scene rebuild on board-size change
 

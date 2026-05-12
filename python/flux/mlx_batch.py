@@ -568,6 +568,7 @@ def build_flows_from_actions(
     actions_all: mx.array,       # (G, S, N) int32 — chosen action per (game, seat, cell)
     owner: mx.array,             # (G, N) int32
     graph_neighbors: mx.array,   # (N * NEIGHBOR_STRIDE,) int32
+    dead_mask: mx.array | None = None,  # (G, N) bool — flows landing on dead cells get invalidated
 ) -> tuple[mx.array, mx.array, mx.array, mx.array]:
     """Build dense (G, N) flow tensors from per-(seat, cell) action choices.
 
@@ -595,6 +596,12 @@ def build_flows_from_actions(
     flow_src = mx.broadcast_to(mx.arange(N).reshape(1, N), (G, N)).astype(mx.int32)
     flow_player = mx.where(owner >= 0, owner, mx.full(owner.shape, -1, dtype=owner.dtype))
     flow_valid = (owner >= 0) & action_in_range & (flow_dst >= 0)
+    if dead_mask is not None:
+        # Drop flows that land on dead cells. Source-side dead is mostly
+        # redundant (dead cells have owner=-1 already) — kept for safety.
+        flow_dst_safe = mx.maximum(flow_dst, 0)
+        dst_is_dead = mx.take_along_axis(dead_mask, flow_dst_safe, axis=1)
+        flow_valid = flow_valid & mx.logical_not(dst_is_dead) & mx.logical_not(dead_mask)
     return (
         flow_src.astype(mx.int32),
         flow_dst.astype(mx.int32),

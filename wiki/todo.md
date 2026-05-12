@@ -12,10 +12,11 @@ History lives in [[log|log.md]]. Theory-shaped questions live in [[questions/ope
 
 ## Open — AI / evolution
 
-- **Regen-flow training run** (`ppo-regen-r5-p3`). Active. Radius=5 / 3 seats / G=8 / max_ticks=3000 / self-play / tick-by-tick replays. Initial iters already show `ev → 0.78` in <10 iters (the smaller board converges fast). Open questions: does policy entropy drop here where it didn't on the bigger board? What strategies emerge under symmetric damage + linear regen scaling?
-- **Overage propagation through caps for regen-flow.** Discussed in the design but not implemented. Capped cells could pass inflow overage through their outflows additively, turning saturated loops into power generators. Current code discards overage at cap. See [[decisions/regen-flow-rules]] § What still needs deciding.
-- **Regen-flow rules in the live browser.** `step_regen.ts` exists but isn't wired into the live sim (browser still uses `step.ts` for human play). Replays render fine without it since they're just frame playback.
-- **PPO policy commitment on transfer-flow.** The radius=9 12-seat run sat at entropy ≈ 2.92 vs log(19)=2.94 (near uniform random) with `explained_variance ≈ 0.74`. Value head was learning; policy hadn't committed. Open question whether that run is worth resuming or the regen-flow path supersedes it. Probably retired by regen-flow's better signal.
+- **Active training run.** `ppo-regen-r5-p3-d1-rand5dead`. r=5 / P=3 / d=1 / G=8 / max_ticks=3000 / 5 random dead cells per game / random seat starts / all dense-shaping coefs active / regen-flow + passthrough. Fresh policy. Goal: a robust policy that doesn't memorize "I'm seat green, do X" but handles arbitrary board configs.
+- **Dead-cell visualization in the browser.** Replay metadata carries `dead_cells: [indices]` for each replay, but `scene.ts` doesn't read it yet — dead cells currently render as strength-0 neutrals (visually identical to capturable neutrals). Easy follow-up: a distinct color + maybe a "blocked" glyph.
+- **Browser live-play wiring for regen-flow.** `step_regen.ts` exists as TS reference but the live sim still calls `step.ts` (transfer rules). Wiring would require parameterizing `main.ts`'s frame loop on ruleset. Not blocking anything; do when needed.
+- **Overage cap softening.** Per-outflow `MAX_OUTPUT_PER_SEC = 100` bottlenecks chains where the upstream side has more potential than 100/sec available to push. Could let overage propagate further (more lossily) before being wasted. See [[decisions/regen-flow-rules]] § What still needs deciding.
+- **PPO policy commitment on transfer-flow.** The radius=9 12-seat run sat at entropy ≈ 2.92 with `explained_variance ≈ 0.74`. Almost certainly superseded by regen-flow's better signal — flag for retirement if the regen-flow run produces a clearly-better policy.
 
 - **`mx.compile` on the PPO train step.** Perf subagent measured ~30% in isolation. Not landed yet — current ~5s/iter is acceptable. See [[decisions/ppo-gnn]] § Performance.
 

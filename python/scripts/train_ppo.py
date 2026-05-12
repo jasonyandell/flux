@@ -34,7 +34,12 @@ from flux.mlx_batch import (  # noqa: E402
     build_flows_from_actions,
     step_batched,
 )
-from flux.mlx_step_regen import step_batched_regen  # noqa: E402
+from flux.mlx_step_regen import (  # noqa: E402
+    MAX_OUTPUT_PER_SEC,
+    REGEN_BASE_PER_SEC,
+    REGEN_SLOPE,
+    step_batched_regen,
+)
 from flux.ppo import GNNActorCritic  # noqa: E402
 from flux.replay import ReplayHeader, ReplayWriter  # noqa: E402
 from flux.state import Flow, GameNode, GameState  # noqa: E402
@@ -64,6 +69,11 @@ class PPOConfig:
     aggressive_seat: int = 0
     cell_delta_reward: bool = True
     terminal_win_bonus: float = 50.0
+    # Dense per-tick shaping. All terms range 0..1 per (game, seat) per AI tick.
+    engagement_coef: float = 0.01    # reward: cells_sending / cells_owned
+    idle_capped_coef: float = 0.02   # penalty: idle cells near cap / cells_owned
+    idle_cap_threshold: float = 90.0
+    output_boost_coef: float = 0.05  # reward: avg output_rate / MAX_OUTPUT_PER_SEC (regen-flow only)
 
 
 def _categorical_sample(logits: mx.array, rng_key: mx.array) -> tuple[mx.array, mx.array]:
@@ -144,6 +154,7 @@ class Rollout:
     dones: np.ndarray         # (T, G) bool — whether the game was already over before this AI tick
     advantages: np.ndarray | None = None  # (T, G, S) float32, computed later
     returns: np.ndarray | None = None     # (T, G, S) float32
+    dead_mask: np.ndarray | None = None   # (G, N) bool — fixed dead cells per game (None = no dead)
 
 
 def collect_rollout(
@@ -152,10 +163,13 @@ def collect_rollout(
     neighbors_np: np.ndarray,
     rng_key: mx.array,
     step_fn=step_batched,
-) -> tuple[Rollout, list[GameState], mx.array]:
+    record_stride: int = 10,
+    num_dead_cells: int = 0,
+    randomize_starts: bool = False,
+) -> tuple[Rollout, list[GameState], mx.array, np.ndarray]:
     """Run G games in parallel for up to config.max_ticks ticks. Returns the
     rollout buffer + a list of frames (for the recorded game = index 0) + the
-    updated rng key."""
+    updated rng key + per-game dead-cell masks (G, N) bool."""
     G = config.games_per_rollout
     N = neighbors_np.shape[0] // 18
     P = config.num_players
@@ -163,12 +177,59 @@ def collect_rollout(
     aggressive_seat = config.aggressive_seat
 
     base = make_initial_state(config.radius, config.distance, P)
-    init_owner = np.array(
-        [-1 if n.owner is None else n.owner for n in base.nodes], dtype=np.int32
+    default_init_strength = np.array(
+        [n.strength for n in base.nodes], dtype=np.float32
     )
-    init_strength = np.array([n.strength for n in base.nodes], dtype=np.float32)
-    owner = mx.array(np.tile(init_owner, (G, 1)))
-    strength = mx.array(np.tile(init_strength, (G, 1)))
+    # Per-game initial state: random seat placements + random dead cells.
+    # Falls back to the deterministic make_initial_state layout when neither
+    # randomization is enabled.
+    init_owner_np = np.full((G, N), -1, dtype=np.int32)
+    init_strength_np = np.tile(default_init_strength, (G, 1)).astype(np.float32)
+    dead_mask_np = np.zeros((G, N), dtype=np.bool_)
+    if num_dead_cells > 0 or randomize_starts:
+        seat_base_strength = 30.0  # match make_initial_state's perimeter seat init
+        for g in range(G):
+            # Choose dead cells first; they're excluded from seat placement.
+            avail = np.arange(N)
+            if num_dead_cells > 0:
+                dead = np.random.choice(N, size=num_dead_cells, replace=False)
+                dead_mask_np[g, dead] = True
+                init_strength_np[g, dead] = 0.0
+                avail = np.setdiff1d(avail, dead, assume_unique=True)
+            if randomize_starts:
+                seats = np.random.choice(avail, size=P, replace=False)
+            else:
+                # Use deterministic perimeter seats but skip any that are dead.
+                deterministic_seats = np.array(
+                    [i for i, n in enumerate(base.nodes) if n.owner is not None],
+                    dtype=np.int64,
+                )
+                # If a deterministic seat is dead, swap in a non-dead replacement.
+                seats = []
+                taken_dead = set(int(d) for d in np.where(dead_mask_np[g])[0])
+                used = set()
+                spare = [i for i in avail.tolist() if i not in used]
+                for s_idx in deterministic_seats.tolist():
+                    if s_idx in taken_dead:
+                        replacement = next(i for i in spare if i not in used and i not in taken_dead)
+                        seats.append(replacement)
+                        used.add(replacement)
+                    else:
+                        seats.append(s_idx)
+                        used.add(s_idx)
+                seats = np.array(seats, dtype=np.int64)
+            for p, cell in enumerate(seats[:P]):
+                init_owner_np[g, int(cell)] = p
+                init_strength_np[g, int(cell)] = seat_base_strength
+    else:
+        # Deterministic seats (matches the original behaviour).
+        init_owner_np[:] = np.array(
+            [-1 if n.owner is None else n.owner for n in base.nodes], dtype=np.int32,
+        )
+
+    owner = mx.array(init_owner_np)
+    strength = mx.array(init_strength_np)
+    dead_mask = mx.array(dead_mask_np)
     neighbors = mx.array(neighbors_np)
     live_mask = mx.array(np.ones(G, dtype=np.bool_))
 
@@ -177,6 +238,9 @@ def collect_rollout(
     flow_dst = mx.zeros((G, N), dtype=mx.int32)
     flow_player = mx.full((G, N), -1, dtype=mx.int32)
     flow_valid = mx.zeros((G, N), dtype=mx.bool_)
+    # Passthrough carry (one-tick-lagged friendly inflow on sending cells).
+    # Only used by the regen-flow ruleset; transfer-flow step ignores it.
+    passthrough = mx.zeros((G, N), dtype=mx.float32)
 
     # Storage.
     owners_log: list[np.ndarray] = []
@@ -187,21 +251,22 @@ def collect_rollout(
     rewards_log: list[np.ndarray] = []
     dones_log: list[np.ndarray] = []
 
-    # For recording a single game's frames (game 0). One game tick per
-    # replay frame so playback can be studied at refresh-rate resolution.
+    # For recording a single game's frames (game 0). Lower record_stride =
+    # finer playback resolution but more Python object allocation per rollout.
     frames: list[GameState] = []
-    record_stride = 1
     decision_tick = np.full(G, config.max_ticks, dtype=np.int64)
 
     # Track cells per seat for delta reward.
-    prev_cells = _cells_per_seat(np.tile(init_owner, (G, 1)), P)  # (G, P)
+    prev_cells = _cells_per_seat(init_owner_np, P)  # (G, P)
 
-    # Initial frame for the recorded game.
+    # Initial frame for the recorded game (game 0).
+    init_owner_g0 = init_owner_np[0]
+    init_strength_g0 = init_strength_np[0]
     frames.append(GameState(
         nodes=tuple(
             GameNode(id=n.id, pos=n.pos,
-                     owner=None if int(init_owner[i]) == -1 else int(init_owner[i]),
-                     strength=float(init_strength[i]))
+                     owner=None if int(init_owner_g0[i]) == -1 else int(init_owner_g0[i]),
+                     strength=float(init_strength_g0[i]))
             for i, n in enumerate(base.nodes)
         ),
         edges=base.edges,
@@ -214,7 +279,7 @@ def collect_rollout(
         # AI tick: forward, sample, override aggressive, log.
         if t % config.ai_period_ticks == 0:
             # Forward (no gradient needed during rollout).
-            logits, value = model(owner, strength, neighbors, P)
+            logits, value = model(owner, strength, neighbors, P, dead_mask)
             # Sample actions per (G, S, N).
             actions, rng_key = _categorical_sample(logits, rng_key)
             # Single sync: pull everything we need into NumPy at once.
@@ -249,14 +314,18 @@ def collect_rollout(
 
             # Build flow tensors from these actions.
             flow_src, flow_dst, flow_player, flow_valid = build_flows_from_actions(
-                actions, owner, neighbors,
+                actions, owner, neighbors, dead_mask,
             )
 
         # Step.
-        new_owner, new_strength, new_flow_valid = step_fn(
+        step_out = step_fn(
             owner, strength, flow_src, flow_dst, flow_player, flow_valid,
-            live_mask, P, 0.1,
+            live_mask, P, 0.1, passthrough,
         )
+        if len(step_out) == 4:
+            new_owner, new_strength, new_flow_valid, passthrough = step_out
+        else:
+            new_owner, new_strength, new_flow_valid = step_out
         owner = new_owner
         strength = new_strength
         flow_valid = new_flow_valid
@@ -264,7 +333,7 @@ def collect_rollout(
         # Per-tick frame recording (game 0). One game tick = one replay frame
         # so playback can be studied at refresh-rate resolution.
         if t % record_stride == 0:
-            mx.eval(owner, strength, flow_valid)
+            mx.eval(owner, strength, flow_valid, passthrough)
             owner_np_now = np.array(owner, copy=False)
             owner_g = owner_np_now[0]
             strength_g = np.array(strength, copy=False)[0]
@@ -293,14 +362,73 @@ def collect_rollout(
 
         # AI-tick reward: cells delta per seat (only for live games).
         if t % config.ai_period_ticks == 0:
+            need_flow_valid = (
+                config.engagement_coef != 0.0
+                or config.idle_capped_coef != 0.0
+                or config.output_boost_coef != 0.0
+            )
+            need_passthrough = config.output_boost_coef != 0.0
             if owner_np_now is None:
-                mx.eval(owner, strength)
+                evals = [owner, strength]
+                if need_flow_valid:
+                    evals.append(flow_valid)
+                if need_passthrough:
+                    evals.append(passthrough)
+                mx.eval(*evals)
                 owner_np_now = np.array(owner, copy=False)
+            elif need_flow_valid or need_passthrough:
+                extras = []
+                if need_flow_valid: extras.append(flow_valid)
+                if need_passthrough: extras.append(passthrough)
+                mx.eval(*extras)
             live_np = np.array(live_mask, copy=False)
             cells_now = _cells_per_seat(owner_np_now, P)
             delta = (cells_now - prev_cells).astype(np.float32)
             if not config.cell_delta_reward:
                 delta[:] = 0.0
+
+            # Dense shaping: reward sending + power output, penalize idle-while-capped.
+            # All terms are normalized fractions of cells_owned, so dead seats
+            # contribute 0 naturally.
+            if (config.engagement_coef != 0.0 or config.idle_capped_coef != 0.0
+                    or config.output_boost_coef != 0.0):
+                strength_np_now = np.array(strength, copy=False)
+                flow_valid_np = np.array(flow_valid, copy=False)
+                cells_owned_safe = np.maximum(cells_now, 1).astype(np.float32)
+                near_cap = strength_np_now >= config.idle_cap_threshold  # (G, N)
+                if config.output_boost_coef != 0.0:
+                    passthrough_np = np.array(passthrough, copy=False)
+                    cell_regen_np = REGEN_BASE_PER_SEC * (1.0 + REGEN_SLOPE * (strength_np_now - 1.0))
+                    output_rate_np = np.minimum(
+                        cell_regen_np + passthrough_np, MAX_OUTPUT_PER_SEC,
+                    )
+                    output_norm_np = output_rate_np / MAX_OUTPUT_PER_SEC  # ∈ [0, 1]
+                else:
+                    output_norm_np = None
+                for s in range(P):
+                    seat_mask_np = owner_np_now == s
+                    if config.engagement_coef != 0.0:
+                        sending = seat_mask_np & flow_valid_np
+                        delta[:, s] += (
+                            config.engagement_coef
+                            * sending.sum(axis=1).astype(np.float32)
+                            / cells_owned_safe[:, s]
+                        )
+                    if config.idle_capped_coef != 0.0:
+                        idle_full = seat_mask_np & (~flow_valid_np) & near_cap
+                        delta[:, s] -= (
+                            config.idle_capped_coef
+                            * idle_full.sum(axis=1).astype(np.float32)
+                            / cells_owned_safe[:, s]
+                        )
+                    if output_norm_np is not None:
+                        sending = seat_mask_np & flow_valid_np
+                        delta[:, s] += (
+                            config.output_boost_coef
+                            * (output_norm_np * sending).sum(axis=1).astype(np.float32)
+                            / cells_owned_safe[:, s]
+                        )
+
             # Zero rewards for already-done games.
             delta = delta * live_np.reshape(G, 1).astype(np.float32)
             rewards_log.append(delta.copy())
@@ -342,13 +470,14 @@ def collect_rollout(
         values=np.stack(values_log, axis=0) if T else np.zeros((0, G, S), dtype=np.float32),
         rewards=np.stack(rewards_log, axis=0) if T else np.zeros((0, G, S), dtype=np.float32),
         dones=np.stack(dones_log, axis=0) if T else np.zeros((0, G), dtype=np.bool_),
+        dead_mask=dead_mask_np.copy() if num_dead_cells > 0 else None,
     )
 
     rollout.advantages, rollout.returns = compute_gae(
         rollout, gamma=config.gamma, lam=config.gae_lambda,
     )
 
-    return rollout, frames, rng_key
+    return rollout, frames, rng_key, dead_mask_np
 
 
 def compute_gae(rollout: Rollout, gamma: float, lam: float) -> tuple[np.ndarray, np.ndarray]:
@@ -402,6 +531,11 @@ def ppo_update(
     flat_adv = rollout.advantages.reshape(n_steps, S)
     flat_ret = rollout.returns.reshape(n_steps, S)
     flat_dones = rollout.dones.reshape(n_steps)
+    # dead_mask is (G, N), constant across T. Tile to match flat_owner shape.
+    if rollout.dead_mask is not None:
+        flat_dead_mask = np.tile(rollout.dead_mask, (T, 1))   # (n_steps, N)
+    else:
+        flat_dead_mask = None
 
     # Mask: skip steps that were already-done (no learning signal).
     learn_mask = ~flat_dones
@@ -432,8 +566,9 @@ def ppo_update(
         adv_mb = mx.array(flat_adv[idx])                   # (B, S)
         ret_mb = mx.array(flat_ret[idx])                   # (B, S)
         seat_mask_mb = seat_mask_mx
+        dead_mb = mx.array(flat_dead_mask[idx]) if flat_dead_mask is not None else None
 
-        logits, value = model(owner_mb, strength_mb, neighbors, P)
+        logits, value = model(owner_mb, strength_mb, neighbors, P, dead_mb)
         log_softmax = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
         new_lp_per_cell = mx.take_along_axis(
             log_softmax, actions_mb[..., None], axis=-1
@@ -563,15 +698,15 @@ def load_checkpoint(model: GNNActorCritic, path: Path) -> int:
     return int(data["__generation__"]) if "__generation__" in data.files else 0
 
 
-def write_replay(path: Path, frames: list[GameState], radius: int, num_players: int,
-                 metadata: dict) -> None:
+def write_replay(path: Path, frames: list[GameState], radius: int, distance: int,
+                 num_players: int, tick_stride: int, metadata: dict) -> None:
     if not frames:
         return
     header = ReplayHeader(
-        radius=radius, distance=2,
+        radius=radius, distance=distance,
         num_players=num_players,
         num_nodes=len(frames[0].nodes),
-        tick_stride=1, dt_per_tick_ms=100,
+        tick_stride=tick_stride, dt_per_tick_ms=100,
         metadata=metadata,
     )
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -717,6 +852,13 @@ def append_index(out_dir: Path, entry: dict, cap: int = 50) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--radius", type=int, default=9)
+    ap.add_argument("--distance", type=int, default=2,
+                    help="graph connectivity. 1 = adjacent hex only (6 neighbors); "
+                         "2 = 2-hop (18 neighbors, the original wide topology).")
+    ap.add_argument("--record-stride", type=int, default=10,
+                    help="record every Nth game tick into the replay (game-0 only). "
+                         "1 = tick-by-tick (largest replays, finest playback). "
+                         "10 = decimated (default, smaller files, snappier playback).")
     ap.add_argument("--num-players", type=int, default=12)
     ap.add_argument("--games-per-rollout", type=int, default=4)
     ap.add_argument("--ai-period-ticks", type=int, default=5)
@@ -734,6 +876,23 @@ def main() -> None:
     ap.add_argument("--aggressive-seat", type=int, default=0)
     ap.add_argument("--no-cell-delta", action="store_true")
     ap.add_argument("--terminal-win-bonus", type=float, default=50.0)
+    ap.add_argument("--engagement-coef", type=float, default=0.01,
+                    help="dense reward per AI tick: (cells_sending / cells_owned) * coef. "
+                         "Set to 0 to disable.")
+    ap.add_argument("--idle-capped-coef", type=float, default=0.02,
+                    help="dense penalty per AI tick: (idle_near_cap_cells / cells_owned) * coef. "
+                         "Set to 0 to disable.")
+    ap.add_argument("--idle-cap-threshold", type=float, default=90.0,
+                    help="strength >= this counts as 'near cap' for the idle-capped penalty.")
+    ap.add_argument("--output-boost-coef", type=float, default=0.05,
+                    help="dense reward per AI tick: avg (output_rate / MAX_OUTPUT_PER_SEC) "
+                         "of sending cells * coef. Regen-flow only — meaningless for transfer.")
+    ap.add_argument("--num-dead-cells", type=int, default=0,
+                    help="dead cells per game (random per game). Dead cells "
+                         "can't be touched — flows to them are dropped.")
+    ap.add_argument("--randomize-starts", action="store_true",
+                    help="random seat placements per game (default: deterministic "
+                         "evenly-spaced perimeter).")
     ap.add_argument("--checkpoint", type=Path, default=None,
                     help="defaults to checkpoints/ppo/latest.npz for transfer ruleset, "
                          "checkpoints/ppo-regen/latest.npz for regen-flow")
@@ -751,10 +910,14 @@ def main() -> None:
         sub = "ppo-regen" if args.ruleset == "regen-flow" else "ppo"
         args.checkpoint = REPO_ROOT / "python" / "checkpoints" / sub / "latest.npz"
 
-    step_fn = step_batched_regen if args.ruleset == "regen-flow" else step_batched
+    def _step_transfer_adapter(o, s, fs, fd, fp, fv, lm, P, dt, _passthrough):
+        return step_batched(o, s, fs, fd, fp, fv, lm, P, dt)
+
+    step_fn = step_batched_regen if args.ruleset == "regen-flow" else _step_transfer_adapter
 
     config = PPOConfig(
-        radius=args.radius, num_players=args.num_players,
+        radius=args.radius, distance=args.distance,
+        num_players=args.num_players,
         games_per_rollout=args.games_per_rollout,
         ai_period_ticks=args.ai_period_ticks,
         max_ticks=args.max_ticks,
@@ -764,9 +927,13 @@ def main() -> None:
         aggressive_seat=args.aggressive_seat,
         cell_delta_reward=not args.no_cell_delta,
         terminal_win_bonus=args.terminal_win_bonus,
+        engagement_coef=args.engagement_coef,
+        idle_capped_coef=args.idle_capped_coef,
+        idle_cap_threshold=args.idle_cap_threshold,
+        output_boost_coef=args.output_boost_coef,
     )
 
-    base = make_initial_state(args.radius, 2, args.num_players)
+    base = make_initial_state(args.radius, args.distance, args.num_players)
     neighbors_np = build_neighbor_table(base)
     neighbors = mx.array(neighbors_np)
 
@@ -807,8 +974,11 @@ def main() -> None:
             iteration += 1
 
             t0 = time.time()
-            rollout, frames, rng_key = collect_rollout(
+            rollout, frames, rng_key, dead_mask_np = collect_rollout(
                 model, config, neighbors_np, rng_key, step_fn=step_fn,
+                record_stride=args.record_stride,
+                num_dead_cells=args.num_dead_cells,
+                randomize_starts=args.randomize_starts,
             )
             t_rollout = time.time() - t0
 
@@ -883,6 +1053,12 @@ def main() -> None:
                 tag = "ppo_regen" if args.ruleset == "regen-flow" else "ppo"
                 name = f"train_{tag}_{stamp}_i{iteration:05d}.flxr"
                 replay_path = out_dir / name
+                # Game 0's dead cells, recorded so the browser can render them
+                # distinctly. Stored as a list of cell indices.
+                dead_cells_game0 = (
+                    [int(i) for i in np.where(dead_mask_np[0])[0]]
+                    if args.num_dead_cells > 0 else []
+                )
                 metadata = {
                     "kind": f"train_{tag}",
                     "model": tag,
@@ -891,20 +1067,22 @@ def main() -> None:
                     "generation": iteration,           # for browser top-bar compatibility
                     "best_fitness": mean_reward,
                     "saved_at": datetime.now(timezone.utc).isoformat(),
+                    "dead_cells": dead_cells_game0,
                 }
                 write_executor.submit(
-                    lambda p, fr, r, np_, m: (
-                        write_replay(p, fr, r, np_, m),
+                    lambda p, fr, r, d, np_, ts, m: (
+                        write_replay(p, fr, r, d, np_, ts, m),
                         append_index(out_dir, {
                             "file": p.name, "saved_at": m["saved_at"],
                             "kind": f"train_{tag}", "model": tag,
                             "ruleset": args.ruleset,
                             "iteration": iteration,
                             "generation": iteration,
-                            "radius": r, "num_players": np_,
+                            "radius": r, "distance": d, "num_players": np_,
                         }),
                     ),
-                    replay_path, frames, args.radius, args.num_players, metadata,
+                    replay_path, frames, args.radius, args.distance, args.num_players,
+                    args.record_stride, metadata,
                 )
 
             if iteration % 5 == 0:

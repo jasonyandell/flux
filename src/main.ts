@@ -485,11 +485,14 @@ function frame(now: number) {
       const savedAtMs = savedAtStr ? Date.parse(savedAtStr) : NaN;
       const stride = replayPlayer.tickStride();
       const dtPerTickMs = replayPlayer.dtPerTickMs() || 100;
-      if (stride === 1) {
-        // Tick-by-tick replay: target one game tick per browser frame.
-        // frameWallSec = (stride * dtPerTickMs / 1000) / speed = 1/60.
-        // → speed = (dtPerTickMs / 1000) * 60.
-        tunables.replaySpeed = Math.max(1, Math.round((dtPerTickMs / 1000) * 60));
+      if (stride >= 1 && !tunables.greatestHits) {
+        // Refresh-rate playback: one recorded frame per browser frame at
+        // ~60Hz. Works for any tick_stride — stride=1 (tick-by-tick) plays
+        // each game tick in one browser frame; stride=10 plays 10 game
+        // ticks per browser frame; etc.
+        //   frameWallSec = (stride · dtPerTickMs / 1000) / speed = 1/60
+        //   → speed = stride · (dtPerTickMs / 1000) · 60
+        tunables.replaySpeed = Math.max(1, Math.round(stride * (dtPerTickMs / 1000) * 60));
         replaySpeedCtrl.updateDisplay();
       } else if (tunables.greatestHits) {
         // Greatest hits: max-DPS cycle. Target ~2s per replay so each one

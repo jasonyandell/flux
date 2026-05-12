@@ -8,7 +8,7 @@ export const COLORS = [
   0x88e24a, 0xe2e24a, 0x4a88e2, 0xa4e24a,
 ];
 const NEUTRAL = new THREE.Color(0x666666);
-const NODE_BASE_RADIUS = 0.45;
+const NODE_BASE_RADIUS = 0.36;
 const VIEW_PADDING = 1.05;
 
 export type Scene = {
@@ -238,46 +238,78 @@ export function updateScene(s: Scene, state: GameState, selected: number | null)
 
   // Each flow renders as 3 line segments (shaft + 2 arrowhead wings) so the
   // direction reads at a glance against the underlying edge mesh.
+  // WebGL line widths are ignored across all browsers (always 1px), so we
+  // fake thickness by stacking 1–5 perpendicularly-offset copies of each
+  // flow — strong flows render as a thick band, weak ones stay as a thin
+  // single line. Brightness + reach + arrowhead size also scale with power.
   const nFlows = state.flows.length;
   const VERTS_PER_FLOW = 6;
-  const positions = new Float32Array(nFlows * VERTS_PER_FLOW * 3);
-  const colors = new Float32Array(nFlows * VERTS_PER_FLOW * 3);
-  const SOURCE_BRIGHTNESS = 0.25;
-  const SHAFT_INSET = 0.5;    // start shaft outside the source cell
-  const HEAD_LEN = 0.2;       // arrowhead length along shaft
-  const HEAD_HALF = 0.12;     // arrowhead half-width perpendicular to shaft
-  const Z = 0.3;              // above nodes (z=0.1) so flows aren't occluded
+  const MAX_STACK = 5;
+  const STACK_OFFSET = 0.04;           // perpendicular spacing between stacked lines
+  const positions = new Float32Array(nFlows * MAX_STACK * VERTS_PER_FLOW * 3);
+  const colors = new Float32Array(nFlows * MAX_STACK * VERTS_PER_FLOW * 3);
+  const SOURCE_BRIGHTNESS_MIN = 0.05;
+  const SOURCE_BRIGHTNESS_MAX = 0.4;
+  const HEAD_LEN_BASE = 0.16;
+  const HEAD_HALF_BASE = 0.10;
+  const SHAFT_INSET = 0.45;
+  const Z = 0.3;
   for (let i = 0; i < nFlows; i++) {
     const flow = state.flows[i];
-    const a = state.nodes[flow.src].pos, b = state.nodes[flow.dst].pos;
+    const aNode = state.nodes[flow.src];
+    const a = aNode.pos, b = state.nodes[flow.dst].pos;
     const dx = b.x - a.x, dy = b.y - a.y;
     const len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len;
     const px = -uy, py = ux;  // perpendicular unit
+    const pow = Math.max(0, Math.min(1, aNode.strength / MAX_STRENGTH));
+    const shaftEndT = 0.5 + 0.3 * pow;
     const sx = a.x + ux * SHAFT_INSET, sy = a.y + uy * SHAFT_INSET;
-    const tx = a.x + dx * 0.5, ty = a.y + dy * 0.5;  // tip at midpoint
-    const backX = tx - ux * HEAD_LEN, backY = ty - uy * HEAD_LEN;
-    const lx = backX + px * HEAD_HALF, ly = backY + py * HEAD_HALF;
-    const rx = backX - px * HEAD_HALF, ry = backY - py * HEAD_HALF;
+    const tx = a.x + dx * shaftEndT, ty = a.y + dy * shaftEndT;
+    const headLen = HEAD_LEN_BASE * (0.7 + 0.6 * pow);
+    const headHalf = HEAD_HALF_BASE * (0.7 + 0.6 * pow);
+    const backX = tx - ux * headLen, backY = ty - uy * headLen;
+    const lx = backX + px * headHalf, ly = backY + py * headHalf;
+    const rx = backX - px * headHalf, ry = backY - py * headHalf;
     tmpColor.copy(ownerColors[flow.player % ownerColors.length]);
-    const off = i * VERTS_PER_FLOW * 3;
-    // Shaft: dim at source → bright at tip.
-    positions[off + 0]  = sx; positions[off + 1]  = sy; positions[off + 2]  = Z;
-    positions[off + 3]  = tx; positions[off + 4]  = ty; positions[off + 5]  = Z;
-    // Wing A: tip → left-back.
-    positions[off + 6]  = tx; positions[off + 7]  = ty; positions[off + 8]  = Z;
-    positions[off + 9]  = lx; positions[off + 10] = ly; positions[off + 11] = Z;
-    // Wing B: tip → right-back.
-    positions[off + 12] = tx; positions[off + 13] = ty; positions[off + 14] = Z;
-    positions[off + 15] = rx; positions[off + 16] = ry; positions[off + 17] = Z;
-    // Colors: shaft has gradient, both wing segments are full-bright.
-    colors[off + 0]  = tmpColor.r * SOURCE_BRIGHTNESS;
-    colors[off + 1]  = tmpColor.g * SOURCE_BRIGHTNESS;
-    colors[off + 2]  = tmpColor.b * SOURCE_BRIGHTNESS;
-    for (let k = 1; k < VERTS_PER_FLOW; k++) {
-      colors[off + k * 3 + 0] = tmpColor.r;
-      colors[off + k * 3 + 1] = tmpColor.g;
-      colors[off + k * 3 + 2] = tmpColor.b;
+    const tipBrightness = 0.55 + 0.45 * pow;
+    const sourceBrightness = SOURCE_BRIGHTNESS_MIN + (SOURCE_BRIGHTNESS_MAX - SOURCE_BRIGHTNESS_MIN) * pow;
+    // Power → stack count: 1 line at pow=0, up to 5 at pow=1.
+    const stackCount = Math.max(1, Math.min(MAX_STACK, Math.round(1 + (MAX_STACK - 1) * pow)));
+    const stackBase = i * MAX_STACK * VERTS_PER_FLOW * 3;
+    for (let k = 0; k < MAX_STACK; k++) {
+      const koff = stackBase + k * VERTS_PER_FLOW * 3;
+      if (k < stackCount) {
+        // Center the stack on the shaft: idx ∈ [-(n-1)/2, (n-1)/2].
+        const idx = k - (stackCount - 1) / 2;
+        const ox = px * idx * STACK_OFFSET;
+        const oy = py * idx * STACK_OFFSET;
+        positions[koff + 0]  = sx + ox; positions[koff + 1]  = sy + oy; positions[koff + 2]  = Z;
+        positions[koff + 3]  = tx + ox; positions[koff + 4]  = ty + oy; positions[koff + 5]  = Z;
+        positions[koff + 6]  = tx + ox; positions[koff + 7]  = ty + oy; positions[koff + 8]  = Z;
+        positions[koff + 9]  = lx + ox; positions[koff + 10] = ly + oy; positions[koff + 11] = Z;
+        positions[koff + 12] = tx + ox; positions[koff + 13] = ty + oy; positions[koff + 14] = Z;
+        positions[koff + 15] = rx + ox; positions[koff + 16] = ry + oy; positions[koff + 17] = Z;
+        colors[koff + 0]  = tmpColor.r * sourceBrightness;
+        colors[koff + 1]  = tmpColor.g * sourceBrightness;
+        colors[koff + 2]  = tmpColor.b * sourceBrightness;
+        for (let v = 1; v < VERTS_PER_FLOW; v++) {
+          colors[koff + v * 3 + 0] = tmpColor.r * tipBrightness;
+          colors[koff + v * 3 + 1] = tmpColor.g * tipBrightness;
+          colors[koff + v * 3 + 2] = tmpColor.b * tipBrightness;
+        }
+      } else {
+        // Degenerate stack — collapse to a zero-length point at the tip so
+        // nothing visible renders. Colors zeroed for safety.
+        for (let v = 0; v < VERTS_PER_FLOW; v++) {
+          positions[koff + v * 3 + 0] = tx;
+          positions[koff + v * 3 + 1] = ty;
+          positions[koff + v * 3 + 2] = Z;
+          colors[koff + v * 3 + 0] = 0;
+          colors[koff + v * 3 + 1] = 0;
+          colors[koff + v * 3 + 2] = 0;
+        }
+      }
     }
   }
   s.flowLines.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));

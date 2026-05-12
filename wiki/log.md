@@ -6,6 +6,59 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-12 | workspace | regen-flow gets passthrough + dense shaping + board randomization]
+
+**Touched pages:** [[decisions/regen-flow-rules]] [[decisions/replay-rendering]] [[todo]] [[log]]
+
+The regen-flow ruleset evolved substantially during a live design + training session. Major adds:
+
+**Passthrough (1-tick-lagged friendly inflow → output):**
+- A sending cell's *output_capacity* = `regen(s) + passthrough_carry`, where `passthrough_carry` is the friendly support received the *previous* tick (only while the cell was sending; idle cells bank support directly).
+- Capped at `MAX_OUTPUT_PER_SEC = 100` per outflow as an insta-kill ceiling.
+- Captured cells reset passthrough to 0.
+- Implementation: extra `(G, N)` array threaded through `step_batched_regen`. Step now returns 4-tuple. `train_ppo.collect_rollout` uses an adapter so the transfer-flow step keeps its 3-tuple signature.
+- Effect: loops become self-amplifying. A chain of sending friendlies pumps strength forward; visualizable as **bright pulses traveling along the chain** (at low playback speeds).
+
+**Dense reward shaping** layered on top of `cell_delta_reward`:
+- `engagement_coef = 0.01 × (cells_sending / cells_owned)` — push idle cells off the bench.
+- `idle_capped_coef = 0.02 × (idle_near_cap / cells_owned)` — penalize the specific waste of sitting capped while not projecting.
+- `output_boost_coef = 0.05 × avg(output_rate / MAX_OUTPUT_PER_SEC of sending cells)` — directly reward "configurations where my output is high", which is exactly what passthrough amplifies. This closes the loop-formation credit-assignment gap that pure cell-delta couldn't.
+- Empirically: `mean_total_R` 31 → 44 in 300 iters at r=5/P=3/d=1 with all four terms vs 27 → 27 stuck under cell-delta-only. Entropy commits ~30% faster.
+
+**Distance=1 graph connectivity** as a CLI flag (`--distance 1`, default still 2). Each hex connects only to its 6 immediate neighbors instead of 18. Replay header carries it so the browser rebuilds the same sparse mesh. The GNN still emits 19 action logits per cell; the 12 vestigial slots produce `-1 = no neighbor` and are auto-invalidated. Way cleaner visual, much faster updates.
+
+**Configurable record_stride** (`--record-stride`, default 10). Each replay frame represents N game ticks. Lower = finer playback resolution but more Python object allocation per rollout. Header `tick_stride` matches. The browser auto-speed now adapts to any stride — one recorded frame per browser frame at 60Hz, so `stride=1` is tick-by-tick playback and `stride=10` is a snappier 10× compression.
+
+**Board randomization** for robustness:
+- `--num-dead-cells N` marks N random cells as **dead** per game (independent per game in the rollout). Dead cells are untouchable obstacles — flows targeting them are dropped at build time. Replay metadata carries the game-0 dead set in `metadata.dead_cells`.
+- `--randomize-starts` puts the P seats at random distinct non-dead cells per game instead of evenly-spaced perimeter.
+- GNN input dimension extended **4 → 5 channels**: added `is_dead` so the policy can distinguish "untouchable obstacle" from "capturable empty cell." Breaks checkpoint compatibility with the old 4-channel net — fresh start.
+
+**Render polish:**
+- Flow arrows scale visual emphasis by source-cell strength: 1–5 perpendicularly-offset stacked lines (WebGL ignores `linewidth` so stacking is the actual thickness mechanism), shaft reach 50–80% toward dst, arrowhead size 0.7–1.3×, brightness gradient with strength.
+- Node base radius dropped 20% (`0.45 → 0.36`) for more visual breathing room.
+- Edge contrast bumped (`0x1a1a1a → 0x2a3548`) for phone-screen visibility.
+
+**Player change:** plays current replay to the last frame before swapping. Newer replays are queued via `pendingFile` and loaded at end-of-replay. Lets you watch full games end-to-end.
+
+**Files touched (uncommitted before this entry):**
+- `python/flux/ppo.py` — `IN_DIM 4→5`, `build_features` takes optional `dead_mask`, `forward` accepts `dead_mask`.
+- `python/flux/mlx_step_regen.py` — passthrough threading + `MAX_OUTPUT_PER_SEC` cap.
+- `python/flux/mlx_batch.py` — `build_flows_from_actions` accepts `dead_mask` and drops flows landing on or originating from dead cells.
+- `python/scripts/train_ppo.py` — `--distance`, `--record-stride`, `--engagement-coef`, `--idle-capped-coef`, `--output-boost-coef`, `--num-dead-cells`, `--randomize-starts` flags. `collect_rollout` returns `(rollout, frames, rng_key, dead_mask_np)`. `Rollout` dataclass gains `dead_mask: (G, N)`. PPO update tiles dead_mask across T for minibatch slicing.
+- `src/render/scene.ts` — stacked-line flow rendering, smaller node radius.
+- `src/replay/player.ts` — full-game playback, `setIndexUrl`, `tickStride()/dtPerTickMs()` accessors.
+- `src/main.ts` — generalized auto-speed for any tick_stride.
+
+**Active training run** at end of session: `ppo-regen-r5-p3-d1-rand5dead` (r=5, P=3, d=1, G=8, max_ticks=3000, 5 dead cells per game, random starts, all dense-shaping terms active, regen-flow + passthrough). Fresh policy.
+
+**Retired:** none. Transfer-flow ruleset still works under `--ruleset transfer`.
+
+**Questions opened / still open** (see [[todo]]):
+- Dead-cell visualization in the browser (data is in metadata; renderer isn't reading it).
+- True overage cap beyond `MAX_OUTPUT_PER_SEC` per outflow.
+- Browser live-play wiring for regen-flow.
+
 ## [2026-05-12 | workspace | regen-flow ruleset shipped as a second game]
 
 **Touched pages:** [[decisions/regen-flow-rules]] [[index]] [[todo]] [[log]]

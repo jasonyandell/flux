@@ -19,7 +19,7 @@ import mlx.nn as nn
 from .state import MAX_STRENGTH
 
 NEIGHBOR_STRIDE = 18              # matches mlx_genome.NEIGHBOR_STRIDE
-IN_DIM = 4
+IN_DIM = 5                       # strength, is_mine, is_enemy, is_neutral, is_dead
 HIDDEN = 32
 POLICY_OUT = 19
 VALUE_HIDDEN = 16
@@ -53,22 +53,39 @@ def build_features(
     owner: mx.array,        # (G, N) int32
     strength: mx.array,     # (G, N) float32
     num_players: int,
+    dead_mask: mx.array | None = None,  # (G, N) bool, optional
 ) -> mx.array:
-    """Returns (G, S, N, 4) per-(seat, cell) features."""
+    """Returns (G, S, N, 5) per-(seat, cell) features.
+
+    Channels: strength_norm, is_mine, is_enemy, is_neutral, is_dead.
+    Dead cells are presented as is_neutral=0, is_dead=1 so the policy can
+    distinguish "untouchable obstacle" from "capturable empty cell."
+    """
     G, N = owner.shape
     S = num_players
     out_shape = (G, S, N)
     seat_idx = mx.arange(S).reshape(1, S, 1)
     owner_b = owner.reshape(G, 1, N)
-    is_mine = mx.broadcast_to((owner_b == seat_idx).astype(mx.float32), out_shape)
-    is_neutral = mx.broadcast_to((owner_b == -1).astype(mx.float32), out_shape)
-    is_enemy = mx.broadcast_to(
-        ((owner_b != seat_idx) & (owner_b != -1)).astype(mx.float32), out_shape
+    if dead_mask is None:
+        is_dead_2d = mx.zeros((G, N), dtype=mx.bool_)
+    else:
+        is_dead_2d = dead_mask
+    is_dead_b = is_dead_2d.reshape(G, 1, N)
+    not_dead_b = mx.logical_not(is_dead_b)
+    is_mine = mx.broadcast_to(
+        ((owner_b == seat_idx) & not_dead_b).astype(mx.float32), out_shape
     )
+    is_neutral = mx.broadcast_to(
+        ((owner_b == -1) & not_dead_b).astype(mx.float32), out_shape
+    )
+    is_enemy = mx.broadcast_to(
+        ((owner_b != seat_idx) & (owner_b != -1) & not_dead_b).astype(mx.float32), out_shape
+    )
+    is_dead = mx.broadcast_to(is_dead_b.astype(mx.float32), out_shape)
     strength_norm = mx.broadcast_to(
         (strength / MAX_STRENGTH).reshape(G, 1, N).astype(mx.float32), out_shape
     )
-    return mx.stack([strength_norm, is_mine, is_enemy, is_neutral], axis=-1)
+    return mx.stack([strength_norm, is_mine, is_enemy, is_neutral, is_dead], axis=-1)
 
 
 class GNNActorCritic(nn.Module):
@@ -94,12 +111,13 @@ class GNNActorCritic(nn.Module):
         strength: mx.array,        # (G, N) float32
         graph_neighbors: mx.array, # (N * STRIDE,) int32
         num_players: int,
+        dead_mask: mx.array | None = None,  # (G, N) bool
     ) -> tuple[mx.array, mx.array]:
         """Returns (policy_logits, value):
             policy_logits: (G, S, N, 19)
             value: (G, S) — V(state, seat), mean-pooled over seat-owned cells.
         """
-        H0 = build_features(owner, strength, num_players)                      # (G, S, N, 4)
+        H0 = build_features(owner, strength, num_players, dead_mask)            # (G, S, N, 5)
         H0_agg = _aggregate_neighbors(H0, graph_neighbors)
         H1 = mx.maximum(self.w1_self(H0) + self.w1_neigh(H0_agg), 0)           # (G, S, N, H)
         H1_agg = _aggregate_neighbors(H1, graph_neighbors)
