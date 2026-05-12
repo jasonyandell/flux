@@ -16,6 +16,7 @@ export type Scene = {
   scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
   nodeInstanced: THREE.InstancedMesh;
+  edgeLines: THREE.LineSegments;
   selectedHighlight: THREE.Mesh;
   flowLines: THREE.LineSegments;
   dragLine: THREE.Line;
@@ -70,7 +71,8 @@ export function createScene(canvas: HTMLCanvasElement, state: GameState): Scene 
   }
   const edgeGeom = new THREE.BufferGeometry();
   edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePoints, 3));
-  scene.add(new THREE.LineSegments(edgeGeom, new THREE.LineBasicMaterial({ color: 0x1a1a1a })));
+  const edgeLines = new THREE.LineSegments(edgeGeom, new THREE.LineBasicMaterial({ color: 0x2a3548 }));
+  scene.add(edgeLines);
 
   const nodeGeom = new THREE.CircleGeometry(NODE_BASE_RADIUS, 12);
   const nodeMat = new THREE.MeshBasicMaterial({ vertexColors: false });
@@ -119,7 +121,7 @@ export function createScene(canvas: HTMLCanvasElement, state: GameState): Scene 
 
   return {
     renderer, scene, camera,
-    nodeInstanced, selectedHighlight,
+    nodeInstanced, edgeLines, selectedHighlight,
     flowLines, dragLine,
     domElement: canvas,
     viewSize,
@@ -128,6 +130,82 @@ export function createScene(canvas: HTMLCanvasElement, state: GameState): Scene 
     worldHalfWidth,
     worldHalfHeight,
   };
+}
+
+/** Swap out the geometry (instanced mesh + edge lines + camera bounds) to
+ *  match a new state with a different shape (e.g. replay loaded with a
+ *  different board radius). Disposes old geometry to avoid GPU leaks. */
+export function rebuildSceneGeometry(s: Scene, state: GameState): void {
+  // Remove + dispose the old node mesh and edge lines. Also dispose the
+  // per-instance attribute buffers so GPU memory doesn't leak across boards.
+  s.scene.remove(s.nodeInstanced);
+  s.nodeInstanced.dispose();
+  s.nodeInstanced.geometry.dispose();
+  (s.nodeInstanced.material as THREE.Material).dispose();
+
+  s.scene.remove(s.edgeLines);
+  s.edgeLines.geometry.dispose();
+  (s.edgeLines.material as THREE.Material).dispose();
+
+  // Recompute camera bounds from the new state.
+  let xMax = 1, yMax = 1;
+  for (const n of state.nodes) {
+    if (Math.abs(n.pos.x) > xMax) xMax = Math.abs(n.pos.x);
+    if (Math.abs(n.pos.y) > yMax) yMax = Math.abs(n.pos.y);
+  }
+  s.worldHalfWidth = xMax;
+  s.worldHalfHeight = yMax;
+  s.viewSize = Math.max(xMax, yMax) * VIEW_PADDING;
+  const w = s.renderer.domElement.clientWidth || window.innerWidth;
+  const h = s.renderer.domElement.clientHeight || window.innerHeight;
+  const aspect = w / h;
+  s.camera.left = -aspect * s.viewSize;
+  s.camera.right = aspect * s.viewSize;
+  s.camera.top = s.viewSize;
+  s.camera.bottom = -s.viewSize;
+  s.camera.position.set(0, 0, 10);
+  s.camera.updateProjectionMatrix();
+
+  // Rebuild edges.
+  const edgePoints: number[] = [];
+  for (const e of state.edges) {
+    const a = state.nodes[e.a].pos, b = state.nodes[e.b].pos;
+    edgePoints.push(a.x, a.y, 0, b.x, b.y, 0);
+  }
+  const edgeGeom = new THREE.BufferGeometry();
+  edgeGeom.setAttribute('position', new THREE.Float32BufferAttribute(edgePoints, 3));
+  s.edgeLines = new THREE.LineSegments(
+    edgeGeom, new THREE.LineBasicMaterial({ color: 0x2a3548 }),
+  );
+  s.scene.add(s.edgeLines);
+
+  // Rebuild node InstancedMesh at the new count.
+  const nodeGeom = new THREE.CircleGeometry(NODE_BASE_RADIUS, 12);
+  const nodeMat = new THREE.MeshBasicMaterial({ vertexColors: false });
+  const nodeInstanced = new THREE.InstancedMesh(nodeGeom, nodeMat, state.nodes.length);
+  nodeInstanced.instanceColor = new THREE.InstancedBufferAttribute(
+    new Float32Array(state.nodes.length * 3), 3,
+  );
+  for (let i = 0; i < state.nodes.length; i++) {
+    const n = state.nodes[i];
+    tmpPos.set(n.pos.x, n.pos.y, 0.1);
+    tmpScale.setScalar(1);
+    tmpMatrix.compose(tmpPos, tmpQuat, tmpScale);
+    nodeInstanced.setMatrixAt(i, tmpMatrix);
+    nodeInstanced.setColorAt(i, NEUTRAL);
+  }
+  nodeInstanced.instanceMatrix.needsUpdate = true;
+  if (nodeInstanced.instanceColor) nodeInstanced.instanceColor.needsUpdate = true;
+  s.scene.add(nodeInstanced);
+  s.nodeInstanced = nodeInstanced;
+  s.nodeCount = state.nodes.length;
+
+  // Refresh cached node positions.
+  s.nodePositions = new Float32Array(state.nodes.length * 2);
+  for (let i = 0; i < state.nodes.length; i++) {
+    s.nodePositions[i * 2 + 0] = state.nodes[i].pos.x;
+    s.nodePositions[i * 2 + 1] = state.nodes[i].pos.y;
+  }
 }
 
 export function updateScene(s: Scene, state: GameState, selected: number | null): void {
@@ -158,21 +236,48 @@ export function updateScene(s: Scene, state: GameState, selected: number | null)
     s.selectedHighlight.visible = false;
   }
 
+  // Each flow renders as 3 line segments (shaft + 2 arrowhead wings) so the
+  // direction reads at a glance against the underlying edge mesh.
   const nFlows = state.flows.length;
-  const positions = new Float32Array(nFlows * 6);
-  const colors = new Float32Array(nFlows * 6);
+  const VERTS_PER_FLOW = 6;
+  const positions = new Float32Array(nFlows * VERTS_PER_FLOW * 3);
+  const colors = new Float32Array(nFlows * VERTS_PER_FLOW * 3);
+  const SOURCE_BRIGHTNESS = 0.25;
+  const SHAFT_INSET = 0.5;    // start shaft outside the source cell
+  const HEAD_LEN = 0.2;       // arrowhead length along shaft
+  const HEAD_HALF = 0.12;     // arrowhead half-width perpendicular to shaft
+  const Z = 0.3;              // above nodes (z=0.1) so flows aren't occluded
   for (let i = 0; i < nFlows; i++) {
     const flow = state.flows[i];
     const a = state.nodes[flow.src].pos, b = state.nodes[flow.dst].pos;
-    const mx = a.x + (b.x - a.x) * 0.5;
-    const my = a.y + (b.y - a.y) * 0.5;
-    positions[i * 6 + 0] = a.x; positions[i * 6 + 1] = a.y; positions[i * 6 + 2] = 0.05;
-    positions[i * 6 + 3] = mx;  positions[i * 6 + 4] = my;  positions[i * 6 + 5] = 0.05;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const px = -uy, py = ux;  // perpendicular unit
+    const sx = a.x + ux * SHAFT_INSET, sy = a.y + uy * SHAFT_INSET;
+    const tx = a.x + dx * 0.5, ty = a.y + dy * 0.5;  // tip at midpoint
+    const backX = tx - ux * HEAD_LEN, backY = ty - uy * HEAD_LEN;
+    const lx = backX + px * HEAD_HALF, ly = backY + py * HEAD_HALF;
+    const rx = backX - px * HEAD_HALF, ry = backY - py * HEAD_HALF;
     tmpColor.copy(ownerColors[flow.player % ownerColors.length]);
-    for (let k = 0; k < 2; k++) {
-      colors[i * 6 + k * 3 + 0] = tmpColor.r;
-      colors[i * 6 + k * 3 + 1] = tmpColor.g;
-      colors[i * 6 + k * 3 + 2] = tmpColor.b;
+    const off = i * VERTS_PER_FLOW * 3;
+    // Shaft: dim at source → bright at tip.
+    positions[off + 0]  = sx; positions[off + 1]  = sy; positions[off + 2]  = Z;
+    positions[off + 3]  = tx; positions[off + 4]  = ty; positions[off + 5]  = Z;
+    // Wing A: tip → left-back.
+    positions[off + 6]  = tx; positions[off + 7]  = ty; positions[off + 8]  = Z;
+    positions[off + 9]  = lx; positions[off + 10] = ly; positions[off + 11] = Z;
+    // Wing B: tip → right-back.
+    positions[off + 12] = tx; positions[off + 13] = ty; positions[off + 14] = Z;
+    positions[off + 15] = rx; positions[off + 16] = ry; positions[off + 17] = Z;
+    // Colors: shaft has gradient, both wing segments are full-bright.
+    colors[off + 0]  = tmpColor.r * SOURCE_BRIGHTNESS;
+    colors[off + 1]  = tmpColor.g * SOURCE_BRIGHTNESS;
+    colors[off + 2]  = tmpColor.b * SOURCE_BRIGHTNESS;
+    for (let k = 1; k < VERTS_PER_FLOW; k++) {
+      colors[off + k * 3 + 0] = tmpColor.r;
+      colors[off + k * 3 + 1] = tmpColor.g;
+      colors[off + k * 3 + 2] = tmpColor.b;
     }
   }
   s.flowLines.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));

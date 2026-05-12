@@ -5,13 +5,14 @@ import type { GameState } from './game/state';
 import { applyAction, step } from './game/step';
 import { eventToWorld } from './input/pick';
 import { createGameUI, createTopBar, fadeHint, getWinner, hideBanner, setPaused, showBanner, showStasisBanner } from './render/gameui';
-import { createScene, panBy, render, resizeRenderer, setViewSize, updateScene } from './render/scene';
+import { createScene, panBy, rebuildSceneGeometry, render, resizeRenderer, setViewSize, updateScene } from './render/scene';
 import { detectStasis } from './sim/stasis';
 import { initGPU } from './gpu/runtime';
 import { DEFAULT_EVOLUTION_CONFIG, makeInitialEvolutionState, runGeneration, saveEvolutionState, loadEvolutionState, clearEvolutionState, saveEvolveEnabled, loadEvolveEnabled, type EvolutionState } from './gpu/evolution';
 import { runParityTest } from './gpu/parity';
 import { createOverlay } from './demo/overlay';
 import { createRunner } from './demo/runner';
+import { createReplayPlayer } from './replay/player';
 
 const PLAYER_COUNT_OPTIONS = [2, 4, 6, 8, 12];
 const DEMO_MODE = new URLSearchParams(window.location.search).get('demo') === '1';
@@ -40,6 +41,10 @@ const tunables = {
   allTimeBest: 0,
   parityRun: () => runParity(),
   parityResult: '(not run)',
+  replayMode: true,
+  replayStatus: '(off)',
+  replaySpeed: 40,
+  greatestHits: false,
 };
 
 let state: GameState = makeInitialState(undefined, undefined, tunables.numPlayers);
@@ -202,6 +207,31 @@ evoFolder.add({ clear: clearSavedEvolution }, 'clear').name('clear save (fresh s
 evoFolder.add(tunables, 'parityRun').name('run parity test');
 const parityCtrl = evoFolder.add(tunables, 'parityResult').name('parity').listen().disable();
 void genCtrl; void fitCtrl; void parityCtrl;
+
+const replayFolder = gui.addFolder('replay');
+const LIVE_INDEX_URL = 'replays/index.json';
+const GREATEST_HITS_URL = 'replays/greatest-hits.json';
+const replayPlayer = createReplayPlayer({
+  indexUrl: tunables.greatestHits ? GREATEST_HITS_URL : LIVE_INDEX_URL,
+  replayBaseUrl: 'replays/',
+  speed: () => tunables.replaySpeed,
+  pollIntervalMs: 3000,
+});
+replayFolder.add(tunables, 'replayMode').name('watch replays').onChange((v: boolean) => {
+  if (v) replayPlayer.start();
+  else replayPlayer.stop();
+  topBar.setMode(v ? 'replay' : 'normal');
+});
+replayFolder.add(tunables, 'greatestHits').name('greatest hits').onChange((v: boolean) => {
+  replayPlayer.setIndexUrl(v ? GREATEST_HITS_URL : LIVE_INDEX_URL);
+});
+if (tunables.replayMode) {
+  replayPlayer.start();
+  topBar.setMode('replay');
+}
+const replaySpeedCtrl = replayFolder.add(tunables, 'replaySpeed', 1, 500, 1).name('speed (auto)');
+const replayStatusCtrl = replayFolder.add(tunables, 'replayStatus').name('status').listen().disable();
+void replayStatusCtrl;
 
 const captureFolder = gui.addFolder('capture');
 const captureState = { recording: false };
@@ -412,7 +442,10 @@ let stepAcc = 0;
 let aiAcc = 0;
 let topBarGen = -1;
 let topBarBest = -1;
+let topBarModel: string | null = null;
 let topBarEvolveOn = false;
+let lastReplayName: string | null = null;
+let lastReplaySavedAtMs = 0;
 
 function frame(now: number) {
   const dt = Math.min(0.25, (now - last) / 1000);
@@ -422,6 +455,74 @@ function frame(now: number) {
     runner.tick(dt);
     const snap = runner.currentSnapshot();
     if (snap) updateScene(scene, snap, null);
+    render(scene);
+    requestAnimationFrame(frame);
+    return;
+  }
+
+  if (tunables.replayMode) {
+    replayPlayer.tick(dt);
+    const rs = replayPlayer.current();
+    const currentName = replayPlayer.currentName();
+    if (rs) {
+      // Rebuild on every replay swap (not just count change) so stale node
+      // positions / edge geometry from the previous game can't leak through.
+      if (currentName !== lastReplayName || rs.nodes.length !== scene.nodeCount) {
+        rebuildSceneGeometry(scene, rs);
+      }
+      updateScene(scene, rs, null);
+    }
+    tunables.replayStatus = replayPlayer.status();
+    const meta = replayPlayer.metadata();
+    if (meta && currentName !== lastReplayName) {
+      // Snap camera to origin when a new replay starts so pan from the
+      // previous game doesn't carry over.
+      scene.camera.position.x = 0;
+      scene.camera.position.y = 0;
+      // New replay loaded — recompute auto speed so playback finishes about
+      // when the next replay is expected to drop.
+      const savedAtStr = typeof meta.saved_at === 'string' ? meta.saved_at : null;
+      const savedAtMs = savedAtStr ? Date.parse(savedAtStr) : NaN;
+      if (tunables.greatestHits) {
+        // Greatest hits: max-DPS cycle. Target ~2s per replay so each one
+        // gets a glance before moving on; speed is whatever it takes.
+        const decisionTick = typeof meta.decision_tick === 'number'
+          ? meta.decision_tick
+          : Number(meta.decision_tick ?? 0);
+        const dtPerTickMs = 100;
+        const gameDurationSec = (decisionTick > 0 ? decisionTick : 3000) * dtPerTickMs / 1000;
+        tunables.replaySpeed = Math.min(500, Math.max(1, Math.round(gameDurationSec / 2)));
+        replaySpeedCtrl.updateDisplay();
+      } else if (Number.isFinite(savedAtMs) && lastReplaySavedAtMs > 0) {
+        const dropIntervalSec = Math.max(0.5, (savedAtMs - lastReplaySavedAtMs) / 1000);
+        const decisionTick = typeof meta.decision_tick === 'number'
+          ? meta.decision_tick
+          : Number(meta.decision_tick ?? 0);
+        const dtPerTickMs = 100;
+        const gameDurationSec = (decisionTick > 0 ? decisionTick : 3000) * dtPerTickMs / 1000;
+        // Target playback time = ~30% of the drop interval, clamped to [1, 3]s.
+        // Replay plays quickly, then holds on last frame until the next one
+        // loads. Matches "training is fast, so the replay should be fast."
+        const targetPlaySec = Math.min(3, Math.max(1, dropIntervalSec * 0.3));
+        const next = Math.min(500, Math.max(1, Math.round(gameDurationSec / targetPlaySec)));
+        tunables.replaySpeed = next;
+        replaySpeedCtrl.updateDisplay();
+      }
+      if (Number.isFinite(savedAtMs)) lastReplaySavedAtMs = savedAtMs;
+      lastReplayName = currentName;
+    }
+    if (meta) {
+      const g = typeof meta.generation === 'number' ? meta.generation : 0;
+      const f = typeof meta.best_fitness === 'number' ? meta.best_fitness : 0;
+      const m = typeof meta.model === 'string' ? meta.model : null;
+      if (g !== topBarGen || Math.round(f * 100) / 100 !== topBarBest || m !== topBarModel) {
+        topBarGen = g;
+        topBarBest = Math.round(f * 100) / 100;
+        topBarModel = m;
+        topBar.setStats(topBarGen, topBarBest, topBarModel);
+      }
+    }
+    updateHud(rs ?? state);
     render(scene);
     requestAnimationFrame(frame);
     return;

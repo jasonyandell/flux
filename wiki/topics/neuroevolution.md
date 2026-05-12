@@ -45,27 +45,59 @@ Initial architecture: 91 → 32 (tanh) → 19. ~3.5k weights per genome. Small e
 
 ## Effort tiers
 
-- **Tier 1 — fixed topology, evolved weights only.** *Working — evolved champions sometimes win against the hand-written zoo (qualified validation, 2026-05-10).* Genome = `Float32Array` of weights. Forward pass per cell = two matmuls. Already powerful for this game space.
-- **Tier 2 — proper NEAT.** ~800–1500 LOC. Innovation numbers, speciation, structural mutations, compatibility distance. Genuinely more interesting evolution.
-- **Tier 3 — rtNEAT.** Time-based selection (oldest most likely to be replaced) + real-time speciation. True NERO-style spectator evolution.
-- **Tier 4 — WebGPU compute.** *In progress.* Forward pass and `step` both run as compute shaders; whole population × all games per generation in parallel. See [[../decisions/webgpu-evolution|webgpu-evolution]]. Tiers 1 and 4 are merged here — Tier 4 is what `src/gpu/` shipped first because the browser is the deployment target.
-- **Tier 5 — offline MLX training.** *Parity foundation landed; MLX evolution loop is the next thread.* `python/` reimplements `step` + NN forward in NumPy with bit-exact parity against JS — that's the algorithm-correctness anchor and it stays. The evolution loop itself is being built directly on MLX (Apple Silicon GPU acceleration, no NumPy-evolution interim). Champions serialize to the existing `public/champions/` JSON format for the browser to load. See [[../decisions/python-port|python-port]]. MLX runs `float32` so bit-exact JS parity isn't an MLX invariant — tolerance-based parity against the NumPy reference is, and the shared JSON format is what keeps the offline-train / online-deploy bridge honest.
+- **Tier 1 — fixed topology, evolved weights only.** *Working.* Genome = `Float32Array` of weights. Forward pass per cell = two matmuls. Already powerful for this game space.
+- **Tier 2 — proper NEAT.** ~800–1500 LOC. Innovation numbers, speciation, structural mutations, compatibility distance. Genuinely more interesting evolution. Not on the active path.
+- **Tier 3 — rtNEAT.** Time-based selection + real-time speciation. Not on the active path; batch generations win on throughput with MLX vectorization.
+- **Tier 4 — WebGPU compute.** *Shipped, no longer the training path.* `src/gpu/` runs population eval as compute shaders in-browser. See [[../decisions/webgpu-evolution|webgpu-evolution]]. Coexists with Tier 5; the browser still hosts it as a side-quest, but champions on disk now come from Python.
+- **Tier 5 — MLX training pipeline (the training path).** *Shipped end-to-end.* `python/flux/mlx_*` runs the whole evolution loop on Metal via MLX. Two models coexist: v1 (91-input, 2-hop neighborhood, 32 hidden, 19 output, 3571 weights) and v2 (181-input, 3-hop neighborhood, 32 hidden, 19 output, 6451 weights). Win-based termination per game (alive ≤ 1 → freeze), 10k tick cap. Champions serialize to `public/champions/` (v1) and `public/champions/v2/` (v2). Replays serialize to `public/replays/*.flxr` and are the production way users see what evolved. See [[../decisions/replay-rendering|replay-rendering]] and [[../decisions/v2-vision|v2-vision]].
 
-## Python bridge (Tier 5 status)
+## Python pipeline (Tier 5) — files
 
-What's in `python/` today:
+Game core + NN reference (NumPy, bit-exact JS parity):
 
-- `flux.state` / `flux.graph` / `flux.step` / `flux.rng` — exact port of `src/game/` + `src/ai/rng.ts`.
-- `flux.genome` — `nn_infer_cell` (Float32Array semantics replicated via NumPy `float32` storage + Python `float` arithmetic), `build_neighbor_table`, `random_genome`, `ai_think`.
-- `python/tests/test_parity.py` ↔ `python/tests/dump_reference.ts` — deterministic 100-tick scenario, SHA-256 hashes every 10 ticks, both sides match.
+- `python/flux/state.py`, `graph.py`, `step.py`, `rng.py`, `genome.py` — algorithm reference. See [[../decisions/python-port|python-port]] for the parity invariant.
 
-Not yet ported (explicit follow-ups, NOT part of the parity foundation):
+MLX evolution path (Metal-accelerated, `float32`):
 
-- **MLX evolution loop.** Same algorithm as `src/gpu/evolution.ts` (population, tournament selection, gaussian mutation, midpoint + end fitness with linger penalty), vectorized in MLX for big-board / many-genome scale. MLX is the compute backend from day one — there is no NumPy-evolution-loop step in between. The NumPy `flux` module stays as the algorithm reference the MLX side validates against (tolerance-based, since MLX is `float32`).
-- Champion JSON load/save on the Python side (the JS format at `public/champions/*.json` is the target; that's the deployment bridge).
-- HTTP or filesystem hot-reload of champions from Python into the browser.
+- `python/flux/mlx_step.py` — single-game MLX `step` + `apply_action`.
+- `python/flux/mlx_batch.py` — batched (G games × S seats × N cells) MLX step, NN forward, and the **vectorized AI tick**. `build_flows_batched` / `build_flows_batched_v2` build dense (G, N) flow tensors on GPU per AI tick — one batched NN forward → per-cell owner-action argmax → aggressive overlay → flow tensor, no per-game Python flow-reconcile loop. This is the main perf win over the JS-style reconcile.
+- `python/flux/mlx_genome.py` — v1 layout constants (`IN=91`, `HID=32`, `OUT=19`).
+- `python/flux/mlx_genome_v2.py` — v2 layout constants (`IN=181`, `HID=32`, `OUT=19`).
+- `python/flux/vision.py` — 3-hop neighbor table for v2. `STRIDE_V2 = 36`. v1 still uses the 18-neighbor distance-2 table from `genome.py`.
+- `python/flux/game_loop.py` — `play_batch_games`. Runs G games in parallel under MLX, terminates a game when alive ≤ 1, hard-caps at 10k ticks.
+- `python/flux/evolve_mlx.py` — `run_one_batch`, selection, checkpoint, champion JSON. Tournament selection + gaussian mutation, same fitness shape as `src/gpu/evolution.ts`.
+- `python/flux/replay.py` — `.flxr` writer (binary, header + sampled-frame body). See [[../decisions/replay-rendering|replay-rendering]].
+- `python/scripts/train.py` — CLI entry point. Auto-resumes from `python/checkpoints/{latest.npz|v2/latest.npz}` unless `--fresh`. Flags: `--model {v1,v2}`, `--games-per-batch`, `--pop`, `--ticks`, `--ai-period-ticks`, `--checkpoint`, `--champion-dir`, `--fresh`, `--aggressive-seat`.
 
-The browser's WebGPU evolution ([[../decisions/webgpu-evolution|webgpu-evolution]]) remains the in-browser path. The MLX loop and the WebGPU loop coexist; they share the genome layout, the fitness shape, and the champion JSON format.
+The **aggressive seat** is hand-coded in MLX (vectorized argmin over non-friendly neighbor strength) and serves as the narrative anchor: every batch contains one or more aggressive opponents the population must beat.
+
+### Persistence
+
+- Checkpoint: `python/checkpoints/latest.npz` (v1) / `python/checkpoints/v2/latest.npz` (v2). Auto-resume on `train.py` startup unless `--fresh`.
+- Champion JSON for new all-time bests: `public/champions/*.json` (v1, browser default) and `public/champions/v2/*.json` (v2).
+- Replays: `public/replays/*.flxr`, pruned to 50 entries in `public/replays/index.json`.
+
+### Status (2026-05-11)
+
+- v1 — gen 5372, all-time-best fitness 1540.50. Beats hand-coded aggressive consistently.
+- v2 — gen 347 (started fresh today), all-time-best 1521.50. Caught v1's fitness in ~6.5% of v1's generation budget. Wider receptive field reaches reinforcement-distance cells; appears to massively accelerate evolution but unverified at scale.
+
+### G knob (games per batch)
+
+`--games-per-batch G` controls parallel game count per evolution step. Bench at radius 18, 12 seats, 10k tick cap, ai_period 5:
+
+| G | per-batch | gens/min | samples/genome/batch |
+|---|-----------|----------|---------------------|
+| 1 | 0.65s (loop) / 2.6s (train.py with writes) | 22 (after sync+async wins) | 0.46 |
+| 2 | 1.0s | 60 | 0.92 |
+| 4 | 1.4s | 43 | 1.83 |
+| 8 | 2.3s | 26 | 3.67 |
+| 24 | 11.0s | 5 | ~11 |
+| 128 | 113.6s | 0.5 | ~59 |
+
+G=4 was the pre-optimization sweet spot. G=1 is the current choice — max generation rate, accept noisier fitness signal. Memory bandwidth (features tensor scales G×S×N×91) makes G > 24 throughput-counterproductive.
+
+The browser's WebGPU evolution ([[../decisions/webgpu-evolution|webgpu-evolution]]) coexists; the two share genome layout, fitness shape, and champion JSON format, but the production training path is MLX.
 
 ## Why it fits flux
 

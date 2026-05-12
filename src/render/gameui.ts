@@ -98,7 +98,8 @@ export type TopBar = {
   stats: HTMLDivElement;
   setEvolveOn: (on: boolean) => void;
   setEvolveAvailable: (available: boolean, reason?: string) => void;
-  setStats: (generation: number, best: number) => void;
+  setStats: (generation: number, best: number, model?: string | null) => void;
+  setMode: (mode: 'normal' | 'replay') => void;
   onRestart: (cb: () => void) => void;
   onEvolveToggle: (cb: (next: boolean) => void) => void;
 };
@@ -181,6 +182,11 @@ export function createTopBar(): TopBar {
 
   return {
     root, evolveBtn, evolveSub, stats,
+    setMode: (mode) => {
+      const showButtons = mode === 'normal';
+      restartBtn.style.display = showButtons ? '' : 'none';
+      evolveBtn.style.display = showButtons ? '' : 'none';
+    },
     setEvolveOn: (on) => { evolveOn = on; applyEvolveStyle(); },
     setEvolveAvailable: (available, reason) => {
       evolveBtn.disabled = !available;
@@ -188,10 +194,11 @@ export function createTopBar(): TopBar {
       evolveSub.textContent = available ? 'drains battery' : (reason ?? 'unavailable');
       applyEvolveStyle();
     },
-    setStats: (generation, best) => {
+    setStats: (generation, best, model) => {
+      const modelTag = model ? `[${model}] ` : '';
       stats.textContent = generation > 0
-        ? `gen ${generation} · best ${best}`
-        : 'gen 0';
+        ? `${modelTag}gen ${generation} · best ${best}`
+        : `${modelTag}gen 0`;
     },
     onRestart: (cb) => { restartBtn.onclick = cb; },
     onEvolveToggle: (cb) => { evolveBtn.onclick = () => { if (!evolveBtn.disabled) cb(!evolveOn); }; },

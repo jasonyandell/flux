@@ -44,11 +44,11 @@ The parity test at `python/tests/test_parity.py` (Python) and `python/tests/dump
 
 ## What's NOT in scope on this page
 
-- The MLX evolution loop itself — algorithm, mutation operators, population layout, fitness shape (separate decision page when it lands).
-- Champion JSON read/write on the Python side.
-- HTTP / IPC bridges (filesystem JSON is the only bridge).
+- The MLX evolution loop itself — landed in `python/flux/mlx_*` and `evolve_mlx.py`. See [[../topics/neuroevolution|neuroevolution]] Tier 5 for the file map and current status, [[replay-rendering]] for how trained champions and replays leave Python, and [[v2-vision]] for the 3-hop variant.
+- Champion JSON read/write on the Python side — landed; written by `python/flux/evolve_mlx.py` to `public/champions/` (v1) and `public/champions/v2/` (v2).
+- HTTP / IPC bridges (filesystem JSON + `.flxr` is the only bridge; see [[replay-rendering]]).
 
-This page documents the foundation (parity-validated reimplementation of game + NN forward pass in Python) and the parity contract that the MLX evolution loop must meet.
+This page documents the foundation (parity-validated reimplementation of game + NN forward pass in Python) and the parity contract. The training pipeline built on top of it now lives in [[../topics/neuroevolution|neuroevolution]] and the decisions above.
 
 ## Tradeoffs
 

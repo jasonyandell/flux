@@ -2,9 +2,126 @@
 title: flux Wiki Log
 kind: log
 first_seen: bootstrap
-last_updated: bootstrap
+last_updated: workspace
 status: active
 ---
+
+## [2026-05-11 | workspace | PPO + GNN trains end-to-end; greatest-hits replay cycle; full wandb instrumentation]
+
+**Touched pages:** [[decisions/ppo-gnn]] [[decisions/replay-rendering]] [[todo]] [[index]] [[log]]
+
+**Added:**
+- `python/flux/ppo.py` — `GNNActorCritic` (2-layer GCN policy + value head). Constants: `NEIGHBOR_STRIDE=18`, `IN_DIM=4`, `HIDDEN=32`, `POLICY_OUT=19`, `VALUE_HIDDEN=16`. Value pools second MP layer's activations over each seat's owned cells.
+- `python/scripts/train_ppo.py` — main entry. PPO rollout collection (G parallel games, T AI ticks per rollout), GAE-λ advantages, clipped-surrogate + value MSE + entropy loss, Adam autograd via MLX. Auto-resume from `python/checkpoints/ppo/latest.npz`.
+- `python/scripts/build_greatest_hits.py` — scans `.flxr` headers, filters fitness > 0 and `num_frames ≥ 200`, writes `public/replays/greatest-hits.json` (top 30, longest-first).
+- `public/replays/greatest-hits.json` — curated list for the browser cycle.
+- [[decisions/ppo-gnn]] flipped from `planning` to `active` with the actual file map, perf numbers, instrumentation panel, and current observation.
+
+**Updated:**
+- `python/flux/mlx_batch.py` — added `build_flows_from_actions(actions_all, owner, graph_neighbors)` for rollout-mode flow construction from sampled actions.
+- `python/scripts/train_ppo.py` — Frame-recording site now pulls game-0 `flow_src/dst/player/valid`, builds Python `Flow` objects, and stores them in the recorded `GameState`. Replays render directional arrows.
+- `src/replay/player.ts` — `setIndexUrl(url)` swaps the active index (e.g. `replays/index.json` ↔ `replays/greatest-hits.json`) on the fly; resets `entriesCache`, `replayName`, `replay`, `pendingFile`, `frameIdx`, `frameAccSec`, `lastPoll`.
+- `src/main.ts` — `greatestHits` tunable + lil-gui toggle. In greatest-hits mode, auto-speed targets ~2s per replay (capped at 500×). Camera snaps to origin on every replay swap. `rebuildSceneGeometry` now runs on every replay swap (not only on node-count change) so stale geometry can't leak across boards.
+- `src/render/scene.ts` — `rebuildSceneGeometry` early-return guard removed; also calls `nodeInstanced.dispose()` to release per-instance attribute buffers. Edge color bumped `0x1a1a1a → 0x2a3548` (visible on phone screens). Flow rendering: 3 line segments per flow (shaft + two arrowhead wings) at z=0.3 with gradient — 25% brightness at the source cell, full brightness at the arrowhead tip.
+- [[decisions/replay-rendering]] gained sections on the greatest-hits cycle, flow-arrow render shape, and the scene-rebuild bug fix.
+
+**Performance — PPO iter time:**
+
+| stage    | baseline | post-fix |
+|----------|----------|----------|
+| rollout  | 4.5s     | 2.5s     |
+| update   | 17.9s    | 2.5s     |
+| total    | ~22s     | ~5s      |
+
+**4.7× speedup.** Wins:
+- `--update-epochs 4 → 2` (the bulk of it).
+- Coalesced `mx.eval` calls in `collect_rollout`: single `mx.eval(logits, value, actions, owner, strength)` per AI tick instead of four separate evals.
+- Hoisted `seat_mask` onto GPU once per update (was rebuilt per minibatch).
+- Metric side-channel: `loss_fn` appends `(policy_loss, value_loss, entropy, approx_kl, clip_fraction, ratio_mean, ratio_max)` to a Python list; main loop pops them after `grad_fn` returns and evaluates alongside the gradients. No redundant forward pass.
+
+`mx.compile` of the train step measured ~30% more in isolation by a perf subagent — not landed yet, current speed is acceptable.
+
+**Wandb instrumentation (full panel):**
+- PPO update health: `policy_loss`, `value_loss`, `entropy`, `approx_kl`, `clip_fraction`, `ratio_mean`, `ratio_max`, `grad_norm`, `weight_norm`.
+- Value head: `explained_variance` (key metric), `value_mean`/`std`, `return_mean`/`std`.
+- Raw reward: `reward_step_{mean,std,max,min}`.
+- Behaviour: `action_entropy`, `action_pick_top_frac`, `action_self_frac` (fraction picking the "no flow" action 18).
+- Outcomes: `cells_{max,min}_end`, `dominance`, `alive_seats_end`, `neutral_frac_end`.
+- Image every 20 iters: `end_state` ownership grid (one row per game in the rollout).
+
+Pillow added as a dep for `wandb.Image`. The image emission is wrapped in `try/except` so a missing PIL won't kill training.
+
+**Numbers worth pinning:**
+- At iter ~196, `ppo-r9-ep2-instrumented` run: `explained_variance ≈ 0.74`, `entropy ≈ 2.92` (max log(19) ≈ 2.94), `mean_total_reward = 21.58` (pinned to a structural symmetry constant in self-play). Value head IS learning; policy hasn't started committing yet.
+- Older PPO replays (before flow-recording fix) have no arrows when rendered. The greatest-hits.json from before the fix is in this state. Future replays will carry flows.
+
+**Mechanics worth pinning:**
+- MLX first-iter kernel compile at `max_ticks=5000` is **substantial** (1–2 min). Don't kill a hung-looking PPO process under 2 minutes.
+- Under `uv run python ...` with redirected stdout, the script's `print()` is block-buffered. Set `PYTHONUNBUFFERED=1` (or use `python -u`) to see live iter timings.
+- `bash` cwd drifts to `flux/` repo root between commands; PPO must be launched from `python/` — prefix with `cd /Users/jason/code/flux/python &&` to be safe.
+- Greatest-hits is not a separate UI mode beyond the toggle — the player walks `entries[curIdx+1] % len` regardless of which index it loaded. The toggle just swaps the URL.
+
+**Retired:** none.
+
+**Questions opened:** none new. The "PPO policy commitment" entry on [[todo]] is the active open thread.
+
+## [2026-05-11 | workspace | MLX training pipeline ships end-to-end; replay rendering becomes the browser default; v2 wider-vision model joins v1]
+
+**Touched pages:** [[topics/neuroevolution]] [[decisions/python-port]] [[decisions/replay-rendering]] [[decisions/v2-vision]] [[index]] [[todo]] [[log]]
+**Added:**
+- `python/flux/mlx_step.py` — single-game MLX `step` + `apply_action`.
+- `python/flux/mlx_batch.py` — batched (G × S × N) MLX step + NN forward + vectorized AI tick. `build_flows_batched` (v1) / `build_flows_batched_v2` (v2) build dense (G, N) flow tensors on GPU per AI tick — one batched NN forward → per-cell owner-action argmax → aggressive overlay → flow tensor. No per-game Python flow-reconcile loop.
+- `python/flux/mlx_genome.py` — v1 layout constants (`IN=91`, `HID=32`, `OUT=19`, 3571 weights).
+- `python/flux/mlx_genome_v2.py` — v2 layout constants (`IN=181`, `HID=32`, `OUT=19`, 6451 weights).
+- `python/flux/vision.py` — 3-hop neighbor table for v2, `STRIDE_V2 = 36`.
+- `python/flux/game_loop.py` — `play_batch_games`. Runs G games in parallel under MLX; per-game terminate when alive ≤ 1; 10k tick hard cap.
+- `python/flux/evolve_mlx.py` — `run_one_batch`, tournament selection, gaussian mutation, checkpoint, champion JSON writeout.
+- `python/flux/replay.py` — `.flxr` binary writer (header + sampled-frame body).
+- `python/scripts/train.py` — CLI. `uv run python scripts/train.py --model {v1,v2} --games-per-batch N`. Other flags: `--pop`, `--ticks`, `--ai-period-ticks`, `--checkpoint`, `--champion-dir`, `--fresh`, `--aggressive-seat`. Auto-resume on startup from `python/checkpoints/{latest.npz | v2/latest.npz}` unless `--fresh`.
+- `src/replay/format.ts` — TS-side `.flxr` parser (mirrors `python/flux/replay.py`).
+- `src/replay/player.ts` — browser replay playback. Wall-clock → frame index; live sim path is dormant in replay mode.
+- `public/replays/*.flxr` — written by `train.py`. `public/replays/index.json` auto-prunes to 50 entries.
+- `python/checkpoints/{latest.npz, v2/latest.npz}` — checkpoint state per model. Restarting `train.py` resumes from there.
+- `public/champions/v2/*.json` — v2 champion JSONs for the browser (all-time bests only).
+- [[decisions/replay-rendering]] — new decision page: Python is the lab, web is the replay player, `.flxr` is the contract. Browser default mode is "watch replays" via lil-gui toggle; top bar reads `[model] gen N · best F`. The in-browser WebGPU evolution coexists as a side-quest but is no longer the training path.
+- [[decisions/v2-vision]] — new decision page: 3-hop receptive field experiment. v1 kept intact; v2 trains in parallel. Cost ~1.8× weights; early result is v2 caught v1's fitness in ~6.5% of v1's generation budget.
+
+**Updated:**
+- [[topics/neuroevolution]] — heavy revision. Tier 5 is no longer "next thread"; it's *the* training path. New file map under `python/flux/`. Documents v1 vs v2, win + tick-cap termination, the vectorized AI tick win, the G knob with bench numbers.
+- [[decisions/python-port]] — "what's NOT in scope" section cross-references the landed MLX pipeline (`evolve_mlx.py`, champion JSON writes, `.flxr` bridge). The page stays scoped to the parity foundation.
+- [[index]] — new pointers for [[decisions/replay-rendering]] and [[decisions/v2-vision]]; the neuroevolution one-liner now says MLX is the training path; the webgpu-evolution line notes the coexistence.
+- [[todo]] — MLX-evolution-loop and Python-pipeline-forks items ticked off into a new "Done — landed" section. New active threads: v2 saturation run, league/pool sampling. ANE-for-deployed-champions stays pending; gating item is now "champion worth packaging" (which v2 saturation will tell us).
+
+**Numbers worth pinning:**
+- v1: gen 5372, all-time-best fitness 1540.50. Beats hand-coded aggressive consistently.
+- v2: gen 347 (started fresh today), all-time-best fitness 1521.50. Caught v1 in ~6.5% of v1's generation budget.
+- Perf (today): G=1 went from ~12 gens/min → ~22 gens/min (~80% speedup) after vectorized AI tick + win-cadence relax (50 → 250 ticks) + deferred frame recording (stash `mx.array` refs, bulk-eval at end — avoids per-frame `mx.eval` sync barriers) + async I/O for checkpoint/replay/index writes via `ThreadPoolExecutor(1)`.
+
+**G knob bench (radius 18, 12 seats, 10k tick cap, ai_period 5):**
+
+| G | per-batch | gens/min | samples/genome/batch |
+|---|-----------|----------|---------------------|
+| 1 | 0.65s (loop) / 2.6s (train.py with writes) | 22 (new) | 0.46 |
+| 2 | 1.0s | 60 | 0.92 |
+| 4 | 1.4s | 43 | 1.83 |
+| 8 | 2.3s | 26 | 3.67 |
+| 24 | 11.0s | 5 | ~11 |
+| 128 | 113.6s | 0.5 | ~59 |
+
+G=4 was the production sweet spot pre-optimizations. G=1 is the current choice with the sync+async wins (max generation rate, accept noisier fitness signal). Memory bandwidth (features tensor scales G × S × N × 91 for v1, × 181 for v2) makes G > 24 throughput-counterproductive.
+
+**Mechanics worth pinning:**
+- The vectorized AI tick is the main perf win. The JS-style per-game Python flow-reconcile loop is eliminated: each AI tick is one batched NN forward → owner's action chosen per cell → aggressive overlay → dense flow tensors built on GPU. Lives in `build_flows_batched` / `build_flows_batched_v2`.
+- The aggressive seat is hand-coded in MLX (vectorized argmin over non-friendly neighbor strength). Narrative anchor: every batch contains aggressive opponents the population must beat.
+- Win-based termination per game (alive ≤ 1 → freeze the game in the batched tensor; other games keep ticking). 10k tick hard cap.
+- v2 only widens **vision** (181 inputs, 36 neighbors via 3-hop). Output stays 19 — flows still travel only over distance-2 edges.
+
+**Retired:** none. WebGPU evolution still works; it's a side-quest now, not deprecated.
+
+**Questions opened:**
+- v2 saturation behavior. Caught v1 fast — does it pass v1, match it, or plateau below? Open.
+- Whether league-style champion pool sampling is worth wiring into `evolve_mlx.py` (per-model vs shared pool; aggressive-seat interaction).
+- Whether a v3 with deeper hidden width is the next step once vision is wide.
 
 ## [2026-05-11 | workspace | three skills for next-session iteration]
 
