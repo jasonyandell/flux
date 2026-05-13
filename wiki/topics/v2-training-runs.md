@@ -16,6 +16,98 @@ named result. Single-iteration smoke tests are not.
 For the design itself, start at [[v2-edge-pressure-state]],
 [[v2-set-clear-actions]], [[v2-three-term-reward]], [[v2-trainer-displayer]].
 
+## Launching a run
+
+Operational runbook so a new run lands in the right places — wandb,
+the standard log path, and the displayer's replay drop — without
+having to rediscover the conventions each time.
+
+**Working directory:** always `python/`. The trainer's hardcoded
+`DEFAULT_OUT_DIR` is `REPO_ROOT/public/v2/replays/`, derived relative
+to the script, so any cwd technically works, but the venv lives at
+`python/.venv` so it's least friction.
+
+**Standard log path:** `/tmp/flux-train-v2.log`. The 10-min check-in
+prompt (and the Monitor armings in this skill) all read from that
+path — using anything else means the watchers go blind.
+
+**Background launch template:**
+
+```bash
+nohup .venv/bin/python scripts/train_v2.py \
+  --radius 9 --num-players 12 --games-per-rollout 4 \
+  --max-ticks 10000 --num-dead-cells 40 \
+  --power-coef 0.20 --power-damage-coef 0.1 --capture-coef 2.0 \
+  --waste-coef 0.005 --kill-pressure-coef 0.3 --entropy-coef 0.003 \
+  --win-bonus 500 \
+  --fresh --wandb --wandb-run-name <run-name> \
+  > /tmp/flux-train-v2.log 2>&1 &
+```
+
+The board / capacity / reward block above is the known-good
+`v2-killer-tuned` recipe — start from it and add the one knob the
+experiment is testing. Don't drift the unrelated flags between runs;
+that's how comparisons get muddied.
+
+Flags that matter for routing:
+- **`--wandb`** + **`--wandb-run-name <name>`** — without `--wandb`
+  metrics live only in stdout; without an explicit name wandb
+  auto-generates one and you'll have to grep for it later. Project
+  is hardcoded to `flux-v2` via `--wandb-project` (default).
+- **`--fresh`** — start from scratch. Required after any reward-shape
+  or state-representation change, otherwise the value head learned
+  under the old semantics will mislead PPO. Resume with
+  `--checkpoint python/checkpoints/v2/latest.npz` only when the
+  reward signal hasn't moved.
+- **stdout redirect to `/tmp/flux-train-v2.log`** — Python buffers
+  stdout when redirected to a file, so don't expect the first iter
+  line for ~1-3 min after launch. The wandb API has live data
+  immediately; lean on it for early-iter status, not the log.
+
+**Replay output is automatic:** `.flxr` files land in
+`public/v2/replays/` plus an `index.json` the displayer polls. The
+Vite dev server (`npm run dev`) serves them at `/v2/replays/` and
+the `index-v2.html` displayer auto-discovers new replays — no
+configuration needed at the UI side. **`.gitignore`** already
+excludes `public/v2/replays/*.flxr` and the index, so a long run
+won't pollute git.
+
+**Iter cadence in the displayer:** the trainer drops a replay
+roughly every iter at `record-stride=25`. Each is ~1.5 MB; long
+runs accumulate but stay manageable. Force-add a notable replay
+with `git add -f public/v2/replays/<file>.flxr` if you want it
+preserved as a demo artifact.
+
+**Watching a run:**
+- **wandb API:** the canonical live source. Most-recent run in the
+  project is `api.runs('jasonyandell-forge42/flux-v2',
+  order='-created_at')[0]`; the summary dict has the per-iter
+  metrics. Use this for cron-driven check-ins, not the log tail.
+- **`tail -F /tmp/flux-train-v2.log`** — useful for spotting
+  policy-loss thrash or KL spikes; cosmetically lags wandb by the
+  buffer flush.
+- **`ps -p <pid> -o stat,etime`** — `RN` / `SN` are healthy, `Z` is
+  bad. Memory leaks here have been rare; the run-killer is usually
+  KL or reward collapse, not OOM.
+- **Displayer**: `npm run dev` (from repo root) and open the URL it
+  prints with `/index-v2.html` appended. Existing replays show in
+  the drip bar; new ones land within the poll interval.
+
+**Stopping cleanly:** `kill -TERM <pid>`. The trainer handles SIGTERM
+by writing a checkpoint (`python/checkpoints/v2/latest.npz`) and
+flushing wandb. Don't `kill -9` unless it's truly stuck — you'll
+lose the last 20-something iters of gradient state. Confirm
+shutdown with `ps -p <pid>` (should exit within ~5 s).
+
+**Cron / Monitor patterns this session has used:**
+- The `/loop` skill armed a 10-minute cron job that issues a
+  structured check-in prompt; cancel with `CronDelete` when done.
+- The `Monitor` tool with
+  `tail -F /tmp/flux-train-v2.log | grep -E "^iter ..." | head -3`
+  is the right shape for "wake me at iter N or on crash" —
+  alternation must include `Traceback|Error|Killed|OOM` so silent
+  failures don't look the same as still-running.
+
 ## Overnight 2026-05-13 — summary
 
 Tested seven configurations end-to-end. Headline result: the **best v2 PPO
@@ -741,7 +833,7 @@ at the kill point.
 
 ## Queued ideas
 
-### Slime-mold transit credit (Jason, 2026-05-13 during v2-no-dead-ends)
+### Slime-mold transit credit (implemented, next run)
 
 **Observation:** the dest-terminated waste rule tells the policy
 *not to ship pressure into a dead end* — a clear local penalty.
@@ -753,7 +845,7 @@ v2 should have a local positive for *the productive thing* — the
 combo relay — to give the policy a "ship to relay" gradient instead
 of just "don't ship to sink."
 
-**Proposed rule:** *transit credit*. Pay the source cell when its
+**Implemented rule:** *transit credit*. Pay the source cell when its
 active outflow lands on a friendly cell **that has active outflows
 of its own** (so the inbound pressure can propagate). Same
 observation window as dest-terminated, opposite sign:
@@ -762,31 +854,27 @@ observation window as dest-terminated, opposite sign:
 |---|---|---|
 | Friendly, MAX, no outflows | dest-terminated waste (−) | unchanged |
 | Friendly, MAX, has outflows | unchanged (no waste) | **NEW positive** |
-| Friendly, < MAX, has outflows | absorbed productively | **NEW positive** (smaller?) |
+| Friendly, < MAX, has outflows | absorbed productively | unchanged in strict mode |
 
-Open question: do we want the credit only when destination is at MAX
-(strict "relay" case) or for any has-outflows destination (full
-slime-mold trail reinforcement)? The strict case is closer to the
-combo-detection signal Jason cares about; the lax case is a broader
-"your pressure went somewhere alive" reward.
+Decision for first run: strict "relay" case only. The destination must be
+friendly, have active outflows, and already be at MAX strength. This is closer
+to the combo-detection signal Jason cares about and avoids rewarding ordinary
+fill traffic.
 
-**Implementation sketch:**
+**Implementation:**
 
-```python
-# python/flux_v2/state.py
-TRANSIT_CREDIT_WEIGHT: float = 0.1   # small to start
-TRANSIT_CREDIT_STRICT: bool = True   # MAX-relay only vs any-outflows
-```
-
-In `step.py::tick` and `mlx_step.py::tick_batched`, mirror the
-dest-terminated logic with the inverted destination condition:
-friendly + (strict ? at MAX : True) + has-outflows. Attribute as
-positive `reward_transit_per_cell` to source. Surface as a new
-`reward_transit_iter` panel in wandb.
+- `python/flux_v2/state.py`: `TRANSIT_CREDIT_STRICT=True`.
+- `python/flux_v2/step.py`: pure diagnostic
+  `transit_credit_per_cell_for_tick`.
+- `python/flux_v2/mlx_step.py`: `tick_batched` now returns
+  `transit_credit_per_cell` alongside `waste_per_cell`.
+- `python/scripts/train_v2.py`: `--transit-coef` (default off) adds
+  `r_transit` and logs `reward_transit_iter`; first planned value is `0.1`.
+- Tests cover strict relay credit and MLX/pure parity for waste + transit.
 
 **Risk:** another dense reward term increases PPO cross-talk and
 makes it harder to attribute future changes. Start small (0.1
-weight, well below dest-terminated 0.3) and watch entropy / KL
+weight, below dest-terminated 0.3) and watch entropy / KL
 trajectories. If signals stay clean, ramp; if entropy collapses or
 KL thrashes, dial down.
 
