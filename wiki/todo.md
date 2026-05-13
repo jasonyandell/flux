@@ -12,6 +12,14 @@ History lives in [[log|log.md]]. Theory-shaped questions live in [[questions/ope
 
 ## Open — AI / evolution
 
+- **Flux v2 PRD (design complete, ready for impl).** See [[v2-prd]].
+  Edges as first-class state with persistent pressure; fill-then-overflow
+  rule; multi-outflow per cell (K=6, 13-action Set/Clear);
+  CAPTURE_STRENGTH = 50; three-term reward (power + waste + speed).
+  Delivery is a *separate track* — new sim (`python/flux_v2/`), new
+  trainer (`train_v2.py`), new trainer-displayer UI (`src_v2/`), v1 left
+  alone. First slice = pure reducer + unit tests.
+
 - **Active training run.** `ppo-regen-r5-p3-d1-rand5dead`. r=5 / P=3 / d=1 / G=8 / max_ticks=3000 / 5 random dead cells per game / random seat starts / all dense-shaping coefs active / regen-flow + passthrough. Fresh policy. Goal: a robust policy that doesn't memorize "I'm seat green, do X" but handles arbitrary board configs.
 - **Dead-cell visualization in the browser.** Replay metadata carries `dead_cells: [indices]` for each replay, but `scene.ts` doesn't read it yet — dead cells currently render as strength-0 neutrals (visually identical to capturable neutrals). Easy follow-up: a distinct color + maybe a "blocked" glyph.
 - **Browser live-play wiring for regen-flow.** `step_regen.ts` exists as TS reference but the live sim still calls `step.ts` (transfer rules). Wiring would require parameterizing `main.ts`'s frame loop on ruleset. Not blocking anything; do when needed.

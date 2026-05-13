@@ -6,6 +6,90 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-13 | workspace | v2 PRD: design phase done]
+
+**Touched pages:** [[v2-prd]] [[todo]] [[log]]
+
+Pinned the three remaining open questions and the delivery shape; PRD is
+implementation-ready.
+
+- **Action encoding: Set/Clear, 13 actions.** K=6 direct hex neighbors.
+  Action space = 6 set + 6 clear + 1 no-op. Idempotent, state-independent
+  semantics — network doesn't need the current outflow vector as input.
+  Chose this over toggle (7 actions) because with K=6 the output-layer
+  delta is tiny and the state-independence is the bigger win.
+
+- **CAPTURE_STRENGTH = 50.** Raised from 1 to ~half MAX_STRENGTH. Fixes
+  the whip-back where a captured cell with HP=1 dies instantly to the
+  previous owner's residual edge pressure. Sized so the new owner has
+  a tick or two of breathing room without making captures un-recapturable.
+
+- **Stale targets stay on.** Outflow pointing at a captured friend now
+  delivers damage to the enemy receiver. Pure scalar semantics — pressure
+  meaning is decided by current ownership of the receiver, not by intent
+  tags at the source. Livable only because CAPTURE_STRENGTH was raised.
+
+- **Reward shape, three terms.** `+power_coef·Δ(Σ strength) - waste_coef·waste -
+  time_coef`, plus a terminal win bonus. v1's engagement/activity coefs
+  are gone — under persistent state a stable loop has every cell active
+  permanently and shouldn't be rewarded extra for that. Overkill (excess
+  attacker pressure past what was needed to capture) is **not** counted as
+  waste; attacker can't know defender strength at commit time. Flagged
+  for revisit if overkill dominates observed waste during training.
+
+- **UI is a trainer-displayer, not a simulator.** Plays back `.flxr`
+  replays the v2 trainer writes; no in-browser game logic. Same colors
+  and layout as the current v1 page, but stripped of the three.js debug
+  dropdown. Top bar shows iter/gen and the last ~3 incoming playbacks
+  as they arrive. Lives in `src_v2/` so v1's already-packed page stays
+  untouched.
+
+Next: implement the pure reducer in `python/flux_v2/` with unit tests
+(loops persist; captures respect CAPTURE_STRENGTH; waste accounting
+matches algorithm spec). Trainer (`train_v2.py`) and UI (`src_v2/`)
+come after the reducer is locked.
+
+---
+
+## [2026-05-12 | workspace | v2 PRD: pressure on first-class edges]
+
+**Touched pages:** [[v2-prd]] [[log]]
+
+After a long day pushing v1 — lookahead-k4, fanout rule, waste penalty,
+bidirectional override — the underlying failure mode crystallized:
+v1's simulation has **no persistent edge state**. Every AI tick rebuilds
+flows from fresh actions, so a loop strategy requires N cells × hundreds
+of consecutive correct decisions. PPO can't ladder up to emergent
+structures through that combinatorial wall. (Insight credit: "the
+spazzy policies weren't doing cancel/re-add, they were just failing to
+add every single time.")
+
+The v2 model, pinned in `wiki/v2-prd.md`:
+
+- **Edges are first-class state.** Each directed edge has a `pressure` value
+  that persists tick-to-tick. Read last-tick, write new-tick. One-tick lag
+  per hop is the propagation mechanism — eliminates same-tick recursion.
+- **Multi-outflow per cell.** Cells configure a *set* of active outflows.
+  Overflow at MAX splits evenly across the active set, capped per edge.
+- **Fill-then-overflow rule, single branch.** Friendly inflow + regen grow
+  the cell up to MAX. Any excess overflows out the active outflows.
+  Strength only shrinks from enemy damage. No special-case for "maxed"; the
+  fanout v1 needed becomes the natural consequence of the same rule.
+- **Bidirectional friendly flow impossible by construction.** Mutation
+  invariants resolve at AI-tick time (override + higher-index tiebreaker
+  for simultaneous bidir).
+- **Closed loops correctly leak.** Per-edge cap binds; Σ regen per tick
+  becomes waste once edges saturate. Loops with no exit are a player-error
+  pattern that the simulation punishes naturally.
+
+Open questions left in the PRD: action encoding (toggle vs. set/clear),
+stale-target behaviour, reward shaping under persistent state.
+
+No code touched. v1 training is still running passively in the background
+as a baseline; v2 is a fresh codebase track when we pick it up.
+
+---
+
 ## [2026-05-12 | workspace | regen-flow gets passthrough + dense shaping + board randomization]
 
 **Touched pages:** [[decisions/regen-flow-rules]] [[decisions/replay-rendering]] [[todo]] [[log]]
