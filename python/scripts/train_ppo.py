@@ -40,9 +40,10 @@ from flux.mlx_step_regen import (  # noqa: E402
     REGEN_SLOPE,
     step_batched_regen,
 )
+from flux.lookahead import lookahead_action_select  # noqa: E402
 from flux.ppo import GNNActorCritic  # noqa: E402
 from flux.replay import ReplayHeader, ReplayWriter  # noqa: E402
-from flux.state import Flow, GameNode, GameState  # noqa: E402
+from flux.state import Flow, GameNode, GameState, MAX_STRENGTH  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -74,6 +75,7 @@ class PPOConfig:
     idle_capped_coef: float = 0.02   # penalty: idle cells near cap / cells_owned
     idle_cap_threshold: float = 90.0
     output_boost_coef: float = 0.05  # reward: avg output_rate / MAX_OUTPUT_PER_SEC (regen-flow only)
+    wasted_flux_coef: float = 0.0    # penalty per friendly-inflow unit clipped at MAX (regen-flow only)
 
 
 def _categorical_sample(logits: mx.array, rng_key: mx.array) -> tuple[mx.array, mx.array]:
@@ -117,13 +119,16 @@ def _aggressive_actions_np(
 ) -> np.ndarray:
     """Vectorized per-game per-cell action override for the aggressive seat.
     Returns (G, N) int32: action for cells owned by aggressive_seat is the
-    argmin-over-non-friendly-neighbor-strengths; for other cells, 18 (noop)."""
+    argmin-over-non-friendly-neighbor-strengths; for other cells, 18 (noop).
+
+    Maxed cells fan out automatically at the simulation level (regardless of
+    the action picked here), so we don't need spill-when-surrounded logic.
+    """
     G, N = owner_np.shape
     nb_ids = neighbors_np.reshape(N, STRIDE).astype(np.int64)
     nb_valid = nb_ids >= 0                                              # (N, STRIDE)
     safe = np.maximum(nb_ids, 0)                                        # (N, STRIDE)
 
-    # Gather neighbor strength + owner per game using fancy indexing.
     nb_strength = strength_np[:, safe]                                  # (G, N, STRIDE)
     nb_owner = owner_np[:, safe]                                        # (G, N, STRIDE)
 
@@ -166,6 +171,7 @@ def collect_rollout(
     record_stride: int = 10,
     num_dead_cells: int = 0,
     randomize_starts: bool = False,
+    lookahead_k: int = 0,
 ) -> tuple[Rollout, list[GameState], mx.array, np.ndarray]:
     """Run G games in parallel for up to config.max_ticks ticks. Returns the
     rollout buffer + a list of frames (for the recorded game = index 0) + the
@@ -278,10 +284,20 @@ def collect_rollout(
     for t in range(1, config.max_ticks + 1):
         # AI tick: forward, sample, override aggressive, log.
         if t % config.ai_period_ticks == 0:
-            # Forward (no gradient needed during rollout).
-            logits, value = model(owner, strength, neighbors, P, dead_mask)
-            # Sample actions per (G, S, N).
-            actions, rng_key = _categorical_sample(logits, rng_key)
+            if lookahead_k > 0:
+                # Search-augmented selection: K candidates, one-step lookahead,
+                # pick the action with highest sum-of-seat value at post-state.
+                # `logits` is the policy at the *current* (pre-action) state, so
+                # PPO's old_log_prob = log of policy prob of the chosen action.
+                actions, logits, value, rng_key = lookahead_action_select(
+                    model, owner, strength, passthrough, neighbors, dead_mask,
+                    live_mask, P, rng_key, K=lookahead_k,
+                )
+            else:
+                # Forward (no gradient needed during rollout).
+                logits, value = model(owner, strength, neighbors, P, dead_mask)
+                # Sample actions per (G, S, N).
+                actions, rng_key = _categorical_sample(logits, rng_key)
             # Single sync: pull everything we need into NumPy at once.
             mx.eval(logits, value, actions, owner, strength)
             owner_np = np.array(owner, copy=False)
@@ -320,15 +336,18 @@ def collect_rollout(
         # Step.
         step_out = step_fn(
             owner, strength, flow_src, flow_dst, flow_player, flow_valid,
-            live_mask, P, 0.1, passthrough,
+            live_mask, P, 0.1, passthrough, neighbors,
         )
-        if len(step_out) == 4:
-            new_owner, new_strength, new_flow_valid, passthrough = step_out
-        else:
-            new_owner, new_strength, new_flow_valid = step_out
+        new_owner, new_strength, new_flow_valid, passthrough, wasted_per_cell = step_out
         owner = new_owner
         strength = new_strength
         flow_valid = new_flow_valid
+        # Accumulate wasted-flux across the AI period so a single reward eval at
+        # AI ticks captures all ticks since the last reward.
+        if t % config.ai_period_ticks == 1:
+            wasted_acc = wasted_per_cell
+        else:
+            wasted_acc = wasted_acc + wasted_per_cell
 
         # Per-tick frame recording (game 0). One game tick = one replay frame
         # so playback can be studied at refresh-rate resolution.
@@ -341,10 +360,22 @@ def collect_rollout(
             fd0 = np.array(flow_dst, copy=False)[0]
             fp0 = np.array(flow_player, copy=False)[0]
             fv0 = np.array(flow_valid, copy=False)[0]
-            game_flows = tuple(
-                Flow(src=int(fs0[k]), dst=int(fd0[k]), player=int(fp0[k]))
-                for k in range(fv0.shape[0]) if bool(fv0[k])
-            )
+            # Maxed owned cells: emit fanout arrows to all valid neighbors
+            # instead of the single action-chosen arrow.
+            maxed_mask = (strength_g >= float(MAX_STRENGTH)) & (owner_g >= 0)
+            nb_2d = neighbors_np.reshape(-1, 18)
+            flow_list: list[Flow] = []
+            for k in range(fv0.shape[0]):
+                if maxed_mask[k]:
+                    own_k = int(owner_g[k])
+                    for nb in nb_2d[k]:
+                        if nb >= 0:
+                            flow_list.append(Flow(src=k, dst=int(nb), player=own_k))
+                elif bool(fv0[k]):
+                    src_k = int(fs0[k]); dst_k = int(fd0[k]); pl_k = int(fp0[k])
+                    if src_k >= 0 and dst_k >= 0 and pl_k >= 0:
+                        flow_list.append(Flow(src=src_k, dst=dst_k, player=pl_k))
+            game_flows = tuple(flow_list)
             frames.append(GameState(
                 nodes=tuple(
                     GameNode(id=n.id, pos=n.pos,
@@ -368,18 +399,22 @@ def collect_rollout(
                 or config.output_boost_coef != 0.0
             )
             need_passthrough = config.output_boost_coef != 0.0
+            need_wasted = config.wasted_flux_coef != 0.0
             if owner_np_now is None:
                 evals = [owner, strength]
                 if need_flow_valid:
                     evals.append(flow_valid)
                 if need_passthrough:
                     evals.append(passthrough)
+                if need_wasted:
+                    evals.append(wasted_acc)
                 mx.eval(*evals)
                 owner_np_now = np.array(owner, copy=False)
-            elif need_flow_valid or need_passthrough:
+            elif need_flow_valid or need_passthrough or need_wasted:
                 extras = []
                 if need_flow_valid: extras.append(flow_valid)
                 if need_passthrough: extras.append(passthrough)
+                if need_wasted: extras.append(wasted_acc)
                 mx.eval(*extras)
             live_np = np.array(live_mask, copy=False)
             cells_now = _cells_per_seat(owner_np_now, P)
@@ -428,6 +463,20 @@ def collect_rollout(
                             * (output_norm_np * sending).sum(axis=1).astype(np.float32)
                             / cells_owned_safe[:, s]
                         )
+
+            # Wasted-flux penalty: friendly inflow that hit MAX_STRENGTH and
+            # got clipped. Accumulated across the AI period above.
+            if config.wasted_flux_coef != 0.0:
+                wasted_np = np.array(wasted_acc, copy=False)  # (G, N)
+                # Normalize by MAX_STRENGTH so the penalty is in 0..N range per game.
+                wasted_norm = wasted_np / float(MAX_STRENGTH)
+                for s in range(P):
+                    seat_mask_np = owner_np_now == s
+                    delta[:, s] -= (
+                        config.wasted_flux_coef
+                        * (wasted_norm * seat_mask_np).sum(axis=1).astype(np.float32)
+                        / cells_owned_safe[:, s]
+                    )
 
             # Zero rewards for already-done games.
             delta = delta * live_np.reshape(G, 1).astype(np.float32)
@@ -884,6 +933,9 @@ def main() -> None:
                          "Set to 0 to disable.")
     ap.add_argument("--idle-cap-threshold", type=float, default=90.0,
                     help="strength >= this counts as 'near cap' for the idle-capped penalty.")
+    ap.add_argument("--wasted-flux-coef", type=float, default=0.10,
+                    help="penalty for friendly inflow that gets clipped at MAX_STRENGTH "
+                         "(regen-flow only). 0 disables.")
     ap.add_argument("--output-boost-coef", type=float, default=0.05,
                     help="dense reward per AI tick: avg (output_rate / MAX_OUTPUT_PER_SEC) "
                          "of sending cells * coef. Regen-flow only — meaningless for transfer.")
@@ -893,6 +945,10 @@ def main() -> None:
     ap.add_argument("--randomize-starts", action="store_true",
                     help="random seat placements per game (default: deterministic "
                          "evenly-spaced perimeter).")
+    ap.add_argument("--lookahead-k", type=int, default=0,
+                    help="if >0, per AI tick sample K candidate joint actions from the "
+                         "policy, simulate one step, pick the one with highest sum-of-seat "
+                         "value. Rough stand-in for MCTS; ~K× rollout cost.")
     ap.add_argument("--checkpoint", type=Path, default=None,
                     help="defaults to checkpoints/ppo/latest.npz for transfer ruleset, "
                          "checkpoints/ppo-regen/latest.npz for regen-flow")
@@ -910,8 +966,10 @@ def main() -> None:
         sub = "ppo-regen" if args.ruleset == "regen-flow" else "ppo"
         args.checkpoint = REPO_ROOT / "python" / "checkpoints" / sub / "latest.npz"
 
-    def _step_transfer_adapter(o, s, fs, fd, fp, fv, lm, P, dt, _passthrough):
-        return step_batched(o, s, fs, fd, fp, fv, lm, P, dt)
+    def _step_transfer_adapter(o, s, fs, fd, fp, fv, lm, P, dt, _passthrough, _neighbors=None):
+        nw, ns, nfv = step_batched(o, s, fs, fd, fp, fv, lm, P, dt)
+        zero_w = mx.zeros(o.shape, dtype=mx.float32)
+        return nw, ns, nfv, _passthrough, zero_w
 
     step_fn = step_batched_regen if args.ruleset == "regen-flow" else _step_transfer_adapter
 
@@ -931,6 +989,7 @@ def main() -> None:
         idle_capped_coef=args.idle_capped_coef,
         idle_cap_threshold=args.idle_cap_threshold,
         output_boost_coef=args.output_boost_coef,
+        wasted_flux_coef=args.wasted_flux_coef,
     )
 
     base = make_initial_state(args.radius, args.distance, args.num_players)
@@ -979,6 +1038,7 @@ def main() -> None:
                 record_stride=args.record_stride,
                 num_dead_cells=args.num_dead_cells,
                 randomize_starts=args.randomize_starts,
+                lookahead_k=args.lookahead_k,
             )
             t_rollout = time.time() - t0
 
@@ -1068,19 +1128,25 @@ def main() -> None:
                     "best_fitness": mean_reward,
                     "saved_at": datetime.now(timezone.utc).isoformat(),
                     "dead_cells": dead_cells_game0,
+                    "aggressive_seat": args.aggressive_seat,
                 }
-                write_executor.submit(
-                    lambda p, fr, r, d, np_, ts, m: (
-                        write_replay(p, fr, r, d, np_, ts, m),
+                def _do_write(p, fr, r, d, np_, ts, m, _it=iteration, _tag=tag, _rs=args.ruleset):
+                    try:
+                        write_replay(p, fr, r, d, np_, ts, m)
                         append_index(out_dir, {
                             "file": p.name, "saved_at": m["saved_at"],
-                            "kind": f"train_{tag}", "model": tag,
-                            "ruleset": args.ruleset,
-                            "iteration": iteration,
-                            "generation": iteration,
+                            "kind": f"train_{_tag}", "model": _tag,
+                            "ruleset": _rs,
+                            "iteration": _it,
+                            "generation": _it,
                             "radius": r, "distance": d, "num_players": np_,
-                        }),
-                    ),
+                        })
+                    except Exception as e:
+                        import traceback
+                        print(f"  REPLAY WRITE FAILED iter {_it}: {type(e).__name__}: {e}")
+                        traceback.print_exc()
+                write_executor.submit(
+                    _do_write,
                     replay_path, frames, args.radius, args.distance, args.num_players,
                     args.record_stride, metadata,
                 )

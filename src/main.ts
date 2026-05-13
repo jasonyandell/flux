@@ -443,6 +443,7 @@ let aiAcc = 0;
 let topBarGen = -1;
 let topBarBest = -1;
 let topBarModel: string | null = null;
+let topBarAggSeat: number | null = null;
 let topBarEvolveOn = false;
 let lastReplayName: string | null = null;
 let lastReplaySavedAtMs = 0;
@@ -526,11 +527,14 @@ function frame(now: number) {
       const g = typeof meta.generation === 'number' ? meta.generation : 0;
       const f = typeof meta.best_fitness === 'number' ? meta.best_fitness : 0;
       const m = typeof meta.model === 'string' ? meta.model : null;
-      if (g !== topBarGen || Math.round(f * 100) / 100 !== topBarBest || m !== topBarModel) {
+      const a = typeof meta.aggressive_seat === 'number' && meta.aggressive_seat >= 0
+        ? meta.aggressive_seat : null;
+      if (g !== topBarGen || Math.round(f * 100) / 100 !== topBarBest || m !== topBarModel || a !== topBarAggSeat) {
         topBarGen = g;
         topBarBest = Math.round(f * 100) / 100;
         topBarModel = m;
-        topBar.setStats(topBarGen, topBarBest, topBarModel);
+        topBarAggSeat = a;
+        topBar.setStats(topBarGen, topBarBest, topBarModel, topBarAggSeat);
       }
     }
     updateHud(rs ?? state);

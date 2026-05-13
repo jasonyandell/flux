@@ -42,6 +42,10 @@ def init_passthrough(G: int, N: int) -> mx.array:
     return mx.zeros((G, N), dtype=mx.float32)
 
 
+STRIDE: int = 18  # neighbor-table stride; matches NEIGHBOR_STRIDE in mlx_batch
+MAXED_FANOUT_THRESHOLD: float = float(MAX_STRENGTH)  # cells at >= this auto-fanout
+
+
 def step_batched_regen(
     owner: mx.array,           # (G, N) int32, -1 = neutral
     strength: mx.array,        # (G, N) float32
@@ -53,8 +57,15 @@ def step_batched_regen(
     num_players: int,
     dt: float,
     passthrough: mx.array,     # (G, N) float32 — last tick's support_in for sending cells
+    neighbors: mx.array | None = None,  # (N * STRIDE,) int32 — required for maxed-fanout
 ) -> tuple[mx.array, mx.array, mx.array, mx.array]:
-    """Returns (new_owner, new_strength, new_flow_valid, new_passthrough)."""
+    """Returns (new_owner, new_strength, new_flow_valid, new_passthrough).
+
+    Maxed cells (strength >= MAXED_FANOUT_THRESHOLD) auto-fanout: instead of the
+    single action-chosen outflow, they distribute output_capacity across ALL
+    valid neighbors evenly. The action-driven single outflow is suppressed for
+    those cells.
+    """
     G, N = owner.shape
     P = num_players
     live_f32 = live_mask.astype(mx.float32).reshape(G, 1)
@@ -64,7 +75,13 @@ def step_batched_regen(
     flow_dst_safe = mx.maximum(flow_dst, 0)
     flow_player_safe = mx.maximum(flow_player, 0)
 
-    is_sending = flow_valid & (owner != -1) & (owner == flow_player)
+    # Maxed-cell fanout: any owned cell at MAXED_FANOUT_THRESHOLD becomes a
+    # sender regardless of its action. The single-action flow is suppressed.
+    is_maxed_owned = (strength >= MAXED_FANOUT_THRESHOLD) & (owner != -1)
+    is_action_sending = flow_valid & (owner != -1) & (owner == flow_player)
+    # Single-action sending applies only to non-maxed cells.
+    is_single_sending = is_action_sending & mx.logical_not(is_maxed_owned)
+    is_sending = is_single_sending | is_maxed_owned
     is_sending_f32 = is_sending.astype(mx.float32)
     is_idle_owned_f32 = is_owned * (1.0 - is_sending_f32)
 
@@ -83,15 +100,50 @@ def step_batched_regen(
     self_delta = cell_regen * dt * is_idle_owned_f32 * live_f32
     forces_flat = forces_flat.at[self_idx].add(self_delta.reshape(-1))
 
-    # Sending cells: deliver output_capacity * dt to dst (sign by friendly/enemy).
+    # Single-action sending cells: deliver output_capacity * dt to dst.
+    is_single_sending_f32 = is_single_sending.astype(mx.float32)
     dst_owner = mx.take_along_axis(owner, flow_dst_safe, axis=1)
-    is_friendly_dst = ((dst_owner == flow_player) & is_sending).astype(mx.float32)
-    is_enemy_dst = ((dst_owner != flow_player) & is_sending).astype(mx.float32)
-    flux = output_capacity_rate * dt * live_f32             # (G, N)
-    in_delta = flux * (is_friendly_dst - is_enemy_dst)
+    is_friendly_dst = ((dst_owner == flow_player) & is_single_sending).astype(mx.float32)
+    is_enemy_dst = ((dst_owner != flow_player) & is_single_sending).astype(mx.float32)
+    flux_single = output_capacity_rate * dt * live_f32      # (G, N)
+    in_delta = flux_single * (is_friendly_dst - is_enemy_dst)
 
     dst_idx = (G_idx * (N * P) + flow_dst_safe * P + flow_player_safe).reshape(-1)
     forces_flat = forces_flat.at[dst_idx].add(in_delta.reshape(-1))
+
+    # Maxed-cell fanout: distribute output_capacity across all valid neighbors
+    # that can actually absorb it (enemies, or friends with headroom). Skipping
+    # maxed friends prevents wasted bidirectional flow between two maxed cells.
+    if neighbors is not None:
+        is_maxed_f32 = is_maxed_owned.astype(mx.float32)            # (G, N)
+        nb_ids = neighbors.reshape(N, STRIDE).astype(mx.int32)      # (N, STRIDE)
+        nb_valid_per_cell = (nb_ids >= 0).astype(mx.float32)        # (N, STRIDE)
+        nb_valid_b = nb_valid_per_cell.reshape(1, N, STRIDE)
+
+        safe_nb = mx.maximum(nb_ids, 0).reshape(-1)                 # (N*STRIDE,)
+        nb_owner = mx.take(owner, safe_nb, axis=1).reshape(G, N, STRIDE)
+        nb_strength = mx.take(strength, safe_nb, axis=1).reshape(G, N, STRIDE)
+        src_owner_b = owner_safe.reshape(G, N, 1)
+        nb_is_friend = (nb_owner == src_owner_b)
+        nb_is_maxed = nb_strength >= MAXED_FANOUT_THRESHOLD
+        # A neighbor is a "useful target" if it's valid AND not a maxed friend.
+        useful_mask_f32 = (nb_valid_b.astype(mx.bool_)
+                          & mx.logical_not(nb_is_friend & nb_is_maxed)).astype(mx.float32)
+        num_useful = useful_mask_f32.sum(axis=-1)                   # (G, N)
+        # If no useful targets, fanout share is 0 (no outflow this tick).
+        share = mx.where(num_useful > 0, 1.0 / mx.maximum(num_useful, 1.0), 0.0)
+        flux_max = output_capacity_rate * is_maxed_f32 * dt * live_f32   # (G, N)
+        per_nb_flux = (flux_max * share).reshape(G, N, 1) * useful_mask_f32  # (G, N, STRIDE)
+
+        is_friendly = nb_is_friend.astype(mx.float32)
+        is_enemy = (mx.logical_not(nb_is_friend)).astype(mx.float32) * nb_valid_b
+        sign = is_friendly - is_enemy                                # (G, N, STRIDE)
+        contrib = per_nb_flux * sign                                # (G, N, STRIDE)
+        nb_flat_idx = (G_idx.reshape(G, 1, 1) * (N * P)
+                       + mx.maximum(nb_ids, 0).reshape(1, N, STRIDE) * P
+                       + owner_safe.reshape(G, N, 1)).reshape(-1)
+        forces_flat = forces_flat.at[nb_flat_idx].add(contrib.reshape(-1))
+
     forces = forces_flat.reshape(G, N, P)
 
     # ---- support_in (this tick's friendly inflow per cell, in rate units) ----
@@ -129,6 +181,10 @@ def step_batched_regen(
         capture_strength_arr,
         mx.maximum(new_strength, 0.0),
     )
+    # Friendly inflow that would have pushed strength over the cap is wasted.
+    # We attribute it to the cell's owner so the reward loop can penalize it.
+    pre_clip = mx.where(takeover, capture_strength_arr, mx.maximum(new_strength, 0.0))
+    wasted_per_cell = mx.maximum(pre_clip - float(MAX_STRENGTH), 0.0) * is_owned
     computed_strength = mx.minimum(computed_strength, float(MAX_STRENGTH))
 
     # Frozen games: keep prior state. Captured cells reset their passthrough.
@@ -139,5 +195,6 @@ def step_batched_regen(
     # Cells whose owner changed (captured) should drop their passthrough.
     owner_unchanged = (new_owner == owner).astype(mx.float32)
     new_passthrough = next_passthrough * owner_unchanged * live_f32
+    wasted_per_cell = wasted_per_cell * live_f32
 
-    return new_owner, new_strength_final, new_flow_valid, new_passthrough
+    return new_owner, new_strength_final, new_flow_valid, new_passthrough, wasted_per_cell

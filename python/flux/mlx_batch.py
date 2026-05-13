@@ -602,6 +602,23 @@ def build_flows_from_actions(
         flow_dst_safe = mx.maximum(flow_dst, 0)
         dst_is_dead = mx.take_along_axis(dead_mask, flow_dst_safe, axis=1)
         flow_valid = flow_valid & mx.logical_not(dst_is_dead) & mx.logical_not(dead_mask)
+
+    # Game rule: no bidirectional flow between friendlies. If cell c and a
+    # friendly neighbor d both send to each other, the higher-index source wins
+    # and the lower-index source's flow is dropped (deterministic override).
+    flow_dst_safe2 = mx.maximum(flow_dst, 0)
+    nb_dst = mx.take_along_axis(flow_dst, flow_dst_safe2, axis=1)        # (G, N) = dst's own flow_dst
+    nb_valid = mx.take_along_axis(flow_valid, flow_dst_safe2, axis=1)    # (G, N) = is dst sending?
+    nb_owner = mx.take_along_axis(owner, flow_dst_safe2, axis=1)         # (G, N)
+    src_idx = mx.broadcast_to(mx.arange(N).reshape(1, N), (G, N)).astype(flow_dst.dtype)
+    bidir_friendly = (
+        flow_valid & nb_valid
+        & (nb_dst == src_idx)
+        & (nb_owner == owner) & (owner >= 0)
+    )
+    # Drop the LOWER-index side; the higher-index side's flow stays.
+    drop_me = bidir_friendly & (src_idx < flow_dst)
+    flow_valid = flow_valid & mx.logical_not(drop_me)
     return (
         flow_src.astype(mx.int32),
         flow_dst.astype(mx.int32),
