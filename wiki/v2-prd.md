@@ -3,7 +3,7 @@ title: Flux v2 — Pressure-Game PRD
 kind: prd
 first_seen: workspace
 last_updated: workspace
-status: draft
+status: implementing
 ---
 
 ## What this is
@@ -84,6 +84,24 @@ friendlies the bidirectional state is forbidden — see mutation invariants.
 - `CAPTURE_STRENGTH = 50` — strength a freshly captured cell starts with.
   Set roughly half `MAX_STRENGTH` so the previous owner's residual
   pressure does damage but doesn't insta-recapture (whip-back fix). Tunable.
+- `DEAD_CELLS_PER_GAME = 10` — random unreachable hexes; see Board setup.
+
+### Board setup (randomized per game)
+
+Carried over from v1's lesson that fixed boards bake trivial heuristics:
+
+- **10 dead hexes per game**, sampled uniformly at random over the grid
+  (excluding spawn cells). Dead hexes don't regen, can't be captured, and
+  block flow. Different layout every rollout forces structural reasoning
+  instead of positional memorization.
+- **Pure random spawn locations.** Player starts are sampled uniformly
+  per game (with minimum-distance constraint so they don't spawn on top
+  of each other). No fixed seat→position mapping — otherwise the policy
+  trivially learns "I am seat green, push in direction X" because the
+  opponents' seat→position is also fixed and the heuristic wins by
+  coincidence of geometry.
+- Both layouts are recorded in `.flxr` metadata so replays can render
+  them and so the browser knows where the dead cells are.
 
 ## Per-tick algorithm (the only rule)
 
@@ -254,12 +272,36 @@ route, or `index-v2.html`. Pick simplest at implementation time.
    the attacker can't know the defender's strength when committing.
    Revisit if overkill turns out to dominate observed waste in training.
 
-## Not in scope
+## In scope (what we're actually building)
 
-- MLX implementation details
-- Migration / coexistence with v1 (v2 is a new codebase track)
-- Browser rendering specifics
-- PPO hyperparameter retuning
+The PRD covers the full training flywheel, end to end:
+
+- **Pure reducer** (`python/flux_v2/state.py`, `step.py`) — single-game,
+  testable.
+- **MLX-batched step** (`python/flux_v2/mlx_step.py`) — same algorithm,
+  batched across G games. Models the pattern from `mlx_step_regen.py`.
+  The persistent `edge_pressure` array is part of batched state.
+- **PPO trainer** (`python/scripts/train_v2.py`) — fork of `train_ppo.py`.
+  Reuses rollout, GAE-λ, clipped surrogate, replay writing,
+  greatest-hits, checkpoints. **wandb logging is part of the trainer**
+  — full panel from v1 (`clip_fraction`, `explained_variance`,
+  `ratio_max`, `grad_norm`, `action_entropy`, per-rollout outcomes,
+  end-state images every 20 iters) plus the three new reward terms
+  (power, waste, time) broken out as separate panels for tuning.
+  Diffs vs v1: action space 7→13, three-term reward, state carries
+  `edge_pressure`, `.flxr` extended with an edge-pressure field.
+- **Trainer-displayer UI** (`src_v2/`) — clones `src/`, strips controls,
+  reads `public/v2/replays/*.flxr`, auto-reloads, iter/gen badge.
+
+## Not in scope (won't be specified by this PRD)
+
+- Kernel-level MLX micro-optimizations (autograd choice, `mx.compile`,
+  shape rearrangements) — settled at implementation time.
+- Migration / coexistence with v1 (v2 is a separate track; v1 keeps
+  running unmodified).
+- Browser rendering specifics beyond "same colors and layout as v1."
+- PPO hyperparameter retuning — start with v1's hypers, tune only if
+  training stalls.
 
 ## Next step
 

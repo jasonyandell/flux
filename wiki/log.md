@@ -6,6 +6,104 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-13 | workspace | v2-bigger-hidden64 run kicked off]
+
+**Touched pages:** [[v2-training-runs]] [[log]]
+
+`v2-rebalanced` produced the best plateau yet (R=−532 vs baseline −2725,
+dominance 0.85, alive 3.25/12, games actually decisive) — the reward
+rebalance was a real unlock. Killed at iter ~40, write-up in
+[[v2-training-runs]]. Hypothesis for the third consecutive plateau:
+representational capacity. The 32-dim hidden GCN can't discriminate
+productive vs wasteful outflows precisely enough.
+
+Started `v2-bigger-hidden64`: HIDDEN 32 → 64, VALUE_HIDDEN 16 → 32. All
+other knobs unchanged. If this also plateaus, the bottleneck is the
+single-scalar-per-seat value head, not capacity — next move would be
+per-cell value heads.
+
+## [2026-05-13 | workspace | v2-rebalanced run kicked off]
+
+**Touched pages:** [[v2-training-runs]] [[log]]
+
+`v2-deeper-3hop` ran ~120 iters and hit a second plateau — better than the
+first (entropy collapsed 2.55 → 1.87, action distribution flipped to
+SET/CLEAR 31/66, alive_seats_end dropped 12 → 10.5), but waste still
+flat at ~−2300 and dominance frozen at 0.29. Diagnosis in
+[[v2-training-runs]]: reward magnitudes are imbalanced — waste (~−2300)
+overwhelms power (~+91), so the policy converged on "play defensively,
+minimize my contribution to waste" instead of "win by attacking." The
+2-hop → 3-hop GCN bump was a real unlock; reward shape is now the
+bottleneck.
+
+Started `v2-rebalanced` (wandb name `v2-rebalanced`): `power_coef 0.05 →
+0.20`, `waste_coef 0.05 → 0.015`, `win_bonus 50 → 200`. Keeps 3-layer
+GCN and `entropy_coef=0.003` from previous run. Now an aggressive seat's
+expected payoff is meaningfully better than a pacifist's, so the policy
+should learn to actually engage.
+
+## [2026-05-13 | workspace | v2-deeper-3hop run kicked off]
+
+**Touched pages:** [[v2-training-runs]] [[log]]
+
+`v2-overnight` plateaued by iter ~30: value head locked in at ev=0.98, but
+the policy never committed (entropy stuck at 2.31 ≈ 90% of uniform) and
+waste term flat at ~−2700. Diagnosis written into [[v2-training-runs]].
+
+Killed it and started `v2-deeper-3hop` (wandb name `v2-deeper-3hop`) with
+two structural changes: (a) 3-layer GCN — third message-passing layer
+extends receptive field to 3 hops, addressing the credit-assignment limit
+from chain terminator → upstream sources; (b) `entropy_coef 0.01 → 0.003`
+so PPO can actually commit to a distribution. Reward shape and board left
+untouched for direct comparison.
+
+## [2026-05-13 | workspace | v2-overnight run kicked off]
+
+**Touched pages:** [[v2-training-runs]] [[index]] [[log]]
+
+Spun up the first uncapped v2 PPO run with the full feature stack:
+
+- 9-channel policy input (pressure_in_friendly / pressure_in_enemy /
+  pressure_out added on top of the 6-channel baseline; checkpoint-incompatible
+  with prior v2 runs).
+- 40 dead cells per game, connectivity-guaranteed via BFS-on-removal in
+  `random_seat_and_dead`.
+- 10000 game ticks (2000 AI ticks) — gives the waste term real exposure.
+- `record_stride=1` so the displayer plays tick-by-tick.
+
+wandb: `jasonyandell-forge42/flux-v2/6xjpm2ld` (v2-overnight). Iter cadence
+~15 s after JIT warmup. CronCreate job `a67ffc75` polls every 10 min.
+
+Baseline (iter 1): R=−2725, ev≈0, action entropy ≈ 2.55 (uniform), waste
+dominates the loss. By iter 18 ev had locked in at 0.97 and entropy started
+its gentle decline — value head solid, policy still flat.
+
+[[v2-training-runs]] is the new home for run-level lessons going forward.
+
+## [2026-05-13 | workspace | v2: implementation slice shipped]
+
+**Touched pages:** [[v2-edge-pressure-state]] [[v2-set-clear-actions]] [[v2-three-term-reward]] [[v2-trainer-displayer]] [[index]] [[log]]
+
+Implementation slice for the v2 PRD landed end-to-end:
+
+- **Pure reducer + tests** (`python/flux_v2/state.py`, `step.py`, plus
+  `tests/test_v2_step.py` — 11 cases covering loop persistence, capture
+  strength, multi-hop, friendly bidirectional resolution, waste accounting,
+  dead cells, stale targets).
+- **MLX batched step** (`python/flux_v2/mlx_step.py`) with parity test
+  against the pure reducer over 25 ticks of randomized boards.
+- **PPO trainer fork** (`python/scripts/train_v2.py`) — three-term reward
+  (power Δ, waste, time + win bonus), 13-action space, randomized seats +
+  10 dead cells per game, full wandb panel including the three reward terms
+  broken out separately.
+- **FLXR v2 replay format** — version=2 header, 6-byte flow records with
+  quantized edge pressure. Python writer in `python/flux_v2/replay.py`,
+  TS reader in `src_v2/replay/format.ts`.
+- **Trainer-displayer UI** — `index-v2.html` + `src_v2/`. Plays back
+  `public/v2/replays/*.flxr`, polls index every 3s, auto-reloads.
+- **Overnight training run** started against radius=9, num_players=12,
+  G=4, max_ticks=5000, wandb project `flux-v2`.
+
 ## [2026-05-13 | workspace | v2 PRD: design phase done]
 
 **Touched pages:** [[v2-prd]] [[todo]] [[log]]

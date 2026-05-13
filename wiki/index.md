@@ -19,6 +19,7 @@ Topics:
 - [[topics/galcon-like|galcon-like]] — the genre and its lineage.
 - [[topics/neuroevolution|neuroevolution]] — MLX neuroevolution is the training path. v1 (91-input, 2-hop) and v2 (181-input, 3-hop) coexist; `scripts/train.py` runs the loop.
 - [[topics/showcase-demo|showcase-demo]] — `?demo=1` evolution-arc demo: five 5s scenes, canned champions in `public/champions/`, hot-area intro + "AI WARS" title card.
+- [[topics/v2-training-runs|v2-training-runs]] — record of v2 PPO training runs worth keeping. Cross-run lessons (iter cadence, EV timing, dead-cell connectivity) plus per-run config + observations. Current frontier: `v2-overnight` (40 dead cells, 9-channel pressure-aware policy, 2000-AI-tick games).
 
 Decisions:
 
@@ -37,6 +38,10 @@ Decisions:
 - [[decisions/v3-gnn|v3-gnn]] — 2-layer GCN policy on radius-9 boards. NEAT-evolved variant proved weak (credit assignment was the bottleneck, not architecture).
 - [[decisions/ppo-gnn|ppo-gnn]] — PPO + v3's GCN backbone + value head, trained via MLX autograd. Self-play 12-seat FFA, dense per-AI-tick cell-delta reward. Currently the active training path.
 - [[decisions/regen-flow-rules|regen-flow-rules]] — second game ruleset. Outflow has no health cost; sender forfeits regen. Damage is symmetric. Linear regen scaling with strength. Capture is deterministic strength=1. Existing transfer-flow ruleset stays as the default; replays carry `ruleset` tag.
+- [[decisions/v2-edge-pressure-state|v2-edge-pressure-state]] — v2 makes directed half-edges first-class state. Set an outflow once; it persists. Loops, multi-hop transport, and maxed-cell fanout all fall out of one fill-then-overflow rule.
+- [[decisions/v2-set-clear-actions|v2-set-clear-actions]] — v2's 13-action space: Set k=0..5, Clear k=0..5, No-op. Idempotent, state-independent — the network doesn't need to invert "what does toggle do here?"
+- [[decisions/v2-three-term-reward|v2-three-term-reward]] — power Δ (per-seat strength delta) + waste (algorithmically attributed) + time, with a terminal win bonus. Engagement / output-boost coefs from v1 are gone — persistence makes activity measures meaningless.
+- [[decisions/v2-trainer-displayer|v2-trainer-displayer]] — v2 web UI is a stripped trainer-displayer at `/index-v2.html` (Vite). Plays back `.flxr` v2 replays from `/v2/replays/`. No in-browser game logic; v1 page unchanged.
 
 Questions:
 
