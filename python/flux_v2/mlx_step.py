@@ -30,6 +30,7 @@ from .state import (
     REGEN_BASE_PER_TICK,
     REGEN_SLOPE,
     WASTE_WEIGHT_CAP_BOUND,
+    WASTE_WEIGHT_DEST_TERMINATED,
     WASTE_WEIGHT_NO_SPILL,
 )
 
@@ -254,6 +255,25 @@ def tick_batched(
         no_spill, overflow, mx.array(0.0, dtype=mx.float32),
     )
     waste_per_cell = waste_cap_bound + waste_no_spill
+
+    # Destination-terminated waste: active outflow points at a friendly cell
+    # at MAX strength with zero active outflows (pure sink). Pass-through MAX
+    # cells with outflows are combo relays — only penalize dead ends.
+    if WASTE_WEIGHT_DEST_TERMINATED > 0.0:
+        strength_d = mx.take(strength, nb_safe.reshape(-1), axis=1).reshape(G, N, K)
+        num_active_d = mx.take(num_active, nb_safe.reshape(-1), axis=1).reshape(G, N, K)
+        is_dead_end = (
+            is_friendly
+            & (strength_d >= MAX_STRENGTH)
+            & (num_active_d == 0.0)
+        )
+        dest_terminated = (
+            of_f
+            * is_dead_end.astype(mx.float32)
+            * can_spill.reshape(G, N, 1).astype(mx.float32)
+            * per_edge.reshape(G, N, 1)
+        ).sum(axis=-1)
+        waste_per_cell = waste_per_cell + WASTE_WEIGHT_DEST_TERMINATED * dest_terminated
 
     # Apply alive_mask: frozen games keep old state.
     alive_mask_b = alive.reshape(G, 1)

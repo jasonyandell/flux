@@ -614,6 +614,77 @@ Both for next run.
 
 ---
 
+### v2-no-dead-ends — 2026-05-13 (killed @ iter ~107, combo signal lit)
+
+**wandb:** `jasonyandell-forge42/flux-v2/ll0s4j8j` (name
+`v2-no-dead-ends`).
+
+**Config:** identical to `v2-killer-tuned` (kill_pressure_coef=0.3,
+waste_coef=0.005, entropy_coef=0.003, power_coef=0.20,
+power_damage_coef=0.1, capture_coef=2.0, win_bonus=500) **plus** the
+new destination-terminated waste category in
+`python/flux_v2/state.py`: `WASTE_WEIGHT_DEST_TERMINATED=0.3`. Fresh
+start.
+
+**Hypothesis:** v2-killer-tuned learned everything except "don't ship
+pressure into a dead-end MAX cell." Added explicit waste attribution
+to source whenever its active outflow lands on a friendly cell that
+is BOTH at MAX strength AND has zero active outflows (a pure sink).
+Pass-through MAX cells with outflows are combo relays and stay
+un-penalized — the rule is careful not to break the combo pattern.
+
+**Outcome — combo signal lights up, structural metric crosses random
+baseline.** Stopped at iter 107 (~52 min) per plan to compact + think.
+
+| metric | iter 13 | iter 34 | iter 55 | iter 70 | iter 92 | iter 106 |
+|---|---|---|---|---|---|---|
+| R (mean) | 1468 | 1465 | 1498 | 1390 | 1541 | 1504 |
+| pwr | 1469 | 1468 | 1446 | 1350 | 1431 | 1414 |
+| waste | −314 | −318 | −333 | −343 | −349 | −351 |
+| kill | 236 | 235 | 302 | 305 | 368 | 355 |
+| cap | 97 | 99 | 103 | 97 | 111 | 106 |
+| dominance | 0.54 | 0.70 | 0.65 | 0.80 | 0.76 | 0.69 |
+| alive_end | 3.50 | 3.25 | 2.50 | 2.00 | 2.00 | 2.50 |
+| **total_edge** | 488 | 460 | 470 | 599 | **756** | 666 |
+| entropy | 2.558 | 2.558 | 2.557 | 2.556 | 2.555 | 2.554 |
+| action mix (n/s/c) | 8/47/45 | 8/47/45 | 8/47/45 | 8/48/44 | 8/49/44 | 8/49/44 |
+
+**Run-wide peaks** (across 107 iters, sampled history): R=1587,
+kill=368, capture=121, total_edge_pressure=805, dominance=0.95.
+
+**Highlights:**
+- **total_edge_pressure crossed random baseline 638 at iter ~70 and
+  peaked at 805** — the combo signal Jason flagged is firing. The
+  dest-terminated rule didn't break combos; structural flow improved.
+- **No collapse, no entropy decay** — entropy stayed at 2.55+ for 107
+  iters under the new term. The 0.3 weight is safe; could go higher.
+- **Kill rate landed**: kill reward 236 → 368 (+56 %) over the run;
+  alive_seats trended 3.5 → 2.0 → 2.5 (kills happening, then policy
+  defending; not pacifist).
+- **Waste at steady-state ~−330 to −350** — much larger negative
+  magnitude than v2-killer-tuned (~−80 in same range), proving the
+  new term is firing meaningfully. R climbs *anyway* — the policy
+  trades the penalty for the larger positive.
+
+**The "leftmost cram" pathology** that motivated this run — pressure
+crammed into dead-end MAX edges — should be visibly reduced in
+late-iter replays; verify in the displayer before the next run.
+
+**Killed:** at iter 107 to compact and think about the next change.
+Idea queued: [slime-mold transit credit](#slime-mold-transit-credit)
+in the section below — a *positive* local signal to mirror the
+dest-terminated *negative*, so the policy has somewhere to flow TO
+rather than just away from.
+
+**Lessons (added to cross-run lessons above):**
+- Dest-terminated waste is a safe, productive addition at weight 0.3.
+  Combo signal (`total_edge_pressure_end`) is the right structural
+  metric to verify the rule isn't suppressing relays.
+- One-sided penalties teach what *not* to do but leave the policy
+  without a clear local positive alternative. Future reward additions
+  should pair penalties with symmetric positives where possible
+  (slime-mold principle — see queued ideas).
+
 ### v2-killer-tuned — 2026-05-13 (killed @ iter ~260, best run of session)
 
 **wandb:** `jasonyandell-forge42/flux-v2/oyfcui8g` (name `v2-killer-tuned`).
@@ -668,50 +739,69 @@ at the kill point.
 - Plateau-then-breakthrough pattern: the run looked stuck at ~950 for
   ~30 iters before breaking past 1000 cleanly. Patience pays.
 
-## Queued for next restart
+## Queued ideas
 
-### Destination-terminated waste (Jason, ~iter 253 of v2-killer-tuned)
+### Slime-mold transit credit (Jason, 2026-05-13 during v2-no-dead-ends)
 
-Spotted in `v2-killer-tuned` end-state visualizations: the dominant
-player consolidates territory then pumps pressure leftward into edge
-cells that are already at MAX **and have no outflows**. Pressure lands,
-gets clipped on absorption, the cell can't relay it elsewhere —
-discarded. Current waste rule weights this at **zero**.
+**Observation:** the dest-terminated waste rule tells the policy
+*not to ship pressure into a dead end* — a clear local penalty.
+But that's a one-sided gradient: the policy learns the cost without
+seeing the alternative. Slime molds find efficient global structure
+from purely *positive* local rules (pheromone reinforcement on
+successful paths); they never compute "don't do X." Symmetry suggests
+v2 should have a local positive for *the productive thing* — the
+combo relay — to give the policy a "ship to relay" gradient instead
+of just "don't ship to sink."
 
-**Refined rule** (after first proposal): a MAX friendly cell *with
-outflows* is a relay — pressure-in pushes pressure-out, which is *how
-combos work*. Don't penalize that. Only penalize when destination is
-MAX AND has zero outflows — a pure sink.
+**Proposed rule:** *transit credit*. Pay the source cell when its
+active outflow lands on a friendly cell **that has active outflows
+of its own** (so the inbound pressure can propagate). Same
+observation window as dest-terminated, opposite sign:
 
-| Destination state | Today | Refined rule |
+| Destination state | Today | With transit credit |
 |---|---|---|
-| Not friendly | counted by `damage_dealt` reward | unchanged |
-| Friendly, strength < MAX | absorbed productively | unchanged |
-| Friendly, MAX, has outflows | combo relay ✅ | unchanged (no waste) |
-| Friendly, MAX, no outflows | pure sink ❌ | **NEW waste category** |
+| Friendly, MAX, no outflows | dest-terminated waste (−) | unchanged |
+| Friendly, MAX, has outflows | unchanged (no waste) | **NEW positive** |
+| Friendly, < MAX, has outflows | absorbed productively | **NEW positive** (smaller?) |
 
-**Patch to apply at next restart:**
+Open question: do we want the credit only when destination is at MAX
+(strict "relay" case) or for any has-outflows destination (full
+slime-mold trail reinforcement)? The strict case is closer to the
+combo-detection signal Jason cares about; the lax case is a broader
+"your pressure went somewhere alive" reward.
+
+**Implementation sketch:**
 
 ```python
 # python/flux_v2/state.py
-WASTE_WEIGHT_NO_SPILL: float = 1.0
-WASTE_WEIGHT_CAP_BOUND: float = 0.0
-WASTE_WEIGHT_DEST_TERMINATED: float = 0.3   # NEW
+TRANSIT_CREDIT_WEIGHT: float = 0.1   # small to start
+TRANSIT_CREDIT_STRICT: bool = True   # MAX-relay only vs any-outflows
 ```
 
-In `step.py::tick`: for each active outflow from cell `c` toward
-neighbor `d`, compute the portion of `edge_pressure[c,k]` that lands
-when `owner[d] == owner[c]` AND `strength[d] >= MAX` AND
-`outflow[d].sum() == 0`. That portion is waste against the *source*
-cell (it shipped pressure into a sink). Parity-port to `mlx_step.py`.
+In `step.py::tick` and `mlx_step.py::tick_batched`, mirror the
+dest-terminated logic with the inverted destination condition:
+friendly + (strict ? at MAX : True) + has-outflows. Attribute as
+positive `reward_transit_per_cell` to source. Surface as a new
+`reward_transit_iter` panel in wandb.
 
-Update `wiki/decisions/v2-three-term-reward.md` with the new category.
+**Risk:** another dense reward term increases PPO cross-talk and
+makes it harder to attribute future changes. Start small (0.1
+weight, well below dest-terminated 0.3) and watch entropy / KL
+trajectories. If signals stay clean, ramp; if entropy collapses or
+KL thrashes, dial down.
 
-**Why 0.3 to start:** conservative guide weight. NO_SPILL is the
-strongest waste category (1.0); DEST_TERMINATED captures real-but-soft
-waste (the regen *was* sent, just landed at a dead end). Tune up to
-~0.5 if leftmost-cram persists; down to ~0.1 if kill_pressure progress
-regresses.
+**Why this might matter beyond the dead-end pattern:** the slime
+mold analogy generalizes. Self-organizing structures emerge from
+*reinforcement on success* + cheap retries, not from foresight.
+Right now v2 has penalties for visible failure (waste) and large
+rewards for delayed success (kills, captures), but no
+fine-grained positive for the *intermediate productive step* —
+shipping pressure that propagates. Transit credit is the
+missing-middle signal.
+
+Related: [[v2-three-term-reward]] for the current reward stack.
+
+
 
 ## Structural metrics (Phase 2+)
 

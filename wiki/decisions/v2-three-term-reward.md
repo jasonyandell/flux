@@ -2,7 +2,7 @@
 title: v2 — three-term reward (power, waste, time)
 kind: decision
 first_seen: 2026-05-13
-last_updated: 2026-05-13
+last_updated: 2026-05-13b
 status: active
 ---
 
@@ -42,15 +42,22 @@ overlapping ones — v1's hard-learned lesson.
 - **Waste** is the regen a cell *didn't send*. Simple framing: if you have
   any outflows set, your regen flows out through them — that counts as
   "sent" regardless of whether the per-edge cap clipped some of it (the
-  cap is a system limit, not the policy's fault). The only true waste is
-  overflow at a cell with zero active outflows.
+  cap is a system limit, not the policy's fault).
 
-  Implementation: `WASTE_WEIGHT_NO_SPILL = 1.0`, `WASTE_WEIGHT_CAP_BOUND
-  = 0.0` in `python/flux_v2/state.py`. This is the third iteration of the
-  waste rule; earlier attempts weighted both kinds of waste (1:1 and 10:1
-  and 100:1) but the cap-bound signal added high variance that made PPO
-  unstable. The "regen-not-sent" framing collapses to no_spill-only and
-  is much cleaner.
+  Three categories, three weights in `python/flux_v2/state.py`:
+
+  | Category | Trigger | Weight | Attributed to |
+  |---|---|---|---|
+  | `no_spill` | source overflows with zero outflows | `1.0` | source |
+  | `cap_bound` | per-edge clip on the way out | `0.0` (off) | source |
+  | `dest_terminated` | active outflow lands on a friendly cell at MAX strength AND with zero outflows (pure sink) | `0.3` | source |
+
+  `dest_terminated` was added after `v2-killer-tuned` (iter 253) where the
+  red player visibly crammed massive friendly pressure into a dead-end MAX
+  cell at the map edge. A MAX cell *with* outflows is a combo relay (good —
+  pressure passes through), so we only penalize the no-outflow sink case.
+  Pass-through is what makes combos work; the rule is careful not to break
+  that. See [[v2-training-runs]] for the run that surfaced the pathology.
 - **Time** is a small per-tick penalty that pushes finish-the-game pressure.
 - **Win bonus** is a terminal scalar for the last-alive seat.
 

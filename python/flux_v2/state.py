@@ -31,6 +31,11 @@ REGEN_SLOPE: float = 0.0               # linear scaling; 0 = flat regen
 # regen wasn't directed anywhere.
 WASTE_WEIGHT_NO_SPILL: float = 1.0
 WASTE_WEIGHT_CAP_BOUND: float = 0.0
+# Pressure that lands on a friendly cell which is BOTH at MAX strength AND has
+# zero active outflows — a pure sink with no relay. Pass-through MAX cells
+# (with outflows) are combo relays, not waste. See the v2-three-term-reward
+# decision doc for the source/destination split.
+WASTE_WEIGHT_DEST_TERMINATED: float = 0.3
 
 # Action space: 13 actions per cell per AI tick.
 ACTION_SET_BASE: int = 0

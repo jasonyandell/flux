@@ -25,6 +25,7 @@ from .state import (
     OPPOSITE_SLOT,
     State,
     WASTE_WEIGHT_CAP_BOUND,
+    WASTE_WEIGHT_DEST_TERMINATED,
     WASTE_WEIGHT_NO_SPILL,
     copy_state,
     regen,
@@ -236,6 +237,30 @@ def tick(state: State) -> State:
     if no_spill.any():
         waste_this_tick += WASTE_WEIGHT_NO_SPILL * float(overflow[no_spill].sum())
 
+    # Destination-terminated waste: source's active outflow points at a
+    # friendly cell that is at MAX strength AND has zero active outflows.
+    # Pressure lands on a pure sink — no relay, no headroom. Attribute to
+    # source so the policy learns to clear those outflows. Pass-through MAX
+    # cells (outflows > 0) are combo relays and stay un-penalized.
+    if WASTE_WEIGHT_DEST_TERMINATED > 0.0 and can_spill.any():
+        for k in range(K):
+            d_ids = nb[:, k]
+            slot_active = new_outflow[:, k] & (d_ids >= 0) & can_spill
+            if not slot_active.any():
+                continue
+            src_idx = np.where(slot_active)[0]
+            d_idx = d_ids[src_idx]
+            is_dead_end = (
+                (owner[d_idx] == owner[src_idx])
+                & (strength[d_idx] >= MAX_STRENGTH)
+                & (num_active[d_idx] == 0)
+            )
+            if is_dead_end.any():
+                terminated_src = src_idx[is_dead_end]
+                waste_this_tick += WASTE_WEIGHT_DEST_TERMINATED * float(
+                    per_edge[terminated_src].sum()
+                )
+
     s.owner = new_owner
     s.strength = new_strength
     s.outflow = new_outflow
@@ -283,6 +308,7 @@ def waste_per_cell_for_tick(state: State) -> np.ndarray:
     no_spill = is_alive & (overflow > 0) & (num_active == 0)
 
     waste = np.zeros(N, dtype=np.float32)
+    per_edge = np.zeros(N, dtype=np.float32)
     if can_spill.any():
         per_edge_unclipped = np.zeros(N, dtype=np.float32)
         per_edge_unclipped[can_spill] = overflow[can_spill] / num_active[can_spill]
@@ -293,4 +319,22 @@ def waste_per_cell_for_tick(state: State) -> np.ndarray:
         )
     if no_spill.any():
         waste[no_spill] += WASTE_WEIGHT_NO_SPILL * overflow[no_spill]
+    if WASTE_WEIGHT_DEST_TERMINATED > 0.0 and can_spill.any():
+        for k in range(K):
+            d_ids = nb[:, k]
+            slot_active = outflow[:, k] & (d_ids >= 0) & can_spill
+            if not slot_active.any():
+                continue
+            src_idx = np.where(slot_active)[0]
+            d_idx = d_ids[src_idx]
+            is_dead_end = (
+                (owner[d_idx] == owner[src_idx])
+                & (strength[d_idx] >= MAX_STRENGTH)
+                & (num_active[d_idx] == 0)
+            )
+            if is_dead_end.any():
+                terminated_src = src_idx[is_dead_end]
+                waste[terminated_src] += (
+                    WASTE_WEIGHT_DEST_TERMINATED * per_edge[terminated_src]
+                )
     return waste
