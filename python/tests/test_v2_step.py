@@ -28,6 +28,7 @@ from flux_v2 import (
     apply_actions,
     make_board,
     tick,
+    transit_credit_per_cell_for_tick,
 )
 
 
@@ -260,6 +261,25 @@ def test_capture_strength():
     assert not s2.outflow[target].any()
 
 
+def test_neutral_capture():
+    """Pressure landing on a neutral cell captures it once it exceeds the
+    cell's strength. Regression for the receiver-side gate that originally
+    excluded neutrals from inbound enemy-pressure accumulation."""
+    s = make_board(radius=3, num_players=2)
+    seat0 = int(np.where(s.owner == 0)[0][0])
+    k = 0
+    while int(s.neighbors[seat0, k]) < 0 or int(s.owner[s.neighbors[seat0, k]]) != NEUTRAL:
+        k += 1
+    target = int(s.neighbors[seat0, k])
+    assert int(s.owner[target]) == NEUTRAL
+    s.strength[target] = 1.0
+    s.outflow[seat0, k] = True
+    s.edge_pressure[seat0, k] = 80.0
+    s2 = tick(s)
+    assert int(s2.owner[target]) == 0
+    assert abs(float(s2.strength[target]) - CAPTURE_STRENGTH) < 1e-3
+
+
 def test_dead_cells_block_flow():
     """Dead cells don't regen, can't be captured, and don't propagate flows."""
     dead_cells = np.array([1, 2, 3], dtype=np.int32)  # arbitrary
@@ -344,6 +364,39 @@ def test_waste_accounting():
     # Per-edge cap binds: arm a friendly chain that delivers > MAX_EDGE per
     # active edge. Hard to set up directly, so we just sanity-check the
     # waste delta increases under heavy flow.
+
+
+def test_transit_credit_strict_friendly_relay():
+    """Transit credit pays the source when pressure enters a MAX friendly relay."""
+    s = make_board(radius=4, num_players=2)
+    seat = int(np.where(s.owner == 0)[0][0])
+    chain = None
+    for k in range(K):
+        b = int(s.neighbors[seat, k])
+        if b < 0:
+            continue
+        c = int(s.neighbors[b, k])
+        if c >= 0:
+            chain = (seat, b, c, k)
+            break
+    assert chain is not None
+    a, b, c, k = chain
+
+    s.owner[a] = 0; s.strength[a] = MAX_STRENGTH
+    s.owner[b] = 0; s.strength[b] = MAX_STRENGTH
+    s.owner[c] = 0; s.strength[c] = 50.0
+    s.outflow[a, k] = True
+    s.outflow[b, k] = True
+
+    credit = transit_credit_per_cell_for_tick(s)
+    assert credit[a] > 0.0
+    assert credit[b] == 0.0
+
+    # Strict mode should not pay for a below-MAX destination, even if it has
+    # onward outflow. That remains ordinary fill, not a combo relay.
+    s.strength[b] = 50.0
+    credit_below_max = transit_credit_per_cell_for_tick(s)
+    assert credit_below_max[a] == 0.0
 
 
 def test_random_dead_keeps_live_connected():

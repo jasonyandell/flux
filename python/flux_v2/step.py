@@ -24,6 +24,7 @@ from .state import (
     NEUTRAL,
     OPPOSITE_SLOT,
     State,
+    TRANSIT_CREDIT_STRICT,
     WASTE_WEIGHT_CAP_BOUND,
     WASTE_WEIGHT_DEST_TERMINATED,
     WASTE_WEIGHT_NO_SPILL,
@@ -130,6 +131,10 @@ def tick(state: State) -> State:
     # Per-cell "alive" mask (owned & not dead).
     is_alive = owner >= 0
     is_dead = owner == DEAD
+    # Pressure can land on neutrals too (to capture them). DEAD walls absorb
+    # nothing. Gate inbound accumulation on `not_dead`, not on `is_alive` —
+    # the latter excludes neutral receivers and breaks neutral capture.
+    not_dead = ~is_dead
 
     # ---- Gather pressure_in_friendly and pressure_in_enemy at each cell ----
     pressure_in_friendly = np.zeros(N, dtype=np.float32)
@@ -154,7 +159,7 @@ def tick(state: State) -> State:
         d_owner = np.full(N, NEUTRAL, dtype=np.int32)
         d_owner[valid] = owner[valid_d]
         is_friendly_d = valid & (d_owner == owner) & is_alive
-        is_enemy_d = valid & (d_owner != owner) & (d_owner >= 0) & is_alive
+        is_enemy_d = valid & (d_owner != owner) & (d_owner >= 0) & not_dead
         pressure_in_friendly += pressure * is_friendly_d.astype(np.float32)
         pressure_in_enemy   += pressure * is_enemy_d.astype(np.float32)
         # Attribute enemy pressure by the source player so we can resolve
@@ -338,3 +343,69 @@ def waste_per_cell_for_tick(state: State) -> np.ndarray:
                     WASTE_WEIGHT_DEST_TERMINATED * per_edge[terminated_src]
                 )
     return waste
+
+
+def transit_credit_per_cell_for_tick(state: State) -> np.ndarray:
+    """Diagnostic: compute per-source transit credit for the next tick.
+
+    A source earns credit when its active outflow carries overflow pressure
+    into a friendly relay: a destination with active outflows of its own. In
+    strict mode, the destination must also already be at MAX strength, which
+    makes this the positive mirror of dest-terminated waste without rewarding
+    ordinary fill traffic.
+    """
+    N = state.N
+    owner = state.owner
+    strength = state.strength
+    nb = state.neighbors
+    outflow = state.outflow
+    edge_pressure_prev = state.edge_pressure
+    is_alive = owner >= 0
+
+    pressure_in_friendly = np.zeros(N, dtype=np.float32)
+    pressure_in_friendly[is_alive] = regen(strength[is_alive]).astype(np.float32)
+    for k in range(K):
+        d_ids = nb[:, k]
+        valid = d_ids >= 0
+        opp = int(OPPOSITE_SLOT[k])
+        pressure = np.zeros(N, dtype=np.float32)
+        valid_d = d_ids[valid]
+        pressure[valid] = edge_pressure_prev[valid_d, opp]
+        d_owner = np.full(N, NEUTRAL, dtype=np.int32)
+        d_owner[valid] = owner[valid_d]
+        is_friendly_d = valid & (d_owner == owner) & is_alive
+        pressure_in_friendly += pressure * is_friendly_d.astype(np.float32)
+
+    headroom = np.maximum(MAX_STRENGTH - strength, 0.0)
+    grew = np.minimum(pressure_in_friendly, headroom)
+    overflow = pressure_in_friendly - grew
+    overflow = np.where(is_alive, overflow, 0.0)
+    num_active = outflow.sum(axis=1).astype(np.int32)
+    can_spill = (num_active > 0) & (overflow > 0) & is_alive
+
+    credit = np.zeros(N, dtype=np.float32)
+    if not can_spill.any():
+        return credit
+
+    per_edge_unclipped = np.zeros(N, dtype=np.float32)
+    per_edge_unclipped[can_spill] = overflow[can_spill] / num_active[can_spill]
+    per_edge = np.minimum(per_edge_unclipped, MAX_EDGE)
+
+    for k in range(K):
+        d_ids = nb[:, k]
+        slot_active = outflow[:, k] & (d_ids >= 0) & can_spill
+        if not slot_active.any():
+            continue
+        src_idx = np.where(slot_active)[0]
+        d_idx = d_ids[src_idx]
+        is_relay = (
+            (owner[d_idx] == owner[src_idx])
+            & (num_active[d_idx] > 0)
+        )
+        if TRANSIT_CREDIT_STRICT:
+            is_relay &= strength[d_idx] >= MAX_STRENGTH
+        if is_relay.any():
+            relay_src = src_idx[is_relay]
+            credit[relay_src] += per_edge[relay_src]
+
+    return credit
