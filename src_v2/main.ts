@@ -8,16 +8,18 @@ import { buildBoard } from './board';
 import { createPlayer } from './replay/player';
 import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer } from './render/scene';
 import { createTopBar } from './render/topbar';
+import { createPlaybackBar } from './render/playback';
 
 const REPLAY_BASE = '/v2/replays/';
 const INDEX_URL = '/v2/replays/index.json';
 const POLL_INTERVAL_MS = 3000;
-const TARGET_PLAY_SEC = 4;     // wall-clock seconds per replay
+const PLAY_TICKS_PER_SEC = 10; // 1x game time: dt_per_tick_ms is 100
+const PLAYBACK_SPEED = 2.0;     // multiplier applied to all playback rates
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 
 // Initial placeholder board (until first replay loads).
-let board = buildBoard(6, 6);
+let board = buildBoard(5, 12);
 const scene = createScene(canvas, board);
 const topBar = createTopBar();
 topBar.setStatus('waiting for first replay…');
@@ -29,12 +31,49 @@ const player = createPlayer({
   indexUrl: INDEX_URL,
   replayBaseUrl: REPLAY_BASE,
   pollIntervalMs: POLL_INTERVAL_MS,
-  targetPlaySec: TARGET_PLAY_SEC,
+  playTicksPerSec: PLAY_TICKS_PER_SEC,
+  playbackSpeed: PLAYBACK_SPEED,
 });
 player.start();
 
+const playbackBar = createPlaybackBar({
+  onTogglePlay: () => player.togglePaused(),
+  onPrev: () => player.prevReplay(),
+  onNext: () => player.nextReplay(),
+  onSeek: (t) => {
+    // Scrubbing implies user wants the frame frozen; pause if not already.
+    if (!player.isPaused()) player.setPaused(true);
+    player.seekFraction(t);
+  },
+  onSpeedChange: (m) => player.setSpeedMultiplier(m),
+});
+
+// Standard media-player keys: Space toggles, arrows jog by frame,
+// Shift+arrows swap to the prev/next replay.
+window.addEventListener('keydown', (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  if (e.key === ' ' || e.code === 'Space') {
+    e.preventDefault();
+    player.togglePaused();
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (e.shiftKey) player.prevReplay();
+    else { if (!player.isPaused()) player.setPaused(true); player.stepFrames(-1); }
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (e.shiftKey) player.nextReplay();
+    else { if (!player.isPaused()) player.setPaused(true); player.stepFrames(1); }
+  }
+});
+
 let last = performance.now();
 let currentName: string | null = null;
+let currentBoardKey = `${board.radius}:${board.numPlayers}:${board.N}`;
+
+function boardKey(b: typeof board): string {
+  return `${b.radius}:${b.numPlayers}:${b.N}`;
+}
 
 function frame(now: number) {
   const dt = Math.min(0.25, (now - last) / 1000);
@@ -51,9 +90,13 @@ function frame(now: number) {
   if (r) {
     const name = player.currentName();
     if (name !== currentName) {
+      const nextBoardKey = boardKey(r.board);
       // Replay swap: rebuild geometry if board shape differs from current.
-      if (r.board.N !== scene.nodeCount) {
+      // Mixed radius streams are normal while experiments pivot, so compare
+      // the full board signature instead of only the node count.
+      if (nextBoardKey !== currentBoardKey || r.board.N !== scene.nodeCount) {
         rebuildSceneGeometry(scene, r.board);
+        currentBoardKey = nextBoardKey;
       }
       board = r.board;
       currentName = name;
@@ -67,8 +110,19 @@ function frame(now: number) {
       const fit = typeof meta.best_fitness === 'number' ? meta.best_fitness : 0;
       const mdl = typeof meta.model === 'string' ? meta.model : null;
       topBar.setStats(it, fit, mdl);
+      topBar.setBoard(
+        r.header.radius,
+        r.header.numPlayers,
+        r.header.numNodes,
+        r.header.tickStride,
+        r.header.dtPerTickMs,
+      );
     }
   }
+
+  playbackBar.setFrame(player.currentFrame(), player.frameCount());
+  playbackBar.setPaused(player.isPaused());
+  playbackBar.setSpeed(player.speedMultiplier());
 
   render(scene);
   requestAnimationFrame(frame);
