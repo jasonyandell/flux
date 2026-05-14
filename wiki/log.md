@@ -6,6 +6,31 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-14 | workspace | v2-board-connectivity decision + carve fix]
+
+**Touched pages:** [[v2-board-connectivity]] [[v2-algorithmic-solvers]] [[index]] [[log]]
+
+**Added:** [[v2-board-connectivity]] as a first-class decision page. The
+rule: every non-DEAD cell must reach every other non-DEAD cell; every seat
+must reach every other seat; max seat-pair distance ≤ 4·R. Lots of dead is
+fine — isolated live pockets are not. Two enforcement layers documented:
+`random_seat_and_dead` (sampler greedy guard) and `run_v2_solver.py` retry
+or carve mode.
+
+**Updated:** [[v2-algorithmic-solvers]] gains a "Board precondition" section
+backlinking the new decision. [[index]] lists the new decision.
+
+**Fixed:** `carve_seat_connectors` previously bridged only seat-bearing
+components, leaving live islands that contained no seats isolated — exactly
+the "isolated possibly-active nodes" case the invariant is supposed to
+exclude. Now bridges every live component to the main island (most seats,
+size as tiebreaker). Solver docstrings (`solver.py`, `solver_lightning.py`)
+declare the precondition explicitly.
+
+**Tests added:** `python/tests/test_v2_solver_connectivity.py` — retry mode
+across 20 seeds × 3 configs, carve mode across 20 seeds × 2 configs,
+helper-function unit tests, and a BFS/lightning smoke test.
+
 ## [2026-05-13 | workspace | v2-bigger-hidden64 run kicked off]
 
 **Touched pages:** [[v2-training-runs]] [[log]]

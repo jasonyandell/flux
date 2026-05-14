@@ -101,5 +101,19 @@ experiments:
   rollout (replace some seats' policy actions with `solver_actions`) and
   measure win rate. That's the real baseline.
 
+## Board precondition
+
+Both solvers require the v2 board-connectivity invariant: every non-DEAD
+cell reachable from every other non-DEAD cell, every seat reachable from
+every other seat, max seat-pair distance ≤ 4·R. Lots of dead cells is
+fine — isolated live pockets are not. See [[decisions/v2-board-connectivity]]
+for the rule, the two enforcement layers (sampler guard + runner retry/carve),
+and the failure modes each solver would exhibit on a disconnected board.
+
+`scripts/run_v2_solver.py --connect-mode retry` (default) regenerates boards
+until the seat-distance check passes; `--connect-mode carve` revives a thin
+bridge of dead cells along the shortest path between live components, which
+preserves the spatial character of pure uniform-random dead-cell samples.
+
 Related: [[v2-training-runs]] (PPO track), [[decisions/v2-edge-pressure-state]],
-[[decisions/v2-three-term-reward]].
+[[decisions/v2-three-term-reward]], [[decisions/v2-board-connectivity]].

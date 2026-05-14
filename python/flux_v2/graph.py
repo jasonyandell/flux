@@ -114,6 +114,192 @@ def make_board(
     )
 
 
+def carve_seat_connectors(
+    seats: np.ndarray, dead: np.ndarray, neighbors: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bridge every live component into one connected live subgraph by
+    reviving dead cells along shortest-cost paths.
+
+    Approach: label all live-cell components, pick the component containing
+    the most seats as the "main island" (tie-broken to the largest component
+    if no seat sits in any component), and for every other live component
+    revive the dead cells along a min-cost path back to the main island
+    (0-1 BFS: cost 0 through live cells, cost 1 through dead).
+
+    The function bridges *every* live component, not just seat-bearing ones,
+    so the result satisfies the v2 board invariant: all non-dead cells are
+    reachable from every other non-dead cell. Isolated live pockets — even
+    those containing no seats — would otherwise sit dormant, immune to
+    capture and useless to the solvers.
+
+    Returns (new_dead_array, carved_cells). The carved cells are the
+    previously-dead cells revived to bridge components. Useful when you want
+    the spatial character of a uniform-random dead-cell sample but a
+    guaranteed connected board — typically only a handful of cells get
+    carved, much less perturbation than rejecting the entire board.
+    """
+    from collections import deque
+    N = neighbors.shape[0]
+    K_local = neighbors.shape[1]
+    is_dead = np.zeros(N, dtype=np.bool_)
+    if len(dead) > 0:
+        is_dead[dead] = True
+
+    # Label live-cell components and remember a representative cell per comp.
+    comp = np.full(N, -1, dtype=np.int32)
+    comp_repr: list[int] = []
+    comp_size: list[int] = []
+    next_comp = 0
+    for start in range(N):
+        if is_dead[start] or comp[start] >= 0:
+            continue
+        comp[start] = next_comp
+        comp_repr.append(start)
+        size = 1
+        stack = [start]
+        while stack:
+            c = stack.pop()
+            for k in range(K_local):
+                d = int(neighbors[c, k])
+                if d >= 0 and not is_dead[d] and comp[d] < 0:
+                    comp[d] = next_comp
+                    size += 1
+                    stack.append(d)
+        comp_size.append(size)
+        next_comp += 1
+
+    if next_comp <= 1:
+        return dead, np.array([], dtype=np.int32)
+
+    # Seats per component (for tie-breaking which component is the main island).
+    seats_in_comp: dict[int, list[int]] = {}
+    for s in seats:
+        s = int(s)
+        if is_dead[s]:
+            continue
+        seats_in_comp.setdefault(int(comp[s]), []).append(s)
+
+    # Main island: most seats, then largest component as the tiebreaker so a
+    # seat-free uniform-random board still picks the biggest blob.
+    def _rank(cid: int) -> tuple[int, int]:
+        return (len(seats_in_comp.get(cid, [])), comp_size[cid])
+
+    main_comp_id = max(range(next_comp), key=_rank)
+    main_target = (
+        seats_in_comp.get(main_comp_id, [comp_repr[main_comp_id]])[0]
+    )
+    carved: list[int] = []
+
+    for cid in range(next_comp):
+        if cid == main_comp_id:
+            continue
+        # Prefer a seat in this component as the source if one exists; the
+        # carved path then runs seat-to-seat, which usually carves fewer
+        # cells than starting from an arbitrary representative.
+        src_candidates = seats_in_comp.get(cid, [comp_repr[cid]])
+        src = src_candidates[0]
+        # 0-1 BFS: cost 0 through live cells, cost 1 through dead.
+        dist = np.full(N, 10 ** 9, dtype=np.int32)
+        prev = np.full(N, -1, dtype=np.int32)
+        dist[src] = 0
+        dq = deque([src])
+        while dq:
+            v = dq.popleft()
+            dv = dist[v]
+            for k in range(K_local):
+                u = int(neighbors[v, k])
+                if u < 0:
+                    continue
+                w = 1 if is_dead[u] else 0
+                nd = dv + w
+                if nd < dist[u]:
+                    dist[u] = nd
+                    prev[u] = v
+                    if w == 0:
+                        dq.appendleft(u)
+                    else:
+                        dq.append(u)
+        if dist[main_target] >= 10 ** 9:
+            continue  # off-grid? skip; shouldn't happen on a hex grid
+        node = main_target
+        while node != -1 and node != src:
+            if is_dead[node]:
+                is_dead[node] = False
+                carved.append(node)
+            node = int(prev[node])
+
+    new_dead = np.where(is_dead)[0].astype(np.int32)
+    return new_dead, np.array(carved, dtype=np.int32)
+
+
+def max_seat_pair_distance(
+    seats: np.ndarray, dead: np.ndarray, neighbors: np.ndarray,
+) -> int:
+    """Return the maximum BFS graph distance (in hops through non-dead cells)
+    between any two seats. Returns -1 if any seat is unreachable from another
+    (disconnected). On a snaking 50%-dead board this can be 2-3× the empty
+    hex diameter — large enough that pressure can't traverse it in game time
+    and seats effectively play their own fight."""
+    from collections import deque
+    N = neighbors.shape[0]
+    K_local = neighbors.shape[1]
+    is_dead = np.zeros(N, dtype=np.bool_)
+    if len(dead) > 0:
+        is_dead[dead] = True
+    worst = 0
+    for s_idx in range(len(seats) - 1):
+        start = int(seats[s_idx])
+        if is_dead[start]:
+            return -1
+        dist = np.full(N, -1, dtype=np.int32)
+        dist[start] = 0
+        q = deque([start])
+        while q:
+            c = q.popleft()
+            for k in range(K_local):
+                d = int(neighbors[c, k])
+                if d >= 0 and not is_dead[d] and dist[d] < 0:
+                    dist[d] = dist[c] + 1
+                    q.append(d)
+        for t in seats[s_idx + 1:]:
+            dt = int(dist[int(t)])
+            if dt < 0:
+                return -1
+            if dt > worst:
+                worst = dt
+    return worst
+
+
+def seats_mutually_reachable(
+    seats: np.ndarray, dead: np.ndarray, neighbors: np.ndarray,
+) -> bool:
+    """Return True iff every seat cell is reachable from every other seat cell
+    via BFS through non-dead cells. Strong guarantee against any seat being
+    placed in an isolated live-subgraph pocket — defensive even though
+    `random_seat_and_dead` is supposed to maintain live-graph connectivity."""
+    N = neighbors.shape[0]
+    K_local = neighbors.shape[1]
+    is_dead = np.zeros(N, dtype=np.bool_)
+    if len(dead) > 0:
+        is_dead[dead] = True
+    if len(seats) == 0:
+        return True
+    start = int(seats[0])
+    if is_dead[start]:
+        return False
+    visited = np.zeros(N, dtype=np.bool_)
+    visited[start] = True
+    stack = [start]
+    while stack:
+        c = stack.pop()
+        for k in range(K_local):
+            d = int(neighbors[c, k])
+            if d >= 0 and not is_dead[d] and not visited[d]:
+                visited[d] = True
+                stack.append(d)
+    return bool(visited[seats].all())
+
+
 def _live_subgraph_connected(is_dead: np.ndarray, neighbors: np.ndarray) -> bool:
     """BFS over live cells: True iff every live cell is reachable from any one
     live start cell. Used as a guard when sampling dead cells, so we never

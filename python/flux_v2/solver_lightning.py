@@ -21,6 +21,15 @@ Action rule (per owned cell):
     desired-on slots = those pointing at the steepest-uphill neighbor(s)
                        (pot[d] strictly greater than pot[c])
     one action this tick:  SET a missing on-slot > CLEAR a stale slot > NOOP
+
+Board precondition (see `wiki/decisions/v2-board-connectivity.md`): every
+non-DEAD cell must be reachable from every other through non-DEAD neighbors,
+and every seat must be reachable from every other seat. The potential field
+diffuses through non-DEAD neighbors, so an isolated live pocket would never
+see the global attractor and would converge to its own local intrinsic
+field — the solver in that pocket would only ever attack its immediate
+frontier with no relay structure backing it. The runner enforces the
+invariant via `seats_mutually_reachable` + max-pair-distance retry / carve.
 """
 from __future__ import annotations
 
