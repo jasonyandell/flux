@@ -62,7 +62,8 @@ was tried, what happened, what I concluded, what came next.
 - `lightning_sum_long` (γ=0.94)
 - `lightning_sum_wide` (γ=0.94, expand=1.0)
 - `lightning_sum_wave` (sum + 60% MAX gate, "pulse mode" — modest winner)
-- `lightning_max_wave` (max + 60% MAX gate — *strong* winner: 8-2 vs max)
+- `lightning_max_wave` (max + 60% MAX gate — at 50 games, tied with max; exp 12 8-2 was variance)
+- **`lightning_wave_long`** (sum_wave + γ=0.94 long-field — **best at 100 games, 59% vs default wave**)
 - `lightning_attn_release` (attn with 0.7 LOOP gate — lost everything)
 - `lightning_attn_slam` (attn with 0.95 LOOP gate — also lost)
 
@@ -595,4 +596,49 @@ Replays:
   — max_wave vs max 3v3 (max_wave wins 8-2)
 - `solver_v2_lightning_sum_wave_20260515T065411.flxr`
   — all-wave self-play (12 games, symmetric)
+
+---
+
+## Exp 13 — 50-game max_wave + wave_long combos
+
+Six matchups at R=20 10% dead, 50 games each:
+
+| matchup                       | A wins | B wins | stale | share |
+|-------------------------------|-------:|-------:|------:|------:|
+| max_wave[even] vs max[odd]    | 19 | 24 | 7 | 38% |
+| max[even] vs max_wave[odd]    | 23 | 21 | 6 | 46% |
+| max_wave[even] vs sum[odd]    | 13 | 31 | 6 | 26% |
+| wave_long[even] vs wave[odd]  | **27** | 20 | 3 | **54%** |
+| wave[even] vs wave_long[odd]  | 18 | **28** | 4 | 36% (B 64%) |
+| max_wave[even] vs wave[odd]   | 13 | 29 | 8 | 26% |
+
+Pooled:
+
+- **max_wave vs max**: 40-47, max_wave 46% — *not better than max*.
+  The exp 12 8-2 result was variance. Max gets a smaller benefit
+  from the gate than sum does (or none at all).
+- **max_wave vs sum**: 13/87 even-corrected ≈ 31%; sum dominates.
+- **wave_long vs wave (100 games)**: 55-38 wins, 7 stalemates.
+  wave_long wins 59% of decisive games (95% CI 49-69%) — modest
+  but consistent.
+- **max_wave vs wave**: 13/82 even-corrected ≈ 33%; wave (sum-aggregation
+  with gate) clearly beats max_wave (max-aggregation with gate).
+
+**Combined ranking** under big-bag R=20 10% dead:
+
+> wave_long (γ=0.94 sum + 60% MAX gate)
+> &nbsp;&nbsp;&nbsp;&nbsp;**> wave > sum ≈ max ≈ max_wave ≈ bfs > attn**
+
+The headline solver of the night: `lightning_wave_long` (now
+registered). γ=0.94 long-field + 60% MAX strength gate. A modest
+but real ~10pp advantage over default lightning_sum.
+
+Caveat: every claim in this section has 95% CI within ~12pp; the
+true effect sizes between adjacent solvers are small. Tomorrow's
+work could:
+
+1. Run wave_long with several wave_frac values (we only tested 0.6).
+2. Test at R=15 and R=25.
+3. Use rotating seat positions instead of fixed alternating to
+   wash out the odd-seat bias completely.
 

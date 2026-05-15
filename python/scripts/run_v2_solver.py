@@ -105,6 +105,13 @@ def _lightning_max_wave(state, seat, rng=None):
                                     wave_frac=0.6)
 
 
+def _lightning_wave_long(state, seat, rng=None):
+    # Exp 13 best combo: sum_wave (60% MAX gate) + γ=0.94 long-field.
+    # Wins ~59% vs default wave over 100 games.
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum_wave",
+                                    wave_frac=0.6, gamma=0.94)
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -122,6 +129,7 @@ SOLVERS = {
     "lightning_chase": _lightning_chase,         # counter-attack on inbound threat
     "lightning_sum_wave": _lightning_sum_wave,   # pulse: fires when strength ≥ 60% MAX
     "lightning_max_wave": _lightning_max_wave,   # max-mode + pulse gate
+    "lightning_wave_long": _lightning_wave_long, # sum_wave + γ=0.94 (exp13 winner)
 }
 
 
