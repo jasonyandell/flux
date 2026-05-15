@@ -6,6 +6,43 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-15 | workspace | v2 vectorized track lands as a provisional separate page]
+
+**Touched pages:** [[topics/v2-vectorized]] (new) [[index]] [[log]]
+
+Driver: branch `worktree-v2-vectorize-compact` (commit `194f29b`)
+ships a single-shot rewrite of the v2 hot path — all 17 lightning
+modes + BFS go through one vectorized `(N, K)` pipeline in the new
+`python/flux_v2/solver_vec.py`; `step.apply_actions` is also lifted
+out of its 1,200-trip Python loop; the replay format is bumped to
+FLXR v3 (gzip + dense per-frame, ~43-180× smaller). 141 Python tests
++ `tsc` + `vite build` all clean. But the matched-pair rankings on
+[[topics/v2-overnight-research]] were produced against the
+per-cell-loop solvers, so until those are rerun the new track is
+parked as **provisional** and the existing wiki pages are left
+intact.
+
+**Added:**
+- [[topics/v2-vectorized]] — what changed, measured numbers, the two
+  intentional behavioral deltas (RNG draw schedule, relay ε-tie
+  rule), and the open question (re-run matched-pair under the new
+  code).
+
+**Updated:**
+- [[index]] — added a v2-vectorized bullet at the top of the
+  "v2 research (freshest first)" list, clearly marked
+  *provisional* so it doesn't get confused with the validated
+  overnight rankings below it.
+
+**Deliberately not touched yet** (waiting on validation):
+- [[topics/v2-overnight-research]], [[topics/v2-algorithmic-solvers]],
+  [[topics/v2-viewer]] — all describe pre-vectorize state and the
+  v2 replay format. Will reconcile after we rerun the matched-pair
+  tournament under the new code and confirm the ranking holds (or
+  doesn't).
+
+---
+
 ## [2026-05-15 | workspace | wiki curation — entry-page rewrite + ranking reconciliation]
 
 **Touched pages:** [[entities/flux]] [[index]]

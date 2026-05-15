@@ -43,6 +43,12 @@ v2 reference:
 
 v2 research (freshest first):
 
+- [[topics/v2-vectorized|v2-vectorized]] — **provisional.**
+  Branch-local rewrite (`worktree-v2-vectorize-compact`) that
+  vectorizes all 17 solver modes + BFS + `step.apply_actions` and
+  ships FLXR v3 (gzip dense per-frame, ~43-180× smaller). 141 tests
+  + tsc + vite pass; matched-pair rankings against the new code
+  have **not** yet been re-confirmed.
 - [[topics/v2-overnight-research|v2-overnight-research]] — autonomous
   overnight matched-pair tournaments (2026-05-15). **Current ranking:
   `wave_long` > `sum` > `bfs` ≈ `max` >> `attn` >> `pulse`/`pulse_stagger`.**
