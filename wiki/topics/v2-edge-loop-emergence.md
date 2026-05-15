@@ -661,6 +661,48 @@ This is the kind of bug that's invisible without a UI. The training
 metrics looked fine; the policy was visually broken. Replay-driven
 iteration was what surfaced it.
 
+### Head-to-head progression
+
+All evaluations: R=5 P=6 dead=10, 24 games, alternating 3v3 with
+`lightning_sum`. Trained policy uses categorical sampling (matches
+training).
+
+| version | model params | wins | stalemates | mean ticks | note |
+|---------|------:|---:|---:|---:|------|
+| phase 3 (slot-biased)            | 660 | 0 | 1 | 1426 | east/SE bias, ignored 4 directions |
+| phase 4 (equivariant)            | 261 | 0 | 1 | 1426 | sat idle on interior cells |
+| phase 5 (+ transit + 20× waste)  | 261 | 0 | **4** | **1865** | losing slower, more drawn games |
+| (reference) hand-designed `lightning_attn` | n/a | 4 / 12 | 0 | — | hand-coded prior, smaller sample |
+
+Every architectural and reward fix moved the trajectory in the right
+direction but didn't yet cross 0 wins. Phase 5's 4 stalemates +
+30% longer games suggest the structural healing is real (interior
+cells now have outflows pointing at relays) but the **resulting
+policy still isn't competitive with `sum`** at 60 iters and 261
+policy parameters. Beating a well-tuned hand-coded heuristic on a
+91-cell board with this little capacity is genuinely hard.
+
+### What's stopping it
+
+Three plausible causes in order of cost-to-test:
+
+1. **Capacity.** 32 hidden units / 3 GCN layers / 261 policy params
+   is small. Bump `HIDDEN` to 64 (2× capacity per layer) and retrain
+   from fresh.
+2. **Training time.** 60 iters is a sprint; the user's reference
+   overnight runs go 1000+. Continue from the phase-5 checkpoint with
+   `entropy_coef` annealed 0.01 → 0.001 to commit harder.
+3. **Mixed-seat training biases toward coexistence, not domination.**
+   The reward signal during training is "do well alongside three
+   `lightning_sum` opponents", which is satisfied by parity. Head-to-
+   head requires actively beating. A curriculum (start vs `bfs`, then
+   `lightning`, then `lightning_sum`) might escape this trap.
+
+This is now a real research direction, not a 5-minute moonshot. But
+the architecture and reward shape are now correct — every future
+iteration can build on these without re-litigating the slot-bias and
+missing-relay-reward bugs.
+
 Related: [[v2-algorithmic-solvers]],
 [[decisions/v2-edge-pressure-state]], [[v2-edge-voting-policy]],
 [[v2-training-runs]],
