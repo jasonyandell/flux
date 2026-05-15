@@ -32,7 +32,12 @@ import numpy as np                                                   # noqa: E40
 
 from flux_v2.graph import make_board, random_seat_and_dead            # noqa: E402
 from flux_v2.mlx_step import apply_actions_batched, tick_batched      # noqa: E402
-from flux_v2.ppo import GNNActorCritic                                # noqa: E402
+from flux_v2.ppo import AttnActorCritic, GNNActorCritic               # noqa: E402
+
+MODEL_REGISTRY = {
+    "gnn": GNNActorCritic,
+    "attn": AttnActorCritic,
+}
 from flux_v2.replay import (                                          # noqa: E402
     Frame,
     ReplayHeader,
@@ -1046,6 +1051,10 @@ def main() -> None:
     ap.add_argument("--wandb-project", default="flux-v2")
     ap.add_argument("--wandb-run-name", default=None)
     ap.add_argument("--seed", type=int, default=int(time.time()) & 0xFFFFFFFF)
+    ap.add_argument("--model", choices=tuple(MODEL_REGISTRY), default="gnn",
+                    help="actor-critic architecture: 'gnn' (default 3-layer GCN, "
+                         "13-action softmax) or 'attn' (same backbone, SET-action "
+                         "logits = (1-α)·attack_q + α·loop_q from learned heads)")
     args = ap.parse_args()
 
     if args.checkpoint is None:
@@ -1073,7 +1082,9 @@ def main() -> None:
     N = base.N
     neighbors_mx = mx.array(base.neighbors)
 
-    model = GNNActorCritic()
+    model_cls = MODEL_REGISTRY[args.model]
+    model = model_cls()
+    print(f"  model: {args.model} ({model_cls.__name__})")
     optimizer = optim.Adam(learning_rate=args.lr)
     mx.eval(model.parameters())
 

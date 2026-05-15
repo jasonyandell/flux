@@ -133,6 +133,89 @@ def build_features(
     )
 
 
+class AttnActorCritic(nn.Module):
+    """Attention-structured PPO policy. Same 3-layer GCN backbone as
+    GNNActorCritic but the SET-action logits are produced by a 2-head
+    soft-attention block mirroring the hand-designed `lightning_attn`
+    solver:
+
+        SET_k logit = (1 - α) · attack_q[k] + α · loop_q[k]
+
+    where `attack_q[k]`, `loop_q[k]` are learned per-slot scores and α is a
+    learned per-cell sigmoid scalar. CLEAR_k and NOOP keep generic linear
+    heads so PPO can freely learn when to retract or stand pat.
+
+    The attack/loop split is a *structural prior*, not a hard constraint:
+    PPO can degenerate attack_q ≈ loop_q if the split isn't useful, in
+    which case the policy reduces to a single SET-score head. The
+    interesting question is whether the gradient finds a meaningful
+    separation — that's the architectural test.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.w1_self = nn.Linear(IN_DIM, HIDDEN, bias=False)
+        self.w1_neigh = nn.Linear(IN_DIM, HIDDEN, bias=True)
+        self.w2_self = nn.Linear(HIDDEN, HIDDEN, bias=False)
+        self.w2_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
+        self.w3_self = nn.Linear(HIDDEN, HIDDEN, bias=False)
+        self.w3_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
+        # Per-slot attack and loop scores.
+        self.attack_q_head = nn.Linear(HIDDEN, K)
+        self.loop_q_head = nn.Linear(HIDDEN, K)
+        # Per-cell mixing weight (sigmoid).
+        self.alpha_head = nn.Linear(HIDDEN, 1)
+        # Generic CLEAR and NOOP heads.
+        self.clear_head = nn.Linear(HIDDEN, K)
+        self.noop_head = nn.Linear(HIDDEN, 1)
+        # Value head identical to GNNActorCritic.
+        self.value_hidden = nn.Linear(HIDDEN, VALUE_HIDDEN)
+        self.value_out = nn.Linear(VALUE_HIDDEN, 1)
+
+    def forward(
+        self,
+        owner: mx.array,
+        strength: mx.array,
+        outflow: mx.array,
+        edge_pressure: mx.array,
+        neighbors: mx.array,
+        num_players: int,
+    ) -> tuple[mx.array, mx.array]:
+        H0 = build_features(
+            owner, strength, outflow, edge_pressure, neighbors, num_players,
+        )
+        H0_agg = _aggregate_neighbors(H0, neighbors)
+        H1 = mx.maximum(self.w1_self(H0) + self.w1_neigh(H0_agg), 0)
+        H1_agg = _aggregate_neighbors(H1, neighbors)
+        H2 = mx.maximum(self.w2_self(H1) + self.w2_neigh(H1_agg), 0)
+        H2_agg = _aggregate_neighbors(H2, neighbors)
+        H3 = mx.maximum(self.w3_self(H2) + self.w3_neigh(H2_agg), 0)
+
+        attack_q = self.attack_q_head(H3)            # (G, S, N, K)
+        loop_q = self.loop_q_head(H3)                # (G, S, N, K)
+        alpha = mx.sigmoid(self.alpha_head(H3))      # (G, S, N, 1)
+        set_logits = (1.0 - alpha) * attack_q + alpha * loop_q  # (G, S, N, K)
+        clear_logits = self.clear_head(H3)           # (G, S, N, K)
+        noop_logit = self.noop_head(H3)              # (G, S, N, 1)
+        policy_logits = mx.concatenate(
+            [set_logits, clear_logits, noop_logit], axis=-1,
+        )                                            # (G, S, N, 2K+1)
+
+        v_per_cell = self.value_out(
+            mx.maximum(self.value_hidden(H3), 0)
+        ).squeeze(-1)
+        G, N = owner.shape
+        S = num_players
+        seat_idx = mx.arange(S).reshape(1, S, 1)
+        is_mine = (owner.reshape(G, 1, N) == seat_idx).astype(mx.float32)
+        denom = mx.maximum(is_mine.sum(axis=-1), 1.0)
+        value = (v_per_cell * is_mine).sum(axis=-1) / denom
+        return policy_logits, value
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+
 class GNNActorCritic(nn.Module):
     def __init__(self) -> None:
         super().__init__()
