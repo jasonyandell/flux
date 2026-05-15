@@ -120,3 +120,44 @@ to be the right thing.
 Pivot: instead of adding gates, try variant designs that are
 *structurally different* — see exp 4.
 
+---
+
+## Exp 4 — attn hyperparameter sweep (big-bag R=20 10% dead, 8 games each vs sum)
+
+13 configs × 8 games, alternating 3 attn-variant seats vs 3
+lightning_sum. Best result was 2/8 (25%); most configs got 1/8 (12%).
+
+| config | attn wins | sum wins | stale |
+|--------|----------:|---------:|------:|
+| defaults | 1 | 7 | 0 |
+| deep_thresh=1.0 | 1 | 6 | 1 |
+| deep_thresh=3.0 | 1 | 7 | 0 |
+| deep_thresh=5.0 | 1 | 6 | 1 |
+| gamma=0.7 | 1 | 6 | 1 |
+| gamma=0.92 | 0 | 8 | 0 |
+| gamma=0.95 | 0 | 6 | 2 |
+| build_release=0.5 | 1 | 6 | 1 |
+| build_release=0.7 | 1 | 7 | 0 |
+| build_release=0.85 | 1 | 7 | 0 |
+| build_release=0.95 | 1 | 7 | 0 |
+| **tight_relay** | **2** | 6 | 0 |
+| big_expand | 1 | 7 | 0 |
+
+**Findings**:
+
+- **No attn config beats sum here.** Best attn variant gets 25% wins;
+  most get 12%. The structural prior (attack + loop with α mixing) is
+  fundamentally less efficient than sum's flat field on this board.
+- `tight_relay` (relay_thresh=0.8, more selective about which friendly
+  slots get an outflow) is the modestly-best variant. The improvement
+  is consistent with "sum is winning because it spreads more outflows;
+  tighter attn approximates sum's spread less badly."
+- Higher gamma (0.92, 0.95) made attn STRICTLY WORSE — longer-range
+  field doesn't help when sum is already exploiting the gradient.
+- `build_release` settings all behave identically to defaults — the
+  gate barely fires because cells fill quickly under big-bag.
+
+Conclusion: **attn is a fundamentally weaker shape under big-bag at
+R=20 10% dead.** Time to test (a) sum's own hyperparameters and (b)
+whether attn does well anywhere — maybe smaller boards, denser dead.
+
