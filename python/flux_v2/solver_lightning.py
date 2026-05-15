@@ -288,20 +288,23 @@ def _attn_actions(
         amax = attack_score.max()
         if amax > 0:
             attack_score = attack_score / amax
-        combined = (1.0 - a) * attack_score + a * loop_score
+        # Build-and-release gate: when the cell's strength is below
+        # `build_release_frac * MAX_STRENGTH`, suppress the LOOP component
+        # (storage relays in the deep interior) but keep the ATTACK
+        # component (forward relays toward weak enemies via the field).
+        # Frontier cells (α≈0) are unaffected because attack dominates;
+        # deep cells (α≈1) suppress relays until they fill. The result is
+        # stepped waves: cells fill, then join the storage network, then
+        # contribute to the loop substrate.
+        if build_release_frac > 0.0:
+            strength_frac = float(state.strength[c]) / MAX_STRENGTH
+            loop_scale = 1.0 if strength_frac >= build_release_frac else 0.0
+        else:
+            loop_scale = 1.0
+        combined = (1.0 - a) * attack_score + a * loop_score * loop_scale
         desired = force_attack.copy()
         cmax = combined.max() if is_friendly_slot.any() else 0.0
-        # Build-and-release gate: when the cell's strength is below
-        # `build_release_frac * MAX_STRENGTH`, suppress friendly relays so the
-        # cell can fill its reservoir. Attack slots (toward non-friendlies)
-        # always fire — frontier never stops shooting. Above the threshold,
-        # the cell behaves like full lightning_attn. Setting frac=0 disables
-        # the gate (standard attn behavior).
-        below_release = (
-            build_release_frac > 0.0
-            and float(state.strength[c]) < build_release_frac * MAX_STRENGTH
-        )
-        if cmax > 0 and not below_release:
+        if cmax > 0:
             thresh = max(relay_thresh * cmax, 0.15)
             desired |= (combined >= thresh) & is_friendly_slot
         cur = outflow[c]

@@ -62,3 +62,61 @@ Replay files (head-to-head sum vs attn alternating, seeds 13010–13040):
 - `solver_v2_lightning_attn+lightning_sum_*` × 4 in `public/v2/replays/`,
   one per density (timestamps cluster around 2026-05-15 05:41–05:42).
 
+---
+
+## Exp 2 — MAX scale sweep (50% dead R=20)
+
+| MAX | EDGE | REGEN | outcome | dominance | alive |
+|----:|-----:|------:|---------|----------:|------:|
+| 200 | 200 | 1.0 | stalemate at 25000 | 0.86 | 6 |
+| 500 | 500 | 2.5 | stalemate at 25000 | 0.93 | 6 |
+| 1000| 1000| 5.0 | stalemate at 30000 (prior run) | 0.27–0.64 | 6 |
+
+The MAX scale **doesn't change the 50%-dead outcome** — even with
+small caps (MAX=200, basically the original game), 50% dead R=20
+still stalemates. The obstacle density is the bottleneck, not the
+reservoir size. State.py reset to 1000/1000/5.0 after the sweep.
+
+---
+
+## Exp 3 — Build-and-release variants tournament (big-bag, R=20 10% dead)
+
+Added two new solver modes layered on `lightning_attn`:
+- `lightning_attn_release`: friendly relays suppressed below 0.7·MAX strength.
+- `lightning_attn_slam`: same gate at 0.95·MAX (fire only when near-full).
+
+Then a 4-round tournament. Round 1's gate was the broken version
+(suppressed ALL relays); rounds 2–4 used the fixed gate (suppressed
+only the LOOP component, kept ATTACK relays active).
+
+| matchup | result |
+|---------|--------|
+| attn vs attn_release vs attn_slam (×2 each) | attn 6, release 3, slam 3 |
+| attn_release vs sum (3v3) | sum 9, release 2, stalemate 1 |
+| attn_slam vs sum (3v3) | sum 9, slam 1, stalemate 2 |
+| **6-way (bfs/max/sum/attn/release/slam)** | sum 5, max 3, bfs 2, attn 2, release 0, slam 0 |
+
+**Findings**:
+
+1. `lightning_sum` is the strongest solver under big-bag rules at
+   R=20 10% dead (42% wins in 6-way).
+2. The naive "max-mode" original lightning jumped ahead of attn (3 vs
+   2 wins) — the attention loop machinery is LESS useful under big-bag,
+   probably because cells naturally accumulate to MAX from regen
+   alone, so the explicit loop substrate is redundant.
+3. **Build-release variants are dead last.** 0 wins out of 12 in the
+   6-way. The intuition that holding pressure to fire bigger shots
+   would help — does not pan out. Expansion speed matters more
+   than per-shot magnitude on this board.
+4. Replay showcase: `solver_v2_bfs+lightning+lightning_attn+lightning_attn_release+lightning_attn_slam+lightning_sum_20260515T055115.flxr`
+   shows all 6 solvers on one R=20 board side-by-side.
+
+The user's "build-and-release backline" intuition (which was
+correct for PPO-trained models that idle on interior cells) does
+NOT translate to hand-designed solvers that already keep cells
+active. The hand-designed solvers' "always pump" behavior turns out
+to be the right thing.
+
+Pivot: instead of adding gates, try variant designs that are
+*structurally different* — see exp 4.
+
