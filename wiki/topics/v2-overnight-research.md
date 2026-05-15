@@ -26,11 +26,12 @@ was tried, what happened, what I concluded, what came next.
 2. **10% dead is the sweet spot** for decisive games at R=20 under
    big-bag. 20%+ dead causes long stalemates ("dominance 1.00 with 2
    alive"); 50%+ creates fragmented islands.
-3. **`lightning_sum_wave`** (a new solver: gates sum-mode firing to
-   strength ≥ 60% MAX so pressure accumulates before releasing)
-   is mildly better than default sum — ~57% of decisive games
-   over 100 head-to-head matches. The original 10-game 9-1 was
-   variance.
+3. **`lightning_wave_long`** is the headline new solver — combines
+   the "wave" gate (only fire when strength ≥ 60% MAX, so pressure
+   accumulates before releasing) with a long-field γ=0.94. Beats
+   default `lightning_sum_wave` 55-38 (59% over 100 games); each
+   ingredient alone is also a small win over default `lightning_sum`.
+   Caveat: 95% CIs on these effects are ±10pp.
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
