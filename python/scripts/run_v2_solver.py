@@ -452,9 +452,7 @@ def main() -> None:
     stalemates = 0
     durations: list[int] = []
 
-    first_game_frames = None
-    first_game_dead = None
-    first_game_state = None
+    saved_games: list[tuple[list, list, object]] = []  # (frames, dead, state)
 
     for g in range(args.games):
         t0 = time.time()
@@ -476,10 +474,8 @@ def main() -> None:
             win_counts[winner] += 1
             print(f"  game {g}: seat {winner} wins at tick {state.tick} "
                   f"(dominance {dom:.2f}, {dt:.1f}s)")
-        if g == 0:
-            first_game_frames = frames
-            first_game_dead = dead
-            first_game_state = state
+        if args.write_replay:
+            saved_games.append((frames, dead, state))
 
     print()
     print(f"  total: {args.games} games, mean ticks {np.mean(durations):.0f}")
@@ -497,39 +493,40 @@ def main() -> None:
             seats_count = seat_solvers.count(name)
             print(f"    {name:>17s} ({seats_count} seats): {w} wins")
 
-    if args.write_replay and first_game_frames is not None:
+    if args.write_replay and saved_games:
         DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         tag = "+".join(sorted(set(seat_solvers)))
-        name = f"solver_v2_{tag}_{stamp}.flxr"
-        path = DEFAULT_OUT_DIR / name
-        dead_list = [int(x) for x in first_game_dead] if first_game_dead is not None else []
-        tag = "+".join(sorted(set(seat_solvers)))
-        metadata = {
-            "kind": "solver_v2",
-            "model": f"solver_{tag}",
-            "ruleset": "v2-pressure",
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-            "dead_cells": dead_list,
-            "seats": seat_solvers,
-            "iteration": 0,
-            "generation": 0,
-        }
-        write_replay(
-            path, first_game_frames,
-            args.radius, args.num_players, first_game_state.N,
-            args.record_stride, metadata,
-        )
-        append_index(DEFAULT_OUT_DIR, {
-            "file": path.name,
-            "saved_at": metadata["saved_at"],
-            "kind": "solver_v2", "model": metadata["model"],
-            "ruleset": "v2-pressure",
-            "seats": seat_solvers,
-            "iteration": 0, "generation": 0,
-            "radius": args.radius, "num_players": args.num_players,
-        })
-        print(f"  wrote replay: {path.relative_to(REPO_ROOT)}")
+        for g, (frames_g, dead_g, state_g) in enumerate(saved_games):
+            suffix = f"_g{g}" if len(saved_games) > 1 else ""
+            name = f"solver_v2_{tag}_{stamp}{suffix}.flxr"
+            path = DEFAULT_OUT_DIR / name
+            dead_list = [int(x) for x in dead_g] if dead_g is not None else []
+            metadata = {
+                "kind": "solver_v2",
+                "model": f"solver_{tag}",
+                "ruleset": "v2-pressure",
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "dead_cells": dead_list,
+                "seats": seat_solvers,
+                "iteration": 0,
+                "generation": g,
+            }
+            write_replay(
+                path, frames_g,
+                args.radius, args.num_players, state_g.N,
+                args.record_stride, metadata,
+            )
+            append_index(DEFAULT_OUT_DIR, {
+                "file": path.name,
+                "saved_at": metadata["saved_at"],
+                "kind": "solver_v2", "model": metadata["model"],
+                "ruleset": "v2-pressure",
+                "seats": seat_solvers,
+                "iteration": 0, "generation": g,
+                "radius": args.radius, "num_players": args.num_players,
+            })
+            print(f"  wrote replay: {path.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":
