@@ -1343,6 +1343,9 @@ def main() -> None:
                     help="actor-critic architecture: 'gnn' (default 3-layer GCN, "
                          "13-action softmax) or 'attn' (same backbone, SET-action "
                          "logits = (1-α)·attack_q + α·loop_q from learned heads)")
+    ap.add_argument("--hidden", type=int, default=32,
+                    help="Hidden dim of GCN backbone (default 32). attn model "
+                         "supports overriding; gnn uses the module constant.")
     ap.add_argument("--pretrain-epochs", type=int, default=0,
                     help="Run supervised behavior-cloning warmstart from a solver "
                          "BEFORE the PPO loop. 0 = no warmstart.")
@@ -1400,8 +1403,11 @@ def main() -> None:
     neighbors_mx = mx.array(base.neighbors)
 
     model_cls = MODEL_REGISTRY[args.model]
-    model = model_cls()
-    print(f"  model: {args.model} ({model_cls.__name__})")
+    if args.model == "attn" and args.hidden != 32:
+        model = model_cls(hidden=args.hidden)
+    else:
+        model = model_cls()
+    print(f"  model: {args.model} ({model_cls.__name__})  hidden={args.hidden}")
     optimizer = optim.Adam(learning_rate=args.lr)
     mx.eval(model.parameters())
 

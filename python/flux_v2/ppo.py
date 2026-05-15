@@ -154,25 +154,24 @@ class AttnActorCritic(nn.Module):
     "policy ignores neutrals not in its preferred slot direction").
     """
 
-    def __init__(self) -> None:
+    def __init__(self, hidden: int = HIDDEN) -> None:
         super().__init__()
-        self.w1_self = nn.Linear(IN_DIM, HIDDEN, bias=False)
-        self.w1_neigh = nn.Linear(IN_DIM, HIDDEN, bias=True)
-        self.w2_self = nn.Linear(HIDDEN, HIDDEN, bias=False)
-        self.w2_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
-        self.w3_self = nn.Linear(HIDDEN, HIDDEN, bias=False)
-        self.w3_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
+        self._hidden = hidden
+        self.w1_self = nn.Linear(IN_DIM, hidden, bias=False)
+        self.w1_neigh = nn.Linear(IN_DIM, hidden, bias=True)
+        self.w2_self = nn.Linear(hidden, hidden, bias=False)
+        self.w2_neigh = nn.Linear(hidden, hidden, bias=True)
+        self.w3_self = nn.Linear(hidden, hidden, bias=False)
+        self.w3_neigh = nn.Linear(hidden, hidden, bias=True)
         # Slot-equivariant pair heads: take (cell_emb, nbr_emb) → scalar.
-        # Shared across all slots. The slot index is implicit in *which*
-        # neighbor embedding we pair with the cell embedding.
-        self.attack_pair = nn.Linear(2 * HIDDEN, 1)
-        self.loop_pair = nn.Linear(2 * HIDDEN, 1)
-        self.clear_pair = nn.Linear(2 * HIDDEN, 1)
+        self.attack_pair = nn.Linear(2 * hidden, 1)
+        self.loop_pair = nn.Linear(2 * hidden, 1)
+        self.clear_pair = nn.Linear(2 * hidden, 1)
         # Per-cell scalars.
-        self.alpha_head = nn.Linear(HIDDEN, 1)
-        self.noop_head = nn.Linear(HIDDEN, 1)
+        self.alpha_head = nn.Linear(hidden, 1)
+        self.noop_head = nn.Linear(hidden, 1)
         # Value head identical to GNNActorCritic.
-        self.value_hidden = nn.Linear(HIDDEN, VALUE_HIDDEN)
+        self.value_hidden = nn.Linear(hidden, VALUE_HIDDEN)
         self.value_out = nn.Linear(VALUE_HIDDEN, 1)
 
     def forward(
@@ -202,13 +201,14 @@ class AttnActorCritic(nn.Module):
         nb_safe = mx.maximum(neighbors, 0)                          # (N, K)
         nb_valid_mask = (neighbors >= 0).astype(mx.float32).reshape(1, 1, N, K, 1)
         flat_idx = nb_safe.reshape(-1)                              # (N*K,)
-        H3_nbr = mx.take(H3, flat_idx, axis=-2)                     # (G, S, N*K, HIDDEN)
-        H3_nbr = H3_nbr.reshape(G, S, N, K, HIDDEN) * nb_valid_mask
+        H = self._hidden
+        H3_nbr = mx.take(H3, flat_idx, axis=-2)                     # (G, S, N*K, H)
+        H3_nbr = H3_nbr.reshape(G, S, N, K, H) * nb_valid_mask
 
         # Broadcast cell embedding to per-slot then concat.
         H3_self = mx.broadcast_to(
-            H3.reshape(G, S, N, 1, HIDDEN),
-            (G, S, N, K, HIDDEN),
+            H3.reshape(G, S, N, 1, H),
+            (G, S, N, K, H),
         )
         pair = mx.concatenate([H3_self, H3_nbr], axis=-1)           # (G, S, N, K, 2H)
 
