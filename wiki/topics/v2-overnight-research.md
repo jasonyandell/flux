@@ -44,6 +44,14 @@ was tried, what happened, what I concluded, what came next.
    sum specifically outperforms a clear cluster of variants by
    massive margins. It's only the *top* of the rankings that's
    crowded.
+9. **The noise floor is real and measurable.** Exp 22 (the
+   methodological capstone): sum vs sum self-play, 100 games →
+   even seats win 47%, odd seats win 53%. **Identical solvers
+   produce a 6pp seat-position gap.** This explains why all the
+   close 47-53% wave_long results were indistinguishable from
+   ties: they ARE indistinguishable. To detect a real effect under
+   this setup, you need >6pp gap with rotated seats, or matched
+   pairs. Future overnight work should use that protocol.
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -957,6 +965,52 @@ The corrected solver hierarchy (high to low) under big-bag R=20 10%:
 
 The top tier are all within ~10pp of each other. The bottom tier is
 *demonstrably* worse by large margins.
+
+---
+
+## Exp 22 — sum vs sum self-play baseline (THE NOISE FLOOR)
+
+The methodological capstone of the night. Ran sum vs sum, six identical
+seats, 100 games at R=20 10% dead. Any seat-win difference here is
+*pure* seat bias from the board sampler.
+
+| seat | wins | % |
+|-----:|-----:|--:|
+| 0    | 10   | 10% |
+| 1    | 16   | 16% |
+| 2    | 19   | 19% |
+| 3    | 18   | 18% |
+| 4    | 15   | 15% |
+| 5    | 16   | 16% |
+| (stalemates) | 6 | |
+
+**Even seats (0,2,4): 44/94 decisive = 47%.**
+**Odd seats (1,3,5): 50/94 decisive = 53%.**
+
+**This is the noise floor.** With completely identical solvers,
+even-seat-vs-odd-seat win rate is 47% vs 53% — a 6-percentage-point
+gap that *cannot* be eliminated by the algorithm.
+
+Implications for the night's results:
+
+- Exp 20's "wave_long 47%" vs sum at 10% dead = **statistically
+  indistinguishable from identical-solver baseline**. The 6pp shortfall
+  is exactly what seat bias predicts when wave_long happens to be
+  evaluated more on disadvantaged seats.
+- Exp 19's "wave_long 47%" at 5% dead = same situation.
+- Exp 14's "wave_long 58%" across sizes = wave_long happened to land
+  on favored odd seats more in those samples — explains the *upward*
+  signal that vanished at 100 games.
+
+To detect a real algorithmic effect over this baseline, an experiment
+needs **either >6pp gap with rotated seat assignments, or matched
+pairs (run each board with both A=variant/B=baseline AND swapped)**.
+
+This single methodological experiment retroactively explains essentially
+every "modest signal" in the night's earlier work as either noise or
+seat-bias. The catastrophic losses (attn 7%, pulse 0%, pulse_stagger 0%)
+remain real — those are way past 6pp from baseline. But the "wave is
+slightly better" narrative was never measurable in our setup.
 
 ---
 
