@@ -26,13 +26,17 @@ was tried, what happened, what I concluded, what came next.
 2. **10% dead is the sweet spot** for decisive games at R=20 under
    big-bag. 20%+ dead causes long stalemates ("dominance 1.00 with 2
    alive"); 50%+ creates fragmented islands.
-3. **`lightning_wave_long`** is the headline new solver — combines
-   the "wave" gate (only fire when strength ≥ 60% MAX, so pressure
-   accumulates before releasing) with a long-field γ=0.94. Beats
-   default `lightning_sum` ~58% at 10% dead R=20. But: refined picture
-   from exp 19 shows the advantage is narrow and density-specific —
-   at 5% dead, wave_long ≈ sum (~47% at 100 games). At 20%+ dead,
-   stalemates dominate. **wave_long's edge is real only around 10% dead.**
+3. **No algorithmic variant beats default `lightning_sum`** at
+   100-game samples under big-bag rules at R=20. The overnight
+   "wave_long winner" finding (~58% over 40 games at 10% dead)
+   collapsed under exp 20's 100-game test (wave_long 47%, sum 53%).
+   Both at 5% dead (exp 19) and 10% dead (exp 20) the pooled outcome
+   is sum slightly ahead by ~6pp, within 95% CI of 50%. **The right
+   summary is: sum is the robust baseline; no other tested
+   single-component variant wins it consistently.** The gating idea
+   (`wave`) is the most interesting non-loser but its measurable
+   effect at this sample size is zero. PPO, attn-variants, pulse,
+   and pulse_stagger all fail by larger margins.
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -72,7 +76,7 @@ was tried, what happened, what I concluded, what came next.
 - `lightning_sum_wide` (γ=0.94, expand=1.0)
 - `lightning_sum_wave` (sum + 60% MAX gate, "pulse mode" — modest winner)
 - `lightning_max_wave` (max + 60% MAX gate — at 50 games, tied with max; exp 12 8-2 was variance)
-- **`lightning_wave_long`** (sum_wave + γ=0.94 long-field — **best at 100 games, 59% vs default wave; consistent across R=15/20/25**)
+- **`lightning_wave_long`** (sum_wave + γ=0.94 long-field — **40-game samples suggested 58%; 100-game (exp 20) revised to 47%. Essentially tied with sum.**)
 - `lightning_pulse` (globally-synchronized charge/fire — **catastrophic 0-19 vs sum**; lesson: never go offline against a continuous-fire opponent)
 - `lightning_pulse_stagger` (even/odd cells out-of-phase — **even worse: 0-20 to plain pulse**; lesson: gating must respect field topology)
 - `lightning_wave_keep_attack` (wave but frontier never throttles — only helps with long-field; alone it's worse than wave_long)
@@ -866,7 +870,52 @@ The right summary statement: **`lightning_wave_long` is the
 best-tested solver for R=20 big-bag at ~10% dead specifically.**
 Outside that density, it's no better than `lightning_sum`.
 
+(But see exp 20 below — at 100 games the 10% dead claim ALSO
+collapses. The wave_long story does not survive larger samples.)
 
+---
+
+## Exp 20 — Definitive 100-game wave_long vs sum at 10% dead
+
+The supposedly strongest claim (wave_long > sum at 10% dead R=20)
+hadn't been tested at 100 games. Doing it now:
+
+| matchup                            | wave_long | sum | stale |
+|------------------------------------|----------:|----:|------:|
+| wave_long[even] vs sum[odd]        | 22        | 25  | 3     |
+| sum[even] vs wave_long[odd]        | (B) 23    | (A) 25 | 2 |
+
+Pooled across 100 games (95 decisive): **wave_long 45, sum 50,
+stale 5 → wave_long 47% (95% CI 37-57%).**
+
+**The wave_long advantage at 10% dead is also not real.** The 40-game
+"58%" finding (exp 14, pooled across both seat orderings) and the
+20-game "59%" finding (exp 11 with sum_wave, similar mechanism) were
+all sample-size variance. With 100 games, wave_long is slightly
+behind sum (47% vs 53%), entirely within 95% CI of 50%.
+
+**The corrected overnight headline**: **No solver tested tonight
+robustly beats `lightning_sum`**.
+
+The most we can say: wave-style gating is *not bad* (within noise
+of default sum), while plenty of variants (pulse, pulse_stagger,
+attn) are significantly worse. The gating intuition isn't *wrong*
+— it just doesn't measurably beat the simpler baseline.
+
+Implications:
+
+1. The build-and-release intuition is not validated at 100 games.
+2. `lightning_sum` is the robust choice. All the new solvers are
+   either tied or worse.
+3. Variance-aware methodology: every 20-game claim deserves a
+   100-game follow-up. Tonight several 20-game results showed
+   65-90% win rates that collapsed back to 47-53% at 100 games.
+4. To get definitive evidence of an algorithmic edge, future work
+   needs ≥200-game samples per cell, ideally with seat rotation.
+
+(That said, the *concepts* explored are still useful for the wiki:
+wave gates work neutrally where pulse gates fail catastrophically;
+PPO/attn underperform vs simple aggregation under big-bag; etc.)
 
 ---
 
