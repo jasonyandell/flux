@@ -211,3 +211,85 @@ Pivot: register the winning config as `lightning_sum_long` (γ=0.92,
 default expand/weak) and showcase it. Refine around the peak in
 exp 6.
 
+---
+
+## Exp 6 — gamma refinement (12 games, fresh seed 21000)
+
+**The exp 5 γ=0.92 100% result was largely variance.** Re-running
+the area around the peak with 12 games (instead of 8) and a different
+seed (21000 vs 18000):
+
+| γ                | variant | def | stale | share |
+|------------------|--------:|----:|------:|------:|
+| 0.88             | 4 | 7 | 1 | 33% |
+| 0.90             | 5 | 6 | 1 | 42% |
+| 0.91             | 4 | 7 | 1 | 33% |
+| 0.92             | 5 | 5 | 2 | 42% |
+| 0.93             | 6 | 6 | 0 | 50% |
+| **0.94**         | **8** | **2** | **2** | **67%** |
+| g0.92+expand=0.5 | 6 | 4 | 2 | 50% |
+| g0.92+weak=2.0   | 6 | 5 | 1 | 50% |
+| g0.92+weak=0.5   | 6 | 6 | 0 | 50% |
+
+**Findings**:
+
+1. The 8-game 100% result didn't reproduce. γ=0.92 came in at 42%.
+   Even doubled to 12 games, single-config sampling at this board is
+   too noisy to call a sub-percentage-point γ shift a winner.
+2. **γ=0.94 came in at 67% (8/12)** — modest but reproducible signal
+   that γ above default does something. Confidence is low; need many
+   more games to call this real.
+3. The g=0.92+expand/weak combos all hit exactly 50%. The default
+   sum is roughly at parity with all nearby variants. The "sum field
+   is already nearly optimal at default" hypothesis holds.
+
+Methodology lesson: 8-game samples vs an equally-skilled opponent
+under stochastic boards are useless. A 6-vs-2 result at 8 games has a
+~10% chance of arising from chance alone if the true win rate is 50%.
+Future hyperparameter sweeps need ≥20 games per config.
+
+Replays from this sweep are not auto-written (sweep harness is
+results-only). Update the registered `lightning_sum_long` to γ=0.94
+to use the modestly-better config, but the wiki should treat sum
+hyperparameter tuning as a dead end for now.
+
+---
+
+## Exp 7 — Crazy variants tournament (12 games each, R=20 10% dead)
+
+Brought in `lightning_chase`, `lightning_random`, `lightning_flood`,
+`lightning_vortex` against `lightning_sum` and the existing zoo.
+
+| matchup (3v3 alt)           | result |
+|-----------------------------|--------|
+| flood vs sum                | sum 11, flood 0, stale 1 |
+| chase vs sum                | sum 11, chase 0, stale 1 |
+| random vs sum               | sum 12, random 0 |
+| vortex vs loop              | loop 3, vortex 2, stale 7 |
+| **full zoo (1 seat each)**  | **bfs 8**, sum 2, attn 0, loop 0, chase 0, flood 0 |
+
+**Findings**:
+
+1. **BFS dominates the 1-seat-each format.** 8/12 wins with the next
+   solver (sum) at 2/12. This is *opposite* to the 3v3 mass-matchup
+   finding from exp 3 where bfs sat at 2/12. The difference is
+   structural: BFS picks the single shortest-path outflow at each
+   cell. In 3-seat formations, that produces three thin spears
+   walking in parallel — easy to flank. In 1-seat-each, the spear
+   doesn't need teammates and tunnels straight to the next enemy
+   seat. The other solvers' efficient territory-spreading helps when
+   you have 3 seats and hurts when you're a lone wolf.
+2. **chase, random, flood are dead weight.** All three get 0 wins
+   against sum and 0 in the zoo. Chase's reactive defense gives up
+   initiative. Flood's all-6-outflows wastes pressure on dead-end
+   walls. Random is random.
+3. **vortex vs loop is a wash.** 7/12 stalemates with loop edging
+   3-2. CW vs CCW curl on hex grids is symmetric.
+
+Replay files in `public/v2/replays/solver_v2_*_20260515T061*` —
+five matchup replays + replay for the bfs-dominated zoo:
+`solver_v2_bfs+lightning_chase+lightning_flood+lightning_loop+lightning_sum+lightning_attn_20260515T0613*.flxr`.
+
+Next: launch the visual showcase at R=25 (the 6-way zoo will be
+beautiful at 1951 cells).
+

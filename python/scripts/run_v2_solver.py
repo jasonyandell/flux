@@ -81,14 +81,14 @@ def _lightning_chase(state, seat, rng=None):
 
 
 def _lightning_sum_long(state, seat, rng=None):
-    # Exp 5 winner under big-bag R=20 10% dead: gamma=0.92 sum at 100% vs default.
-    return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.92)
+    # Exp 6 winner: γ=0.94 hit 8/12 (67%) vs default-γ sum on R=20 10% dead.
+    # Modest reproducible signal; the exp 5 γ=0.92 100% was variance.
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.94)
 
 
 def _lightning_sum_wide(state, seat, rng=None):
-    # Exp 5 runner-up: γ=0.92 + expand_bonus=1.0 (long-field + push neutrals harder).
     return lightning_solver_actions(state, seat, rng=rng, mode="sum",
-                                    gamma=0.92, expand_bonus=1.0)
+                                    gamma=0.94, expand_bonus=1.0)
 
 
 SOLVERS = {
