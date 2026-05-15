@@ -107,6 +107,7 @@ class PPOConfig:
     power_coef: float = 0.0          # deprecated: per-unit Δ(Σ strength_owned)
     capture_coef: float = 0.0        # deprecated: per-cell Δ(cells_owned)
     waste_coef: float = 0.05         # per-unit attributed waste
+    transit_credit_coef: float = 0.0 # per-unit transit credit (positive twin of waste)
     time_coef: float = 0.01          # per AI-tick small penalty
     win_bonus: float = 50.0          # terminal reward for the winner
     # Killer-instinct signal: per-tick reward proportional to the number of
@@ -186,6 +187,72 @@ def _per_seat_waste(owner_np: np.ndarray, waste_np: np.ndarray, P: int) -> np.nd
     for p in range(P):
         out[:, p] = (waste_np * (owner_np == p)).sum(axis=1)
     return out
+
+
+def _batched_transit_credit(
+    owner_np: np.ndarray,           # (G, N) int32
+    strength_np: np.ndarray,        # (G, N) float32
+    outflow_np: np.ndarray,         # (G, N, K) bool
+    edge_pressure_np: np.ndarray,   # (G, N, K) float32
+    neighbors_np: np.ndarray,       # (N, K) int32 (shared across games)
+) -> np.ndarray:                    # (G, N) float32
+    """Vectorized batch version of flux_v2.step.transit_credit_per_cell_for_tick.
+
+    For each source cell c with active outflow slot k pointing at a friendly
+    relay d (= friendly cell with its own active outflows; strict mode adds
+    `strength[d] >= MAX_STRENGTH`), pay c the per-edge spill amount that
+    will flow d-ward this tick. This is the positive twin of
+    destination-terminated waste — rewards productive chain segments,
+    leaves ordinary fill traffic unpaid.
+    """
+    from flux_v2.state import regen as _regen, OPPOSITE_SLOT as _OPP, \
+        MAX_STRENGTH as _MS, MAX_EDGE as _ME, TRANSIT_CREDIT_STRICT as _STRICT
+    G, N = owner_np.shape
+    K = outflow_np.shape[-1]
+    is_alive = owner_np >= 0
+    nb_safe = np.maximum(neighbors_np, 0)                      # (N, K)
+    nb_valid = (neighbors_np >= 0)                             # (N, K)
+
+    pressure_in = np.zeros((G, N), dtype=np.float32)
+    pressure_in[is_alive] = _regen(strength_np[is_alive]).astype(np.float32)
+    for k in range(K):
+        opp = int(_OPP[k])
+        d_owner = owner_np[:, nb_safe[:, k]]                   # (G, N)
+        is_friendly_in = (
+            nb_valid[:, k].reshape(1, N)
+            & (d_owner == owner_np)
+            & is_alive
+        )
+        ep_back = edge_pressure_np[:, nb_safe[:, k], opp]      # (G, N)
+        pressure_in += ep_back * is_friendly_in.astype(np.float32)
+
+    headroom = np.maximum(_MS - strength_np, 0.0)
+    grew = np.minimum(pressure_in, headroom)
+    overflow = np.where(is_alive, pressure_in - grew, 0.0)
+    num_active = outflow_np.sum(axis=-1).astype(np.int32)      # (G, N)
+    can_spill = (num_active > 0) & (overflow > 0) & is_alive
+    if not can_spill.any():
+        return np.zeros((G, N), dtype=np.float32)
+
+    safe_num = np.maximum(num_active, 1).astype(np.float32)
+    per_edge = np.minimum(overflow / safe_num, _ME)            # (G, N)
+
+    credit = np.zeros((G, N), dtype=np.float32)
+    for k in range(K):
+        d_owner = owner_np[:, nb_safe[:, k]]                   # (G, N)
+        d_active = num_active[:, nb_safe[:, k]]                # (G, N)
+        slot_active = (
+            outflow_np[:, :, k]
+            & nb_valid[:, k].reshape(1, N)
+            & can_spill
+        )
+        is_relay = (d_owner == owner_np) & (d_active > 0)
+        if _STRICT:
+            d_strength = strength_np[:, nb_safe[:, k]]         # (G, N)
+            is_relay = is_relay & (d_strength >= _MS)
+        relay_active = slot_active & is_relay
+        credit += np.where(relay_active, per_edge, 0.0)
+    return credit
 
 
 def _per_seat_cells(owner_np: np.ndarray, P: int) -> np.ndarray:
@@ -478,6 +545,15 @@ def collect_rollout(
             )
             r_capture = config.capture_coef * delta_cells_gained
             r_waste = -config.waste_coef * seat_waste
+            if config.transit_credit_coef > 0.0:
+                transit_per_cell = _batched_transit_credit(
+                    owner_np, strength_np, outflow_np, edge_pressure_np,
+                    neighbors_np_local,
+                )
+                seat_transit = _per_seat_waste(owner_np, transit_per_cell, P)  # same shape util
+                r_transit = config.transit_credit_coef * seat_transit
+            else:
+                r_transit = np.zeros_like(r_waste)
             r_time = -config.time_coef * np.ones_like(r_power)
             # Killer-instinct: attributed per-tick reward. When a seat
             # eliminates an enemy, that seat's `kills_per_seat` counter ticks
@@ -514,7 +590,7 @@ def collect_rollout(
             r_kill_pressure = config.kill_pressure_coef * kills_per_seat
             prev_owner_np = owner_np.copy()
             prev_alive_per_seat = alive_per_seat_now
-            reward = r_power + r_capture + r_waste + r_time + r_kill_pressure
+            reward = r_power + r_capture + r_waste + r_transit + r_time + r_kill_pressure
             # Zero rewards for already-dead games.
             mask = live_np.reshape(G, 1).astype(np.float32)
             reward = reward * mask
@@ -1244,6 +1320,11 @@ def main() -> None:
                          "outflows pointing at non-friendly cells. Rewards "
                          "active attack work even before captures land.")
     ap.add_argument("--waste-coef", type=float, default=0.05)
+    ap.add_argument("--transit-credit-coef", type=float, default=0.0,
+                    help="Positive per-tick reward for productive transit "
+                         "(your outflow pressure lands on a MAX-strength "
+                         "friendly relay with active outflows). Positive twin "
+                         "of --waste-coef. 0 = off.")
     ap.add_argument("--time-coef", type=float, default=0.01)
     ap.add_argument("--win-bonus", type=float, default=50.0)
     ap.add_argument("--kill-pressure-coef", type=float, default=0.0,
@@ -1296,6 +1377,7 @@ def main() -> None:
         power_held_coef=args.power_held_coef,
         power_damage_coef=args.power_damage_coef,
         waste_coef=args.waste_coef,
+        transit_credit_coef=args.transit_credit_coef,
         time_coef=args.time_coef, win_bonus=args.win_bonus,
         kill_pressure_coef=args.kill_pressure_coef,
         num_dead_cells=args.num_dead_cells,
@@ -1354,6 +1436,7 @@ def main() -> None:
             power_held_coef=config.power_held_coef,
             power_damage_coef=config.power_damage_coef,
             waste_coef=config.waste_coef,
+            transit_credit_coef=config.transit_credit_coef,
             time_coef=config.time_coef, win_bonus=config.win_bonus,
             kill_pressure_coef=config.kill_pressure_coef,
         )
