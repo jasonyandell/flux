@@ -38,7 +38,28 @@ export type Scene = {
   nodeCount: number;
   worldHalfWidth: number;
   worldHalfHeight: number;
+  freshness: Float32Array;     // per-node target, 1 on change, decays 1/iter advance
+  displayed: Float32Array;     // per-node rendered value, time-smoothed toward target
+  prevOwners: Int32Array;      // last owner per node (-1 neutral, -2 dead, ≥0 player)
+  prevFlowSigs: Float64Array;  // last flow-membership signature per node
+  lastFrameIdx: number;        // last rendered replay frame index, -1 = none yet
+  fadeEnabled: boolean;        // when false, all nodes render at full brightness
 };
+
+export function setFadeEnabled(s: Scene, enabled: boolean): void {
+  s.fadeEnabled = enabled;
+}
+
+// Pulse-on-change + fade-over-iters. Target decay is keyed off replay frame
+// advance — pause/scrub holds the glow, fast-forward fades fast.
+// FADE_PER_ITER = 1/N means ~N iters from full bright to fully faded.
+const FADE_PER_ITER = 1 / 20;
+const MIN_BRIGHTNESS = 0.25;
+// Wall-clock slew rate on the *displayed* value tracking the target. Caps how
+// fast brightness can jump per second, so rapid iter changes (fast forward,
+// scrub back-and-forth) become a soft continuous pulse instead of hard flashes.
+// 2.0/s ⇒ one full extreme-to-extreme transition takes 0.5s.
+const FRESHNESS_RATE_PER_SEC = 2.0;
 
 export function createScene(canvas: HTMLCanvasElement, board: Board): Scene {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -113,6 +134,18 @@ export function createScene(canvas: HTMLCanvasElement, board: Board): Scene {
   flowMesh.frustumCulled = false;
   scene.add(flowMesh);
 
+  // Start everything fully bright; the board opens with a glow that fades as
+  // iters advance and nodes settle without further config changes.
+  const freshness = new Float32Array(board.N);
+  const displayed = new Float32Array(board.N);
+  const prevOwners = new Int32Array(board.N);
+  const prevFlowSigs = new Float64Array(board.N);
+  for (let i = 0; i < board.N; i++) {
+    freshness[i] = 1;
+    displayed[i] = 1;
+    prevOwners[i] = -1;
+  }
+
   return {
     renderer, scene, camera,
     nodeInstanced, edgeLines, flowMesh,
@@ -121,6 +154,12 @@ export function createScene(canvas: HTMLCanvasElement, board: Board): Scene {
     nodeCount: board.N,
     worldHalfWidth: xMax,
     worldHalfHeight: yMax,
+    freshness,
+    displayed,
+    prevOwners,
+    prevFlowSigs,
+    lastFrameIdx: -1,
+    fadeEnabled: true,
   };
 }
 
@@ -130,19 +169,74 @@ export type FrameRender = {
   flows: { src: number; dst: number; player: number; pressure: number }[];
 };
 
-export function updateScene(s: Scene, board: Board, frame: FrameRender): void {
+export function updateScene(s: Scene, board: Board, frame: FrameRender, frameIdx: number = 0, dt: number = 0): void {
+  // Per-node flow signature: sum of flow keys (src/dst/player, ignoring
+  // pressure since it's continuous) for every flow touching the node.
+  // Permutation-invariant; different multisets → different sums in practice.
+  // Simultaneously: per-node max-pressure-touching-node, and the frame's max
+  // pressure so we can auto-scale (same convention the arrow widths use).
+  const flowSig = new Float64Array(board.N);
+  const nodePressure = new Float32Array(board.N);
+  let frameMaxPressureSig = 0;
+  for (let i = 0; i < frame.flows.length; i++) {
+    const f = frame.flows[i];
+    const k = (f.src + 1) * 7919 + (f.dst + 1) * 191 + (f.player + 1);
+    flowSig[f.src] += k;
+    flowSig[f.dst] += k;
+    if (f.pressure > nodePressure[f.src]) nodePressure[f.src] = f.pressure;
+    if (f.pressure > nodePressure[f.dst]) nodePressure[f.dst] = f.pressure;
+    if (f.pressure > frameMaxPressureSig) frameMaxPressureSig = f.pressure;
+  }
+  const pressureScale = 1 / Math.max(frameMaxPressureSig, 1.0);
+
+  // Decay step keyed to iter advance: 0 if paused or scrubbed back, N if the
+  // player jumped forward N frames since last render.
+  const delta = s.lastFrameIdx < 0 ? 0 : frameIdx - s.lastFrameIdx;
+  const decay = delta > 0 ? delta * FADE_PER_ITER : 0;
+  s.lastFrameIdx = frameIdx;
+
+  // Time-based slew cap on the displayed value. dt comes from the frame loop;
+  // 0 (no time passed) means render whatever's currently displayed unchanged.
+  const maxSlew = FRESHNESS_RATE_PER_SEC * dt;
+
   const strengthScale = MAX_STRENGTH / 255;
   for (let i = 0; i < board.N; i++) {
     const owner = frame.owners[i];
+    if (owner !== s.prevOwners[i] || flowSig[i] !== s.prevFlowSigs[i]) {
+      s.freshness[i] = 1;
+    } else if (decay > 0 && s.freshness[i] > 0) {
+      s.freshness[i] = Math.max(0, s.freshness[i] - decay);
+    }
+    s.prevOwners[i] = owner;
+    s.prevFlowSigs[i] = flowSig[i];
+
+    // Ease the displayed value toward the iter-based target at a wall-clock
+    // rate cap. A single 0→1 snap (config change) plays out over ~0.5s, and
+    // rapid toggle bursts hover mid-range instead of flashing.
+    const target = s.freshness[i];
+    const diff = target - s.displayed[i];
+    if (maxSlew <= 0 || Math.abs(diff) <= maxSlew) s.displayed[i] = target;
+    else s.displayed[i] += diff < 0 ? -maxSlew : maxSlew;
+
     const strength = frame.strengths[i] * strengthScale;
     const scale = 0.45 + (strength / MAX_STRENGTH) * 1.0;
     tmpPos.set(board.pos[i * 2], board.pos[i * 2 + 1], 0.1);
     tmpScale.setScalar(scale);
     tmpMatrix.compose(tmpPos, tmpQuat, tmpScale);
     s.nodeInstanced.setMatrixAt(i, tmpMatrix);
-    if (owner === -1) s.nodeInstanced.setColorAt(i, NEUTRAL);
-    else if (owner === -2) s.nodeInstanced.setColorAt(i, DEAD);
-    else s.nodeInstanced.setColorAt(i, ownerColors[owner % ownerColors.length]);
+
+    const base = owner === -1 ? NEUTRAL
+               : owner === -2 ? DEAD
+               : ownerColors[owner % ownerColors.length];
+    // Above-base headroom is split 80% age-delta (smoothed freshness) and
+    // 20% per-frame-scaled max pressure touching this node. Max pressure on a
+    // long-static node tops out at 20% of headroom over base; max pressure
+    // *and* a fresh config change adds the remaining 80% for full brightness.
+    const pNorm = nodePressure[i] * pressureScale;
+    const mix = s.fadeEnabled ? 0.8 * s.displayed[i] + 0.2 * pNorm : 1;
+    const brightness = MIN_BRIGHTNESS + (1 - MIN_BRIGHTNESS) * mix;
+    tmpColor.copy(base).multiplyScalar(brightness);
+    s.nodeInstanced.setColorAt(i, tmpColor);
   }
   s.nodeInstanced.instanceMatrix.needsUpdate = true;
   if (s.nodeInstanced.instanceColor) s.nodeInstanced.instanceColor.needsUpdate = true;
@@ -334,6 +428,18 @@ export function rebuildSceneGeometry(s: Scene, board: Board): void {
   s.scene.add(nodeInstanced);
   s.nodeInstanced = nodeInstanced;
   s.nodeCount = board.N;
+
+  // Fresh replay: open with a glow, reset the "last frame" anchor.
+  s.freshness = new Float32Array(board.N);
+  s.displayed = new Float32Array(board.N);
+  s.prevOwners = new Int32Array(board.N);
+  s.prevFlowSigs = new Float64Array(board.N);
+  for (let i = 0; i < board.N; i++) {
+    s.freshness[i] = 1;
+    s.displayed[i] = 1;
+    s.prevOwners[i] = -1;
+  }
+  s.lastFrameIdx = -1;
 }
 
 export function resizeRenderer(s: Scene): void {

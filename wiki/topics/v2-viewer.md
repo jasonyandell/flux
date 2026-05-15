@@ -2,7 +2,7 @@
 title: v2 viewer (trainer-displayer)
 kind: topic
 first_seen: 2026-05-14
-last_updated: 2026-05-14
+last_updated: 2026-05-15
 status: active
 ---
 
@@ -56,8 +56,8 @@ replay and unpauses.
 ## Transport bar (bottom)
 
 ```
-[⏮]  [⏪]  [⏯]  [⏩]  [⏭]   ━━━●━━━━━   12 / 240   1×
- prev  step  play  step  next   scrubber    counter   speed
+[⏮]  [⏪]  [⏯]  [⏩]  [⏭]   ━━━●━━━━━   12 / 240   1×   ✦
+ prev  step  play  step  next   scrubber    counter   speed  fade
 ```
 
 - **Prev / Next replay** walk the index round-robin
@@ -76,6 +76,10 @@ replay and unpauses.
   *runtime multiplier* on top of `PLAYBACK_SPEED` and the cadence-aware
   `framesPerSec` the player computes per replay. 1× means "whatever the
   player picked"; the multiplier never replaces the auto-cadence logic.
+- **Fade trail** (`✦` on / `✧` off) toggles the per-node brightness
+  pulse-and-fade effect. On by default; preference persists in
+  `localStorage` under `flux-v2-fade-enabled`. See
+  [[#node fade trail]] below.
 
 The bar sits at z-index 9, 0.55 opacity, fading to 1.0 on hover, so it
 stays out of the way during passive viewing.
@@ -100,6 +104,45 @@ cadence from the median delta between neighboring `saved_at` values and
 speeds playback up so the current replay finishes slightly before the
 next one is expected — never below the configured baseline tick rate.
 This is what keeps a backlog from accumulating during live monitoring.
+
+## Node fade trail
+
+Three-stage brightness model on each node:
+
+1. **Target freshness** (`freshness[i] ∈ [0, 1]`) — snaps to `1`
+   whenever the node's **owner** or **flow-membership signature**
+   changes, then decays by `FADE_PER_ITER = 1/20` per replay-frame
+   advance. Pressure changes don't trigger snaps (continuous → every
+   frame would flash). Iter-keyed, not wall-clock: pause holds the
+   glow, scrubbing back doesn't silently fade, fast-forward burns
+   through trails at the forward-stepping rate. Forward jump → decay
+   by `delta · FADE_PER_ITER`; non-positive delta → no decay.
+
+2. **Displayed value** (`displayed[i] ∈ [0, 1]`) — wall-clock-eased
+   toward the target at `FRESHNESS_RATE_PER_SEC = 2.0/s`, so any single
+   `0 ↔ 1` transition takes ≥ 0.5 s of real time. Under rapid
+   bouncing (fast playback, scrub burst) the displayed value never
+   reaches either extreme — it orbits the mean, producing a continuous
+   soft pulse instead of hard flashes.
+
+3. **Render brightness** —
+   `MIN_BRIGHTNESS + (1 − MIN_BRIGHTNESS) · (0.8 · displayed + 0.2 · pNorm)`.
+   `pNorm` is max-pressure-touching-node, per-frame auto-scaled to the
+   frame's heaviest flow (same convention the arrow widths use, so an
+   idle frame doesn't crank everything up). Above-base headroom splits
+   80% age-delta / 20% pressure: max pressure alone on a long-static
+   node sits at 20% over base; max pressure *and* a fresh change hits
+   full bright.
+
+Toggle: the `✦` button on the transport bar flips a `fadeEnabled` flag
+on `Scene`; when off, every node renders at full brightness regardless
+of `displayed` or `pNorm`. The state persists in `localStorage` under
+`flux-v2-fade-enabled` (default on). Implementation:
+[`src_v2/render/scene.ts`](../../src_v2/render/scene.ts) for
+`FADE_PER_ITER` / `FRESHNESS_RATE_PER_SEC` / `MIN_BRIGHTNESS` knobs and
+the brightness mix;
+[`src_v2/render/playback.ts`](../../src_v2/render/playback.ts) and
+[`src_v2/main.ts`](../../src_v2/main.ts) for the toggle wiring.
 
 ## Mixed-experiment safety
 

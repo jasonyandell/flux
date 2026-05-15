@@ -6,6 +6,53 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-15 | workspace | v2 viewer — wall-clock smoothing + 80/20 fade/pressure mix on node brightness]
+
+**Touched pages:** [[topics/v2-viewer]] [[log]]
+
+Refined the v2 fade trail. The iter-based `freshness` is now the
+*target*; a new per-node `displayed` slews toward it at a wall-clock
+cap of `FRESHNESS_RATE_PER_SEC = 2.0/s`, so any single 0↔1 transition
+takes ≥ 0.5 s. Under fast playback or scrub-bursts the displayed value
+never reaches either extreme — it orbits the mean, producing a
+continuous soft pulse instead of hard flashes. At normal cadence (per-
+iter change within budget) behavior is visually unchanged.
+
+Rendered brightness now blends two signals over the above-base
+headroom: 80% `displayed` (age-delta), 20% `pNorm` (max edge pressure
+touching node, per-frame auto-scaled the same way the arrow widths
+are). Max pressure on a long-static node tops out at 20% over base;
+max pressure plus a fresh change hits full bright. Idle nodes fall to
+base. Strength still drives node size — color is the activity layer
+on top.
+
+Updated: [[v2-viewer]]'s "Node fade trail" section rewritten to cover
+the three-stage target/displayed/render pipeline and the mix.
+
+## [2026-05-15 | workspace | v2 viewer — per-node fade trail keyed to replay iters]
+
+**Touched pages:** [[topics/v2-viewer]] [[log]]
+
+Added a brightness pulse-and-fade to v2's node rendering. A node snaps
+to full brightness whenever its owner or flow-membership signature
+changes, then decays by `1/20` per replay frame-index advance —
+fully dim ~20 iters after its last config change. Floor is
+`MIN_BRIGHTNESS = 0.25` of the owner's base color. Pressure changes
+deliberately don't pulse (continuous → every frame would flash).
+
+Keyed to iters, not wall-clock: pause holds the glow, scrubbing back
+doesn't silently fade, fast-forward burns through trails at the
+forward-stepping rate. Frame-index delta handles all three.
+
+User-facing toggle (`✦`/`✧` on the transport bar, default on,
+persisted in `localStorage` under `flux-v2-fade-enabled`) flips a
+`fadeEnabled` flag on `Scene`; when off every node renders full
+brightness regardless of freshness. Knobs: `FADE_PER_ITER` and
+`MIN_BRIGHTNESS` in `src_v2/render/scene.ts`.
+
+Updated: [[v2-viewer]] gained a "Node fade trail" section and a
+fade-button entry in the transport-bar list.
+
 ## [2026-05-15 | workspace | wiki curation — entry-page rewrite + ranking reconciliation]
 
 **Touched pages:** [[entities/flux]] [[index]]
