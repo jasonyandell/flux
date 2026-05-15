@@ -48,11 +48,16 @@ def _lightning_sum_pw(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum_pw")
 
 
+def _lightning_loop(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="loop")
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
     "lightning_sum": _lightning_sum,             # value-iteration sum
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
+    "lightning_loop": _lightning_loop,           # structural CCW 3-loop curl
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

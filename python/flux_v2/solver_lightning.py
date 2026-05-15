@@ -182,6 +182,80 @@ def compute_potential(
     return pot
 
 
+def _loop_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator], curl_dir: int = 1,
+) -> np.ndarray:
+    """Structural curl rule — produces directed 3-loops on every friendly
+    hex triangle of one parity. Independent of any potential field.
+
+    Geometry: on a hex grid, neighbors at slots k and k+1 (mod 6) are
+    mutually adjacent, forming a triangle with c. Every such triangle has a
+    fixed slot-parity: from each of its three corners, the slot pair used
+    is either both-even-k or both-odd-k. By restricting the rule to k ∈
+    {0,2,4} (curl_dir=+1) or k ∈ {0,2,4} with kk=k-1 (curl_dir=-1), every
+    set outflow goes from a slot to its (k+curl_dir) partner, and the
+    opposite (back-edge) slot — which would be (k+3) — is always odd and
+    therefore never set. No bidirectional collisions, the v2 "no friendly
+    bidirectional flow" invariant in `step.apply_actions` never has to
+    clear anything, and a clean CCW (or CW) directed 3-cycle survives on
+    every even-parity friendly triangle.
+
+    Frontier cells still attack every non-friendly slot (air-breakdown
+    rule). Loops form selectively across the friendly interior where both
+    slots of the (k, k+curl_dir) pair are friendly.
+
+    curl_dir = +1 for CCW (the default), -1 for CW.
+    """
+    N = state.N
+    owner = state.owner
+    nb = state.neighbors
+    outflow = state.outflow
+
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    is_mine = owner == seat
+    if not is_mine.any():
+        return actions
+
+    even_slots = (0, 2, 4)
+
+    owned = np.where(is_mine)[0]
+    for c in owned:
+        c = int(c)
+        attack = np.zeros(K, dtype=np.bool_)
+        is_friendly_slot = np.zeros(K, dtype=np.bool_)
+        for k in range(K):
+            d = int(nb[c, k])
+            if d < 0:
+                continue
+            od = int(owner[d])
+            if od == DEAD:
+                continue
+            if od == seat:
+                is_friendly_slot[k] = True
+            else:
+                attack[k] = True
+        # Loop relay: only even-k slots, where slot k and slot (k+curl_dir)
+        # are both friendly. Restricting to even k guarantees the
+        # back-edge (slot k+3, always odd) is never set on the destination,
+        # so the bidirectional-friendly invariant never triggers.
+        loop_relay = np.zeros(K, dtype=np.bool_)
+        for k in even_slots:
+            kk = (k + curl_dir) % K
+            if is_friendly_slot[k] and is_friendly_slot[kk]:
+                loop_relay[k] = True
+        desired = attack | loop_relay
+        cur = outflow[c]
+        missing = np.where(desired & ~cur)[0]
+        if missing.size:
+            actions[c] = ACTION_SET_BASE + _pick(missing, rng)
+            continue
+        stale = np.where(cur & ~desired)[0]
+        if stale.size:
+            actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+            continue
+    return actions
+
+
 def lightning_solver_actions(
     state: State,
     seat: int,
@@ -192,14 +266,20 @@ def lightning_solver_actions(
     defense_bonus: float = 0.0,
     fanout_eps: float = 0.05,
     mode: str = "max",
+    curl_dir: int = 1,
 ) -> np.ndarray:
     """Return (N,) int32 actions for `seat`. Cells not owned by `seat` get NOOP.
     Owned cells emit the one action that nudges their outflow toward the
     steepest-uphill neighbor in the local potential field.
 
-    mode in {"max", "sum", "sum_pw"} selects the diffusion operator — see the
-    module docstring for the math.
+    mode in {"max", "sum", "sum_pw", "loop"} selects the operator.
+    The "loop" mode ignores the potential field entirely and uses the
+    structural curl rule (see _loop_actions docstring) to produce 3-loops
+    on every friendly triangle. curl_dir = +1 CCW (default), -1 CW.
     """
+    if mode == "loop":
+        return _loop_actions(state, seat, rng, curl_dir=curl_dir)
+
     N = state.N
     owner = state.owner
     nb = state.neighbors
