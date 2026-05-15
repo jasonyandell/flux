@@ -6,6 +6,159 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-14 | workspace | lightning_attn — 2-head attention solver with frontier-tilt mixing]
+
+**Touched pages:** [[topics/v2-edge-loop-emergence]] [[log]]
+
+User intuition: "the pressure should be a reservoir rather than an
+ultimatum." Loop mode banks pressure in the back but never releases;
+sum mode releases at every step but stores nothing. Attention answers
+this by running both heads simultaneously with a per-cell mixing
+weight.
+
+Heads:
+- ATTACK head: `attack_score[k] = max(0, pot[nb[c,k]] - pot[c])`
+  (max-mode gradient).
+- LOOP head:  `loop_score[k] = 1 iff k ∈ {0, 2, 4} and slots k, k+1
+  both friendly` (the even-k curl from `lightning_loop`).
+
+Per-cell α from BFS frontier distance: α=0 at frontier (pure attack
+release), α=1 deep interior (pure triskelion storage), α intermediate
+(blend — loops "tilt" forward as the frontier gets closer). Combined
+score = (1-α)·attack + α·loop; friendly slots activate when ≥ 0.5×max.
+
+Initial head-to-head (R=6 P=6 4000 ticks):
+- All-attn self-play (6 games)   — 6/6 decisive, no deadlock, mean 1485
+  ticks. The mixing breaks the storage trap.
+- Sum vs attn (24 games)         — **12-12 tie**. First-pass even with
+  the previous champion.
+- max/sum/attn 3-way (24 games)  — sum 11 (45.8%), attn 8 (33.3%),
+  max 5 (20.8%). Attn decisively beats max but doesn't catch sum.
+
+Full solver ordering after this branch:
+`sum` > `attn` ≈ `sum` > `max` > `loop` > `sum_pw`.
+
+Interpretation: hand-designed attention pulling even with `sum` on the
+first attempt — with no tuning of `deep_threshold` or `relay_thresh` —
+says the architectural shape is right. The next step is *learned* Q/K,
+not more knob-tuning: a PPO head that produces `(attack_score,
+loop_score)` per slot plus a per-cell α, trained end-to-end on the
+existing v2 reward stack.
+
+**Added:** `lightning_attn` mode in `python/flux_v2/solver_lightning.py`;
+solver registration; three new `.flxr` replays.
+**Updated:** [[topics/v2-edge-loop-emergence]] (three new run tables,
+"reservoir-with-release" architecture section, solver-table update).
+**Retired:** none.
+**Questions opened:** does a learned attention head close the gap to
+`sum` and beat it? Does the visual triskelion-tilt actually match the
+"loops lean forward toward the frontier" prediction in the replay?
+Does the BFS-based α generalize to settings where the frontier moves
+fast (capture cascades)?
+
+## [2026-05-14 | workspace | lightning_loop — structural curl rule that closes directed 3-loops]
+
+**Touched pages:** [[topics/v2-edge-loop-emergence]] [[log]]
+
+Follow-up to the sum / sum_pw modes. User pointed out (via screenshot) that
+sum_pw replays show bidirectional feeding and Y-confluences, not the
+directed 3-cycles the hypothesis predicted. Diagnosis: the diffusion
+change was necessary but not sufficient — the strict-uphill action rule
+(`pot[d] > pot[c]`) is still tree-only by transitivity regardless of how
+smooth the field is.
+
+Fix: structural rule that ignores the potential field entirely. On a hex
+grid, neighbors at slots k and k+1 (mod 6) are mutually adjacent — they
+form a triangle with c. Each such triangle has a fixed slot-parity (from
+all three corners, the slot pair is either both-even-k or both-odd-k).
+Restricting the relay rule to k ∈ {0, 2, 4} fills the even-parity
+triangles with directed 3-cycles and guarantees the back-edges (slot
+k+3, always odd) are never set on the destination — so the v2 reducer's
+"no friendly bidirectional flow" invariant never triggers.
+
+Sanity-checked on R=3 all-friendly board: 18/18 interior cells set
+exactly slots {0, 2, 4} (triskelion pattern), and the a→b→x→a 3-cycle
+closes cleanly with all back-edges off.
+
+Head-to-head (R=6 P=6 4000 ticks):
+
+- All-`loop` self-play (6 games) — 4 decisive, 2 stalemates, mean 2361
+  ticks. Loops resolve but slower than `sum`.
+- `lightning` vs `lightning_loop` (24 games) — 17-7. Max-mode wins
+  decisively.
+- `lightning_sum` vs `lightning_loop` (24 games) — 18-3, 3 stalemates.
+  Sum keeps its top spot.
+
+Headline: hypothesis confirmed at the structural level (loops form and
+the triskelion pattern is unambiguous in
+`solver_v2_lightning_loop_*.flxr`), but the strategic cost is real —
+3 outflow slots per interior cell go to circulation, away from attack
+focus. Worth a frontier-aware hybrid (max-mode where ≤3 friendly
+neighbors, loop rule where ≥4) as the next experiment.
+
+**Added:** `lightning_loop` mode in
+`python/flux_v2/solver_lightning.py`; solver registration in
+`python/scripts/run_v2_solver.py`; three new `.flxr` replays in
+`public/v2/replays/`.
+**Updated:** [[topics/v2-edge-loop-emergence]] (three new run tables,
+geometry explanation, solver registration table, replay list).
+**Retired:** none.
+**Questions opened:** frontier-aware hybrid effectiveness; whether the
+triskelion visual matches expectation; whether a 4-cycle / 6-cycle
+variant would have a different slot-cost / pressure-storage tradeoff.
+
+## [2026-05-14 | workspace | lightning sum / sum_pw modes — diffusion that admits loops]
+
+**Touched pages:** [[topics/v2-edge-loop-emergence]] [[topics/v2-algorithmic-solvers]] [[index]] [[log]]
+
+Hypothesis (user-raised): BFS and lightning never make a→b→c→a cycles, and
+cycles are a stronger pressure generator than single-cell outflow. Cause is
+literally in the operator — original lightning uses `max(intrinsic, γ·max_nbr)`,
+which is tree-only by construction (single steepest parent). Fixed by adding
+two new modes to `compute_potential`:
+
+- `sum`: `pot[c] = intrinsic + γ·Σ_d (1/deg(d))·pot[d]` (uniform Bellman)
+- `sum_pw`: weights neighbor contributions by current `edge_pressure[d→c]`
+  (rich-get-richer), uniform fallback when no flow yet.
+
+Both are fixed-point iterations on a discounted Markov chain — the
+closed-form "future residual" of pressure circulating, no rollout needed.
+Wired through `lightning_solver_actions(mode=...)` and registered
+`lightning_sum` / `lightning_sum_pw` seat names in
+`scripts/run_v2_solver.py`.
+
+Four head-to-head runs (R=6 P=6 4000 ticks, in
+`public/v2/replays/solver_v2_*`):
+
+- **All-`sum` self-play (8 games)** — 8/8 decisive at mean 1501 ticks. Sum
+  breaks symmetry fast enough to resolve.
+- **All-`sum_pw` self-play (8 games)** — **8/8 stalemates at the 4000-tick
+  cap.** Loops do emerge — and they're so defensive nobody can crack
+  anyone else's interior. Replay: `solver_v2_lightning_sum_pw_*.flxr`.
+- **3-way mix (24 games)** — `sum` 15 wins, `lightning` 9, `sum_pw` 0.
+  Sum-mode is the new best solver.
+- **`max` vs `sum_pw` 3v3 (24 games)** — `lightning` 23, `sum_pw` 0,
+  1 stalemate. Pressure-weighted gets steamrolled head-to-head.
+
+Headline: hypothesis confirmed mechanically (loops form), but the
+strategic implication inverted — cycle pressure is *defensive
+infrastructure*, not offensive throughput. The genuine win was the
+non-edge-weighted `sum` mode, which beats original `max` by ~6/24 games
+despite using the same action rule. Worth considering `lightning_sum`
+as the new default baseline.
+
+Replays land in the v2 displayer index automatically.
+
+**Added:** `python/flux_v2/solver_lightning.py` modes,
+`python/scripts/run_v2_solver.py` solver registrations, four `.flxr`
+replays in `public/v2/replays/`, [[topics/v2-edge-loop-emergence]].
+**Updated:** [[topics/v2-algorithmic-solvers]] cross-link section,
+[[index]] entry.
+**Retired:** none.
+**Questions opened:** hybrid (`max` frontier + `sum_pw` interior) untested;
+whether longer-tick runs (12000+) eventually break `sum_pw` deadlocks;
+whether `lightning_sum` should replace `lightning` as the default baseline.
+
 ## [2026-05-14 | workspace | v2 displayer gets media-style transport controls]
 
 **Touched pages:** [[v2-trainer-displayer]] [[log]]

@@ -204,7 +204,12 @@ def tick(state: State) -> State:
         cap_cells = np.where(capture_mask)[0]
         attackers = enemy_pressure_by_player[cap_cells].argmax(axis=1)
         new_owner[cap_cells] = attackers.astype(new_owner.dtype)
-        new_strength[cap_cells] = CAPTURE_STRENGTH
+        # New: captured cell takes |pre_strength| as starting strength — i.e.
+        # the surplus pressure that broke the defender. pre_strength = strength
+        # + grew - pressure_in_enemy (for owned) or strength - pressure_in_enemy
+        # (for neutral, grew=0). Negative when captured; surplus = -pre_strength.
+        surplus = np.clip(-pre_strength[cap_cells], 0.0, MAX_STRENGTH)
+        new_strength[cap_cells] = surplus
 
     # Dead cells stay dead.
     new_owner[is_dead] = DEAD

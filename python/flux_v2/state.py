@@ -17,11 +17,16 @@ import numpy as np
 # Hex topology — fixed at K=6 direct neighbors per cell.
 K: int = 6
 
-# Per-PRD constants.
-MAX_STRENGTH: float = 100.0
-MAX_EDGE: float = 100.0
-CAPTURE_STRENGTH: float = 50.0
-REGEN_BASE_PER_TICK: float = 0.5      # baseline cell regen per game tick
+# Per-PRD constants. "Big-bag-of-pressure" rules (2026-05-15):
+#   - Caps scaled 10x so reservoirs can grow large enough to be
+#     interesting; "MAWSSIVE shots" deliverable in one tick.
+#   - REGEN scaled 10x to preserve fill timescale (200 ticks 0→MAX).
+#   - CAPTURE_STRENGTH no longer used — captures now keep the surplus
+#     pressure that overcame the defender (see step.py capture line).
+MAX_STRENGTH: float = 1000.0
+MAX_EDGE: float = 1000.0
+CAPTURE_STRENGTH: float = 50.0         # legacy; new rule uses surplus pressure
+REGEN_BASE_PER_TICK: float = 5.0       # baseline cell regen per game tick
 REGEN_SLOPE: float = 0.0               # linear scaling; 0 = flat regen
 
 # Waste = "any regen you didn't send." If a cell has outflows set, its regen

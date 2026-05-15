@@ -39,7 +39,32 @@ from flux_v2.edge_features import (                                   # noqa: E4
     build_edge_features,
 )
 from flux_v2.mlx_step import apply_actions_batched, tick_batched      # noqa: E402
-from flux_v2.ppo import make_actor_critic                             # noqa: E402
+from flux_v2.ppo import AttnActorCritic, GNNActorCritic, make_actor_critic  # noqa: E402
+from flux_v2.solver import solver_actions as bfs_solver_actions       # noqa: E402
+from flux_v2.solver_lightning import lightning_solver_actions         # noqa: E402
+
+MODEL_REGISTRY = {
+    "gnn": GNNActorCritic,
+    "attn": AttnActorCritic,
+}
+
+PRETRAIN_SOLVERS = {
+    "bfs": bfs_solver_actions,
+    "lightning": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="max"),
+    "lightning_sum": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="sum"),
+    "lightning_sum_pw": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="sum_pw"),
+    "lightning_loop": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="loop"),
+    "lightning_attn": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="attn"),
+}
+
+
+def _ckpt_label(path) -> str:
+    """Best-effort relative path for log messages — falls back to absolute
+    when the checkpoint lives outside the repo (e.g., a job temp dir)."""
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 from flux_v2.replay import (                                          # noqa: E402
     Frame,
     ReplayHeader,
@@ -90,7 +115,8 @@ class PPOConfig:
     power_coef: float = 0.0          # deprecated: per-unit Δ(Σ strength_owned)
     capture_coef: float = 0.0        # deprecated: per-cell Δ(cells_owned)
     waste_coef: float = 0.05         # per-unit attributed waste
-    transit_coef: float = 0.0        # per-unit pressure sent into friendly relays
+    transit_coef: float = 0.0        # per-unit pressure sent into friendly relays (state-tracked)
+    transit_credit_coef: float = 0.0 # per-unit transit credit (positive twin of waste; computed on the fly)
     time_coef: float = 0.01          # per AI-tick small penalty
     win_bonus: float = 50.0          # terminal reward for the winner
     # Killer-instinct signal: per-tick reward proportional to the number of
@@ -102,6 +128,13 @@ class PPOConfig:
     num_dead_cells: int = 40
     # Convenience.
     record_stride: int = 25          # game ticks between recorded frames
+    # Mixed-seat rollouts: opponent seats use a hand-written solver instead of
+    # the model. Their seats still contribute to the environment (rewards,
+    # captures, etc.) but their actions and gradient are masked out of the
+    # PPO loss, so the model trains against a stationary opponent rather
+    # than itself. Empty tuple = pure self-play.
+    opponent_seats: tuple[int, ...] = ()
+    opponent_solver_name: str = "lightning_sum"
 
 
 def _categorical_sample(logits: mx.array, rng_key: mx.array) -> tuple[mx.array, mx.array]:
@@ -171,6 +204,72 @@ def _per_seat_transit(owner_np: np.ndarray, transit_np: np.ndarray, P: int) -> n
     for p in range(P):
         out[:, p] = (transit_np * (owner_np == p)).sum(axis=1)
     return out
+
+
+def _batched_transit_credit(
+    owner_np: np.ndarray,           # (G, N) int32
+    strength_np: np.ndarray,        # (G, N) float32
+    outflow_np: np.ndarray,         # (G, N, K) bool
+    edge_pressure_np: np.ndarray,   # (G, N, K) float32
+    neighbors_np: np.ndarray,       # (N, K) int32 (shared across games)
+) -> np.ndarray:                    # (G, N) float32
+    """Vectorized batch version of flux_v2.step.transit_credit_per_cell_for_tick.
+
+    For each source cell c with active outflow slot k pointing at a friendly
+    relay d (= friendly cell with its own active outflows; strict mode adds
+    `strength[d] >= MAX_STRENGTH`), pay c the per-edge spill amount that
+    will flow d-ward this tick. This is the positive twin of
+    destination-terminated waste — rewards productive chain segments,
+    leaves ordinary fill traffic unpaid.
+    """
+    from flux_v2.state import regen as _regen, OPPOSITE_SLOT as _OPP, \
+        MAX_STRENGTH as _MS, MAX_EDGE as _ME, TRANSIT_CREDIT_STRICT as _STRICT
+    G, N = owner_np.shape
+    K = outflow_np.shape[-1]
+    is_alive = owner_np >= 0
+    nb_safe = np.maximum(neighbors_np, 0)                      # (N, K)
+    nb_valid = (neighbors_np >= 0)                             # (N, K)
+
+    pressure_in = np.zeros((G, N), dtype=np.float32)
+    pressure_in[is_alive] = _regen(strength_np[is_alive]).astype(np.float32)
+    for k in range(K):
+        opp = int(_OPP[k])
+        d_owner = owner_np[:, nb_safe[:, k]]                   # (G, N)
+        is_friendly_in = (
+            nb_valid[:, k].reshape(1, N)
+            & (d_owner == owner_np)
+            & is_alive
+        )
+        ep_back = edge_pressure_np[:, nb_safe[:, k], opp]      # (G, N)
+        pressure_in += ep_back * is_friendly_in.astype(np.float32)
+
+    headroom = np.maximum(_MS - strength_np, 0.0)
+    grew = np.minimum(pressure_in, headroom)
+    overflow = np.where(is_alive, pressure_in - grew, 0.0)
+    num_active = outflow_np.sum(axis=-1).astype(np.int32)      # (G, N)
+    can_spill = (num_active > 0) & (overflow > 0) & is_alive
+    if not can_spill.any():
+        return np.zeros((G, N), dtype=np.float32)
+
+    safe_num = np.maximum(num_active, 1).astype(np.float32)
+    per_edge = np.minimum(overflow / safe_num, _ME)            # (G, N)
+
+    credit = np.zeros((G, N), dtype=np.float32)
+    for k in range(K):
+        d_owner = owner_np[:, nb_safe[:, k]]                   # (G, N)
+        d_active = num_active[:, nb_safe[:, k]]                # (G, N)
+        slot_active = (
+            outflow_np[:, :, k]
+            & nb_valid[:, k].reshape(1, N)
+            & can_spill
+        )
+        is_relay = (d_owner == owner_np) & (d_active > 0)
+        if _STRICT:
+            d_strength = strength_np[:, nb_safe[:, k]]         # (G, N)
+            is_relay = is_relay & (d_strength >= _MS)
+        relay_active = slot_active & is_relay
+        credit += np.where(relay_active, per_edge, 0.0)
+    return credit
 
 
 def _per_seat_cells(owner_np: np.ndarray, P: int) -> np.ndarray:
@@ -280,7 +379,7 @@ def make_batched_initial_state(
     return (
         mx.array(owner), mx.array(strength), mx.array(outflow),
         mx.array(edge_pressure), mx.array(alive),
-        mx.array(neighbors_np), dead_lists,
+        mx.array(neighbors_np), dead_lists, base,
     )
 
 
@@ -297,7 +396,7 @@ def collect_rollout(
     for game 0 (the recorded game)."""
     P = config.num_players
 
-    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists = (
+    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists, base_for_rollout = (
         make_batched_initial_state(config, rng_np)
     )
     G = config.games_per_rollout
@@ -366,6 +465,29 @@ def collect_rollout(
             # Combine into a single per-cell action by selecting the action for
             # the cell's current owner. For unowned cells, action = NOOP.
             actions_np = np.array(actions, copy=False)
+
+            # Mixed-seat rollouts: override the opponent seats' actions with
+            # solver-chosen actions. The model still produced logits and
+            # log_probs for those seats; we'll mask them out of the PPO loss.
+            if config.opponent_seats:
+                from flux_v2.state import State as _PyState
+                solver_fn = PRETRAIN_SOLVERS[config.opponent_solver_name]
+                for opp_s in config.opponent_seats:
+                    for g in range(G):
+                        sg = _PyState(
+                            N=N, pos=base_for_rollout.pos,
+                            coord=base_for_rollout.coord,
+                            neighbors=neighbors_np_local,
+                            owner=owner_np[g].copy(),
+                            strength=strength_np[g].copy(),
+                            outflow=outflow_np[g].copy(),
+                            edge_pressure=edge_pressure_np[g].copy(),
+                            tick=t, num_players=P,
+                        )
+                        actions_np[g, opp_s] = solver_fn(sg, opp_s, rng=rng_np)
+                actions = mx.array(actions_np)
+                mx.eval(actions)
+
             owner_safe = np.maximum(owner_np, 0)
             seat_idx = owner_safe[..., None]                              # (G, N, 1)
             combined = np.take_along_axis(
@@ -455,7 +577,16 @@ def collect_rollout(
             )
             r_capture = config.capture_coef * delta_cells_gained
             r_waste = -config.waste_coef * seat_waste
+            # State-tracked transit (HEAD): seat_transit is computed earlier from state.transit
             r_transit = config.transit_coef * seat_transit
+            # Computed transit credit (lightning-sum): positive twin of waste
+            if config.transit_credit_coef > 0.0:
+                transit_credit_per_cell = _batched_transit_credit(
+                    owner_np, strength_np, outflow_np, edge_pressure_np,
+                    neighbors_np_local,
+                )
+                seat_transit_credit = _per_seat_waste(owner_np, transit_credit_per_cell, P)
+                r_transit = r_transit + config.transit_credit_coef * seat_transit_credit
             r_time = -config.time_coef * np.ones_like(r_power)
             # Killer-instinct: attributed per-tick reward. When a seat
             # eliminates an enemy, that seat's `kills_per_seat` counter ticks
@@ -622,6 +753,19 @@ def ppo_update(
 
     learn_mask = ~flat_dones
 
+    # Mixed-seat: model_seat_mask[s] = 1.0 if seat s is model-controlled, else 0.0.
+    # Used to mask the per-seat policy/value loss so opponent seats don't drive
+    # gradient (they took solver actions, not model actions).
+    if config.opponent_seats:
+        opp = set(int(s) for s in config.opponent_seats)
+        seat_mask_np = np.array(
+            [0.0 if s in opp else 1.0 for s in range(S)], dtype=np.float32,
+        )
+    else:
+        seat_mask_np = np.ones(S, dtype=np.float32)
+    seat_mask_mx = mx.array(seat_mask_np)
+    seat_mask_sum = float(seat_mask_np.sum())
+
     metrics: dict[str, float] = {
         "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0, "approx_kl": 0.0,
         "clip_fraction": 0.0, "ratio_mean": 0.0, "ratio_max": 0.0,
@@ -650,12 +794,24 @@ def ppo_update(
         ).squeeze(-1)
         new_lp = new_lp_per_cell.sum(axis=-1)
 
-        ratio = mx.exp(new_lp - old_lp_mb)
+        # Bound the exponent before exp() to prevent overflow when opp-seat
+        # log-probs drift wildly between iters (those entries are masked out
+        # but their gradients still need to be finite).
+        ratio = mx.exp(mx.clip(new_lp - old_lp_mb, -10.0, 10.0))
         surr1 = ratio * adv_mb
         surr2 = mx.clip(ratio, 1 - clip_eps, 1 + clip_eps) * adv_mb
-        policy_loss = -mx.minimum(surr1, surr2).mean()
+        per_seat_pol = -mx.minimum(surr1, surr2)                        # (B, S)
+        # Mask out opponent seats from policy and value loss. Normalize by
+        # the FULL (B*S) — matching the original .mean() magnitude — rather
+        # than the masked count, so the effective loss/gradient magnitude is
+        # the same as pure self-play and we don't blow up the policy update.
+        m = seat_mask_mx.reshape(1, S)
+        per_seat_pol_safe = mx.where(m > 0, per_seat_pol, mx.zeros_like(per_seat_pol))
+        policy_loss = per_seat_pol_safe.mean()
 
-        value_loss = ((value - ret_mb) ** 2).mean()
+        per_seat_val = (value - ret_mb) ** 2                            # (B, S)
+        per_seat_val_safe = mx.where(m > 0, per_seat_val, mx.zeros_like(per_seat_val))
+        value_loss = per_seat_val_safe.mean()
 
         probs = mx.softmax(logits, axis=-1)
         entropy_per_cell = -(probs * log_softmax).sum(axis=-1)
@@ -1217,6 +1373,138 @@ def _rollout_diagnostics(rollout: Rollout, P: int) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
+# Warmstart: supervised pretrain from a solver
+# ---------------------------------------------------------------------------
+
+
+def collect_solver_pretrain_data(
+    config: PPOConfig,
+    solver_fn,
+    rng_np: np.random.Generator,
+    base_board,
+) -> tuple[list, list]:
+    """Run G games with `solver_fn` driving all seats. Records (state, action)
+    pairs at each AI tick. Used as supervised data for warmstart.
+
+    Returns
+    -------
+    states_log : list of dict with keys owner/strength/outflow/edge_pressure
+                 (all MLX tensors of shape (G, ...))
+    actions_log : list of MLX (G, S, N) int32 — solver-chosen actions per cell
+                  per seat. Non-owned cells get ACTION_NOOP.
+    """
+    from flux_v2.state import State as PyState
+    P = config.num_players
+    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists, _ = (
+        make_batched_initial_state(config, rng_np)
+    )
+    G = config.games_per_rollout
+    N = int(owner.shape[1])
+    neighbors_np = np.array(neighbors, copy=False)
+    pos_np = base_board.pos
+    coord_np = base_board.coord
+
+    states_log: list[dict] = []
+    actions_log: list[mx.array] = []
+
+    for t in range(1, config.max_ticks + 1):
+        if t % config.ai_period_ticks == 0:
+            mx.eval(owner, strength, outflow, edge_pressure)
+            owner_np = np.array(owner, copy=False)
+            strength_np = np.array(strength, copy=False)
+            outflow_np = np.array(outflow, copy=False)
+            ep_np = np.array(edge_pressure, copy=False)
+
+            # Build per-(g, s) action via solver. Solver returns (N,) int32.
+            actions_np = np.full((G, P, N), ACTION_NOOP, dtype=np.int32)
+            for g in range(G):
+                sg = PyState(
+                    N=N, pos=pos_np, coord=coord_np, neighbors=neighbors_np,
+                    owner=owner_np[g].copy(),
+                    strength=strength_np[g].copy(),
+                    outflow=outflow_np[g].copy(),
+                    edge_pressure=ep_np[g].copy(),
+                    tick=t, num_players=P,
+                )
+                for s in range(P):
+                    a = solver_fn(sg, s, rng=rng_np)
+                    actions_np[g, s] = a
+
+            states_log.append({
+                "owner": owner, "strength": strength,
+                "outflow": outflow, "edge_pressure": edge_pressure,
+            })
+            actions_log.append(mx.array(actions_np))
+
+            # Combine into per-cell action: each cell uses its owner's chosen action.
+            owner_safe = np.maximum(owner_np, 0)
+            seat_idx = owner_safe[..., None]
+            combined = np.take_along_axis(
+                actions_np.transpose(0, 2, 1), seat_idx, axis=-1,
+            ).squeeze(-1)
+            combined = np.where(owner_np >= 0, combined, ACTION_NOOP)
+
+            new_outflow = apply_actions_batched(
+                owner, outflow, mx.array(combined.astype(np.int32)), neighbors,
+            )
+            mx.eval(new_outflow)
+            outflow = new_outflow
+
+        # Physics tick.
+        owner, strength, outflow, edge_pressure, _waste = tick_batched(
+            owner, strength, outflow, edge_pressure, alive, P, neighbors,
+        )
+
+        # Optional: early-stop on alive==False for any seat — keeps data clean.
+        # (we don't worry about this for warmstart data quality.)
+
+    return states_log, actions_log
+
+
+def pretrain_supervised(
+    model,
+    optimizer: optim.Adam,
+    states_log: list,
+    actions_log: list,
+    neighbors_mx: mx.array,
+    num_players: int,
+    epochs: int,
+) -> None:
+    """Cross-entropy fit: model predicts solver's action choice per cell.
+    Only owned cells contribute to the loss (solver returns NOOP elsewhere
+    and we don't want to over-fit that)."""
+
+    def cell_loss(model, state, actions):
+        logits, _ = model(
+            state["owner"], state["strength"], state["outflow"],
+            state["edge_pressure"], neighbors_mx, num_players,
+        )  # (G, S, N, A)
+        log_probs = _log_probs_at_actions(logits, actions)              # (G, S, N)
+        # Mask: only cells owned by the seat contribute.
+        G = state["owner"].shape[0]
+        S = num_players
+        seat_idx = mx.arange(S).reshape(1, S, 1)
+        is_owned = (state["owner"].reshape(G, 1, -1) == seat_idx)
+        mask = is_owned.astype(mx.float32)
+        denom = mx.maximum(mask.sum(), 1.0)
+        loss = -(log_probs * mask).sum() / denom
+        return loss
+
+    grad_fn = nn.value_and_grad(model, cell_loss)
+    for ep in range(epochs):
+        ep_loss = 0.0
+        n_steps = 0
+        for state, actions in zip(states_log, actions_log):
+            loss, grads = grad_fn(model, state, actions)
+            optimizer.update(model, grads)
+            mx.eval(model.parameters(), optimizer.state, loss)
+            ep_loss += float(loss)
+            n_steps += 1
+        print(f"  pretrain epoch {ep + 1}: mean_loss={ep_loss / max(n_steps, 1):.4f} "
+              f"(over {n_steps} AI-tick batches)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1254,7 +1542,12 @@ def main() -> None:
     ap.add_argument("--waste-coef", type=float, default=0.05)
     ap.add_argument("--transit-coef", type=float, default=0.0,
                     help="reward per unit pressure sent into friendly relay "
-                         "destinations. Try 0.001 for the slime-mold run.")
+                         "destinations (state-tracked). Try 0.001 for the slime-mold run.")
+    ap.add_argument("--transit-credit-coef", type=float, default=0.0,
+                    help="Positive per-tick reward for productive transit "
+                         "(your outflow pressure lands on a MAX-strength "
+                         "friendly relay with active outflows; computed on the fly). "
+                         "Positive twin of --waste-coef. 0 = off.")
     ap.add_argument("--time-coef", type=float, default=0.01)
     ap.add_argument("--win-bonus", type=float, default=50.0)
     ap.add_argument("--kill-pressure-coef", type=float, default=0.0,
@@ -1263,16 +1556,37 @@ def main() -> None:
                          "by making 'finish weakened enemies' pay ongoing.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="stop after N iterations (0 = forever)")
-    ap.add_argument("--model", choices=("gnn", "edge"), default="gnn",
-                    help="actor-critic architecture. 'gnn' is the unchanged "
-                         "node-centric baseline; 'edge' scores directed v2 "
-                         "candidate edges then maps them to 13 cell logits.")
+    ap.add_argument("--model", choices=("gnn", "attn", "edge"), default="gnn",
+                    help="actor-critic architecture: 'gnn' (3-layer GCN, 13-action "
+                         "softmax), 'attn' (same backbone, SET-action logits = "
+                         "(1-α)·attack_q + α·loop_q from learned heads), or 'edge' "
+                         "(scores directed v2 candidate edges then maps them to 13 cell logits).")
     ap.add_argument("--checkpoint", type=Path, default=None)
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--wandb-project", default="flux-v2")
     ap.add_argument("--wandb-run-name", default=None)
     ap.add_argument("--seed", type=int, default=int(time.time()) & 0xFFFFFFFF)
+    ap.add_argument("--hidden", type=int, default=32,
+                    help="Hidden dim of GCN backbone (default 32). attn model "
+                         "supports overriding; gnn uses the module constant.")
+    ap.add_argument("--pretrain-epochs", type=int, default=0,
+                    help="Run supervised behavior-cloning warmstart from a solver "
+                         "BEFORE the PPO loop. 0 = no warmstart.")
+    ap.add_argument("--pretrain-solver", choices=tuple(PRETRAIN_SOLVERS),
+                    default="lightning_sum",
+                    help="Solver to clone during warmstart.")
+    ap.add_argument("--pretrain-games", type=int, default=0,
+                    help="Number of games_per_rollout for the warmstart data "
+                         "collection pass. 0 = use --games-per-rollout.")
+    ap.add_argument("--opponent-seats", type=str, default="",
+                    help="Comma-separated seat IDs (e.g. '0,2,4') that act via "
+                         "a fixed solver instead of the model. The PPO loss "
+                         "masks these seats — model trains against a "
+                         "stationary opponent rather than itself.")
+    ap.add_argument("--opponent-solver", choices=tuple(PRETRAIN_SOLVERS),
+                    default="lightning_sum",
+                    help="Solver controlling the opponent seats.")
     args = ap.parse_args()
 
     if args.checkpoint is None:
@@ -1294,17 +1608,38 @@ def main() -> None:
         power_damage_coef=args.power_damage_coef,
         waste_coef=args.waste_coef,
         transit_coef=args.transit_coef,
+        transit_credit_coef=args.transit_credit_coef,
         time_coef=args.time_coef, win_bonus=args.win_bonus,
         kill_pressure_coef=args.kill_pressure_coef,
         num_dead_cells=args.num_dead_cells,
         record_stride=args.record_stride,
+        opponent_seats=tuple(int(s) for s in args.opponent_seats.split(",") if s.strip()),
+        opponent_solver_name=args.opponent_solver,
     )
+    if config.opponent_seats:
+        if not set(config.opponent_seats).issubset(range(config.num_players)):
+            raise SystemExit(
+                f"--opponent-seats {config.opponent_seats} out of range for "
+                f"P={config.num_players}"
+            )
+        print(f"  mixed-seat: opponent seats {list(config.opponent_seats)} "
+              f"use {config.opponent_solver_name}; "
+              f"model trains on {config.num_players - len(config.opponent_seats)} seats")
 
     base = make_board(args.radius, args.num_players)
     N = base.N
     neighbors_mx = mx.array(base.neighbors)
 
-    model = make_actor_critic(args.model)
+    if args.model == "edge":
+        model = make_actor_critic(args.model)
+        print(f"  model: edge ({type(model).__name__})")
+    else:
+        model_cls = MODEL_REGISTRY[args.model]
+        if args.model == "attn" and args.hidden != 32:
+            model = model_cls(hidden=args.hidden)
+        else:
+            model = model_cls()
+        print(f"  model: {args.model} ({model_cls.__name__})  hidden={args.hidden}")
     optimizer = optim.Adam(learning_rate=args.lr)
     mx.eval(model.parameters())
 
@@ -1312,12 +1647,51 @@ def main() -> None:
     if not args.fresh:
         iteration_offset = load_checkpoint(model, args.checkpoint)
         if iteration_offset > 0:
-            print(f"resumed from {args.checkpoint.relative_to(REPO_ROOT)} at iter {iteration_offset}")
+            print(f"resumed from {_ckpt_label(args.checkpoint)} at iter {iteration_offset}")
     if iteration_offset == 0:
         print("starting from fresh policy")
 
     rng_mx = mx.random.key(args.seed)
     rng_np = np.random.default_rng(args.seed ^ 0xDEADBEEF)
+
+    # Warmstart: behavior-clone a solver before the PPO loop.
+    if args.pretrain_epochs > 0 and iteration_offset == 0:
+        solver_fn = PRETRAIN_SOLVERS[args.pretrain_solver]
+        pretrain_g = args.pretrain_games or args.games_per_rollout
+        pretrain_cfg = PPOConfig(
+            radius=config.radius, num_players=config.num_players,
+            games_per_rollout=pretrain_g,
+            ai_period_ticks=config.ai_period_ticks,
+            max_ticks=config.max_ticks,
+            num_dead_cells=config.num_dead_cells,
+            record_stride=config.record_stride,
+            gamma=config.gamma, gae_lambda=config.gae_lambda,
+            clip_eps=config.clip_eps, entropy_coef=config.entropy_coef,
+            value_coef=config.value_coef, lr=config.lr,
+            update_epochs=config.update_epochs,
+            minibatch_size=config.minibatch_size,
+            power_coef=config.power_coef, capture_coef=config.capture_coef,
+            power_held_coef=config.power_held_coef,
+            power_damage_coef=config.power_damage_coef,
+            waste_coef=config.waste_coef,
+            transit_credit_coef=config.transit_credit_coef,
+            time_coef=config.time_coef, win_bonus=config.win_bonus,
+            kill_pressure_coef=config.kill_pressure_coef,
+        )
+        print(f"  warmstart: cloning {args.pretrain_solver} for {args.pretrain_epochs} "
+              f"epoch(s) on {pretrain_g} games × {config.max_ticks} ticks")
+        t_warm_collect = time.time()
+        states_log, actions_log = collect_solver_pretrain_data(
+            pretrain_cfg, solver_fn, rng_np, base,
+        )
+        print(f"  collected {len(states_log)} AI-tick batches in "
+              f"{time.time() - t_warm_collect:.1f}s — supervised loss next")
+        t_warm_train = time.time()
+        pretrain_supervised(
+            model, optimizer, states_log, actions_log, neighbors_mx,
+            config.num_players, args.pretrain_epochs,
+        )
+        print(f"  warmstart done in {time.time() - t_warm_train:.1f}s")
 
     wandb_run = None
     if args.wandb:
@@ -1474,7 +1848,7 @@ def main() -> None:
     finally:
         write_executor.shutdown(wait=True)
         save_checkpoint(model, args.checkpoint, iteration)
-        print(f"checkpoint saved → {args.checkpoint.relative_to(REPO_ROOT)}")
+        print(f"checkpoint saved → {_ckpt_label(args.checkpoint)}")
         if wandb_run is not None:
             wandb_run.finish()
 

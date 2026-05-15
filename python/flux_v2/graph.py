@@ -381,3 +381,66 @@ def random_seat_and_dead(
             if ok:
                 return seats.astype(np.int32), dead
     raise RuntimeError("random seat sampling failed")
+
+
+def seats_mutually_reachable(
+    seats: np.ndarray, dead: np.ndarray, neighbors: np.ndarray,
+) -> bool:
+    """Return True iff every seat cell is reachable from every other seat cell
+    via BFS through non-dead cells."""
+    N = neighbors.shape[0]
+    K_local = neighbors.shape[1]
+    is_dead = np.zeros(N, dtype=np.bool_)
+    if len(dead) > 0:
+        is_dead[dead] = True
+    if len(seats) == 0:
+        return True
+    start = int(seats[0])
+    if is_dead[start]:
+        return False
+    visited = np.zeros(N, dtype=np.bool_)
+    visited[start] = True
+    stack = [start]
+    while stack:
+        c = stack.pop()
+        for k in range(K_local):
+            d = int(neighbors[c, k])
+            if d >= 0 and not is_dead[d] and not visited[d]:
+                visited[d] = True
+                stack.append(d)
+    return bool(visited[seats].all())
+
+
+def max_seat_pair_distance(
+    seats: np.ndarray, dead: np.ndarray, neighbors: np.ndarray,
+) -> int:
+    """Return the maximum BFS graph distance (in hops through non-dead cells)
+    between any pair of seats. -1 if any seat is unreachable from another."""
+    from collections import deque
+    N = neighbors.shape[0]
+    K_local = neighbors.shape[1]
+    is_dead = np.zeros(N, dtype=np.bool_)
+    if len(dead) > 0:
+        is_dead[dead] = True
+    worst = 0
+    for s_idx in range(len(seats) - 1):
+        start = int(seats[s_idx])
+        if is_dead[start]:
+            return -1
+        dist = np.full(N, -1, dtype=np.int32)
+        dist[start] = 0
+        q = deque([start])
+        while q:
+            c = q.popleft()
+            for k in range(K_local):
+                d = int(neighbors[c, k])
+                if d >= 0 and not is_dead[d] and dist[d] < 0:
+                    dist[d] = dist[c] + 1
+                    q.append(d)
+        for t in seats[s_idx + 1:]:
+            dt = int(dist[int(t)])
+            if dt < 0:
+                return -1
+            if dt > worst:
+                worst = dt
+    return worst
