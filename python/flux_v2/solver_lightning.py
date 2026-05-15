@@ -14,8 +14,25 @@ Per-cell intrinsic source (read fresh each AI tick):
                       (threatened back-line cells glow → relays swerve to save)
     dead cell         0  (walls don't conduct)
 
-Diffusion (Bellman-style local update, iterated to convergence):
-    pot[c] = max(intrinsic[c], gamma * max(pot[d] for d in non-dead neighbors))
+Three diffusion modes (see v2-edge-loop-emergence wiki):
+
+    mode="max" (original)
+        pot[c] = max(intrinsic[c], gamma * max(pot[d] for d in non-dead nbrs))
+        Tree-like field; each cell inherits from one steepest parent. Loop
+        patterns (a→b→c→a) are forbidden by construction.
+
+    mode="sum"
+        pot[c] = intrinsic[c] + gamma * sum_d ((1/deg(d)) * pot[d])
+        Bellman value-iteration on a uniform stochastic transition. Cycles
+        self-reinforce as a geometric series — the closed-form "future
+        residual" of pressure circulating forever, no rollout required.
+
+    mode="sum_pw" (sum, pressure-weighted)
+        pot[c] = intrinsic[c] + gamma * sum_d (w[d→c] * pot[d])
+        where w[d→c] = edge_pressure[d→c] / total_outflow[d]
+                       (uniform 1/deg(d) fallback when total_outflow[d]≈0)
+        Rich-get-richer: cycles in the *current* edge_pressure field
+        amplify themselves through the diffusion.
 
 Action rule (per owned cell):
     desired-on slots = those pointing at the steepest-uphill neighbor(s)
@@ -76,9 +93,13 @@ def compute_potential(
     defense_bonus: float = 0.0,
     max_iter: int = 32,
     tol: float = 1e-4,
+    mode: str = "max",
 ) -> np.ndarray:
     """Return (N,) float32 potential field for `seat`. All reads are local —
-    each iteration only inspects each cell's 6 neighbors."""
+    each iteration only inspects each cell's 6 neighbors.
+
+    mode in {"max", "sum", "sum_pw"} — see module docstring.
+    """
     N = state.N
     owner = state.owner
     strength = state.strength
@@ -107,16 +128,52 @@ def compute_potential(
     pot = intrinsic.copy()
     nb_safe = np.maximum(nb, 0)
     nb_valid = (nb >= 0)
+    nbr_dead = (owner[nb_safe] == DEAD) & nb_valid
+    nbr_ok = nb_valid & ~nbr_dead                                # (N, K) bool
+    nbr_ok_f = nbr_ok.astype(np.float32)
+
+    if mode == "max":
+        for _ in range(max_iter):
+            nbr_pot = pot[nb_safe] * nbr_ok_f                    # (N, K)
+            max_nbr = nbr_pot.max(axis=1)
+            new_pot = np.maximum(intrinsic, gamma * max_nbr)
+            new_pot[is_dead] = 0.0
+            diff = np.abs(new_pot - pot).max()
+            pot = new_pot
+            if diff < tol:
+                break
+        return pot
+
+    if mode not in ("sum", "sum_pw"):
+        raise ValueError(f"unknown mode {mode!r} (max|sum|sum_pw)")
+
+    # Uniform per-cell distribution weight: each cell d distributes its pot
+    # equally among its non-dead neighbors. deg_self[d] = #valid out-nbrs of d.
+    # Row-sum of the operator over d→neighbors is ≤ 1, so γ < 1 guarantees a
+    # contraction.
+    deg_self = nbr_ok_f.sum(axis=1)                              # (N,)
+    safe_deg = np.where(deg_self > 0, deg_self, 1.0)
+    uniform_per_edge_d = np.where(deg_self > 0, 1.0 / safe_deg, 0.0)  # (N,)
+    uniform_w = uniform_per_edge_d[nb_safe] * nbr_ok_f           # (N, K)
+
+    if mode == "sum":
+        weights = uniform_w
+    else:  # sum_pw
+        ep = state.edge_pressure                                 # (N, K) float32
+        # For each c, slot k points at d = nb_safe[c, k]. The edge d→c uses
+        # slot OPPOSITE_SLOT[k] on d, so pressure d→c = ep[d, opp[k]].
+        opp = OPPOSITE_SLOT[None, :]                             # (1, K)
+        ep_dc = ep[nb_safe, opp]                                 # (N, K)
+        out_total_d = ep.sum(axis=1)                             # (N,)
+        denom_dc = np.maximum(out_total_d[nb_safe], 1e-9)        # (N, K)
+        pw = ep_dc / denom_dc
+        # Fallback to uniform when d has no current outflow.
+        has_flow = out_total_d[nb_safe] > 1e-9                   # (N, K)
+        weights = np.where(has_flow, pw, uniform_w) * nbr_ok_f
 
     for _ in range(max_iter):
-        # Gather neighbor potentials: (N, K) of pot values, zeroed where invalid.
-        nbr_pot = pot[nb_safe]                                  # (N, K)
-        nbr_pot = nbr_pot * nb_valid.astype(np.float32)
-        # Dead neighbors don't conduct.
-        nbr_dead = (owner[nb_safe] == DEAD) & nb_valid
-        nbr_pot = np.where(nbr_dead, 0.0, nbr_pot)
-        max_nbr = nbr_pot.max(axis=1)
-        new_pot = np.maximum(intrinsic, gamma * max_nbr)
+        contrib = (pot[nb_safe] * weights).sum(axis=1)
+        new_pot = intrinsic + gamma * contrib
         new_pot[is_dead] = 0.0
         diff = np.abs(new_pot - pot).max()
         pot = new_pot
@@ -134,10 +191,15 @@ def lightning_solver_actions(
     expand_bonus: float = 0.6,
     defense_bonus: float = 0.0,
     fanout_eps: float = 0.05,
+    mode: str = "max",
 ) -> np.ndarray:
     """Return (N,) int32 actions for `seat`. Cells not owned by `seat` get NOOP.
     Owned cells emit the one action that nudges their outflow toward the
-    steepest-uphill neighbor in the local potential field."""
+    steepest-uphill neighbor in the local potential field.
+
+    mode in {"max", "sum", "sum_pw"} selects the diffusion operator — see the
+    module docstring for the math.
+    """
     N = state.N
     owner = state.owner
     nb = state.neighbors
@@ -152,6 +214,7 @@ def lightning_solver_actions(
         state, seat,
         gamma=gamma, weak_bonus=weak_bonus,
         expand_bonus=expand_bonus, defense_bonus=defense_bonus,
+        mode=mode,
     )
 
     owned = np.where(is_mine)[0]

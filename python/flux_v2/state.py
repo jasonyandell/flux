@@ -37,6 +37,13 @@ WASTE_WEIGHT_CAP_BOUND: float = 0.0
 # decision doc for the source/destination split.
 WASTE_WEIGHT_DEST_TERMINATED: float = 0.3
 
+# Transit credit is the positive twin of destination-terminated waste. It
+# attributes pressure to a source cell when that pressure lands on a friendly
+# relay instead of a sink. Strict mode means "relay" requires a MAX-strength
+# destination with active outflows; this targets the combo/back-line pattern
+# without paying ordinary fill traffic.
+TRANSIT_CREDIT_STRICT: bool = True
+
 # Action space: 13 actions per cell per AI tick.
 ACTION_SET_BASE: int = 0
 ACTION_CLEAR_BASE: int = K

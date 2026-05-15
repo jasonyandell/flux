@@ -39,9 +39,20 @@ from flux_v2.solver import solver_actions
 from flux_v2.solver_lightning import lightning_solver_actions
 from flux_v2.state import copy_state
 
+
+def _lightning_sum(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum")
+
+
+def _lightning_sum_pw(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum_pw")
+
+
 SOLVERS = {
     "bfs": solver_actions,
-    "lightning": lightning_solver_actions,
+    "lightning": lightning_solver_actions,       # mode=max (original)
+    "lightning_sum": _lightning_sum,             # value-iteration sum
+    "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -222,7 +233,7 @@ def main() -> None:
     print()
     print(f"  total: {args.games} games, mean ticks {np.mean(durations):.0f}")
     for p in range(args.num_players):
-        print(f"    seat {p} ({seat_solvers[p]:>9s}): {int(win_counts[p])} wins")
+        print(f"    seat {p} ({seat_solvers[p]:>17s}): {int(win_counts[p])} wins")
     if stalemates:
         print(f"    stalemates: {stalemates}")
     # Aggregate by solver name.
@@ -233,7 +244,7 @@ def main() -> None:
         print("  by solver:")
         for name, w in sorted(by_solver.items(), key=lambda kv: -kv[1]):
             seats_count = seat_solvers.count(name)
-            print(f"    {name:>9s} ({seats_count} seats): {w} wins")
+            print(f"    {name:>17s} ({seats_count} seats): {w} wins")
 
     if args.write_replay and first_game_frames is not None:
         DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
