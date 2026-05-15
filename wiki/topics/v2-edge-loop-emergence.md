@@ -394,6 +394,75 @@ additional odd-k slots appearing on intermediate cells as α drops below
 look like pure `lightning` (max-mode) attacks. The transition is
 smooth, not banded.
 
+## Phase II: learning Q/K via PPO (`--model attn`)
+
+The hand-designed `lightning_attn` solver tied `lightning_sum` on first
+attempt with no tuning. That's the architectural-fit signal — the
+two-head shape is at least as expressive as `sum` on this game. The
+natural next move is to learn the Q/K vectors end-to-end with PPO
+rather than continue hand-tuning `deep_threshold` and `relay_thresh`.
+
+### `AttnActorCritic` — structured policy parameterization
+
+Same 3-layer GCN backbone as the existing `GNNActorCritic`
+(`python/flux_v2/ppo.py`), differs only in the policy head:
+
+```
+SET_k logit     = (1 - α(c)) · attack_q[c, k] + α(c) · loop_q[c, k]
+CLEAR_k logit   = clear_head(c, k)          # generic
+NOOP logit      = noop_head(c)              # generic
+```
+
+where:
+
+- `attack_q_head : H3 → (N, K)`  per-slot attack score
+- `loop_q_head   : H3 → (N, K)`  per-slot loop score
+- `alpha_head    : H3 → (N, 1)` → sigmoid
+- `H3` is the 3rd GCN layer's per-cell embedding (32-dim)
+
+The attack/loop split is a **structural prior**, not a hard constraint.
+PPO can collapse `attack_q ≈ loop_q` if the split isn't useful, in
+which case the policy reduces to a single SET-score head. The interesting
+research question is whether the gradient finds a meaningful separation
+that mirrors the hand-designed `lightning_attn`'s frontier-tilt
+behavior.
+
+Wired through `python/scripts/train_v2.py` via a new `--model {gnn,
+attn}` flag (default unchanged: `gnn`).
+
+### Why a structured head and not a free 13-action logit
+
+`GNNActorCritic` already learns a 13-action softmax over (SET_k,
+CLEAR_k, NOOP) freely. Two reasons to prefer the structured head for
+this experiment:
+
+1. **Parameter efficiency.** The attn head has ~13·6·2 + 13 + 1 ≈ 170
+   parameters in the SET path vs the GNN head's 13·HIDDEN ≈ 416. With
+   fewer parameters to train *and* a structural bias matching the
+   hand-designed solver, the gradient has a much shorter path to
+   competent play.
+2. **Interpretability.** After training, you can read off the learned
+   `α` field per cell to see whether the network discovered the
+   "frontier-distance ramp" the hand-designed version uses, or
+   something different. That answers the open question of whether the
+   `(1-α)·attack + α·loop` decomposition is the *right* decomposition
+   for this game, vs e.g. a `(1-α)·attack + α·defense` or
+   `softmax([attack, loop, defense, retreat])` 4-way head.
+
+### Training run (results pending)
+
+_Filled in once the first 30-iter run lands. Comparison points:_
+
+- Mean reward / explained-variance / entropy curves vs the same
+  configuration with `--model gnn`.
+- α distribution at end-of-training — does it cluster at 0 / 1 the way
+  the hand-designed BFS-distance ramp does, or stay diffuse?
+- Visual: does the learned policy produce the same triskelion-tilt
+  signature as the hand-designed `lightning_attn` replay, or something
+  unrecognizable?
+- Head-to-head: trained-attn vs `lightning_sum` and vs the
+  hand-designed `lightning_attn`. The bar to beat is the 12-12 tie.
+
 See `wiki/log.md` (entry: lightning sum / sum_pw modes) for the run log
 and replays:
 
@@ -407,6 +476,19 @@ and replays:
 - `public/v2/replays/solver_v2_lightning_attn_*.flxr` — Run 8 game 0 (**attention-mixed: triskelions in the back, tilted-uphill toward the frontier**)
 - `public/v2/replays/solver_v2_lightning_attn+lightning_sum_*.flxr` — Run 9 game 0 (sum vs attn 12-12)
 - `public/v2/replays/solver_v2_lightning+lightning_attn+lightning_sum_*.flxr` — Run 10 game 0 (3-way mix)
+
+### Big-grid showcase (R=12, 70 dead cells, 8000-tick cap)
+
+For the visual proof-of-concept on a phone-watchable board:
+
+- `solver_v2_bfs+lightning+lightning_attn+lightning_loop+lightning_sum+lightning_sum_pw_*.flxr` —
+  **all six solvers on one board, one seat each**. The clearest A/B
+  comparison: each color's territory has the visual signature of a
+  different solver, all under the same starting conditions.
+- `solver_v2_lightning_sum+lightning_attn_*.flxr` — alternating 3v3 of
+  the two strongest solvers on the same R=12 arena.
+- `solver_v2_lightning_attn_*.flxr` — all-attn self-play on R=12. The
+  triskelion-tilts get a lot of room to develop on the larger board.
 
 ## Tradeoffs
 
