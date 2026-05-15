@@ -29,9 +29,10 @@ was tried, what happened, what I concluded, what came next.
 3. **`lightning_wave_long`** is the headline new solver — combines
    the "wave" gate (only fire when strength ≥ 60% MAX, so pressure
    accumulates before releasing) with a long-field γ=0.94. Beats
-   default `lightning_sum_wave` 55-38 (59% over 100 games); each
-   ingredient alone is also a small win over default `lightning_sum`.
-   Caveat: 95% CIs on these effects are ±10pp.
+   default `lightning_sum` ~58% at 10% dead R=20. But: refined picture
+   from exp 19 shows the advantage is narrow and density-specific —
+   at 5% dead, wave_long ≈ sum (~47% at 100 games). At 20%+ dead,
+   stalemates dominate. **wave_long's edge is real only around 10% dead.**
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -809,14 +810,13 @@ How does wave_long's edge change with obstacle density?
 
 | dead % | wave_long wins | sum wins | stalemates | wave_long share (decisive) |
 |-------:|---------------:|---------:|-----------:|---------------------------:|
-| 5%     | 13             | 7        | 0          | **65%**                    |
+| 5%     | 13             | 7        | 0          | 65% (20 games — see exp 19) |
 | 10%    | (from exp 14)  | -        | -          | ~58%                       |
 | 20%    | 2              | 4        | **14**     | 33% (tiny sample)          |
 
-**At 5% dead, wave_long's edge is biggest** (65% — tighter CI now,
-still significant). **At 20% dead, the board is too dense — most
-games stalemate**, and among the few decisive games, sum slightly
-edges out wave_long.
+**The 5% dead result here didn't hold up at 100 games** — see exp 19
+below. At 20% dead, the board is too dense — most games stalemate,
+and among the few decisive games sum slightly edges out wave_long.
 
 This refines exp 1's "10% dead is the sweet spot" finding: it's
 also where wave_long has its cleanest measurable advantage. Below
@@ -829,6 +829,44 @@ Replays (visual showcase):
 - `solver_v2_lightning_sum+lightning_wave_long_20260515T085246.flxr` — 5% dead head-to-head
 - `solver_v2_lightning_sum+lightning_wave_long_20260515T085525.flxr` — 20% dead head-to-head
 - `solver_v2_lightning_sum+lightning_wave_long_20260515T085529.flxr` — R=25 sparse 3v3 (wave_long wins)
+
+---
+
+## Exp 19 — Definitive 100-game wave_long vs sum at 5% dead
+
+Took exp 18's 13-7 (65%) result and re-ran with 50 games per seat
+ordering (100 total) to settle it.
+
+| matchup                            | wave_long | sum | stale | share (A=first listed) |
+|------------------------------------|----------:|----:|------:|----------------------:|
+| wave_long[even] vs sum[odd]        | 21        | 27  | 2     | 42% ± 14pp            |
+| sum[even] vs wave_long[odd]        | (B) 25    | (A) 24 | 1  | sum 48% / wave_long 52% |
+
+Pooled (97 decisive games): wave_long 46, sum 51.
+**wave_long 47% (95% CI 37-57%).**
+
+**The 5% dead 65% result didn't hold up.** The 20-game sample was
+just too small. Pooling 100 games gives wave_long *slightly below
+50%* — i.e. essentially tied with sum, possibly even slightly worse.
+
+This refines the picture significantly:
+
+| dead density | wave_long share vs sum (decisive) | sample |
+|-------------:|-----------------------------------:|-------:|
+| 5%           | 47%                                | 100    |
+| 10%          | 58%                                | 40 (per radius) |
+| 20%          | ~33%                               | 6 decisive    |
+
+**wave_long's advantage is real but narrow** — peaks around 10% dead,
+drops off in both directions. At 5% dead, sum's continuous spread
+moves territory faster than wave_long's pulses can catch up. At 20%+
+dead, stalemates dominate.
+
+The right summary statement: **`lightning_wave_long` is the
+best-tested solver for R=20 big-bag at ~10% dead specifically.**
+Outside that density, it's no better than `lightning_sum`.
+
+
 
 ---
 
