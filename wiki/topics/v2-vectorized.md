@@ -189,6 +189,49 @@ Browser decode: `DecompressionStream('gzip')` is standard in modern
 browsers (Safari ≥ 16.4, all evergreen). No third-party gunzip
 needed. `parseReplay` is now `async`.
 
+## Warm-start `compute_potential` (commit `88d8fd3`)
+
+After all the JIT work the profile showed `compute_potential` at 77%
+of remaining time — 32-iter Bellman value iteration, 6 seats per AI
+tick, 400 AI ticks per 6000-game-tick run. The 32-iter cold start
+does not actually converge tight at γ=0.94; the field at 16 iters is
+still ~25 % off the 32-iter result by L2-norm. But the *fixed point
+moves slowly* between AI ticks under fluid physics — only ~5 game
+ticks elapse, and `EDGE_ALPHA=0.05` low-passes the state evolution.
+
+Solution: cache last pot per (board id, seat, mode, gamma) and warm-
+start from it. 6 iters of contraction from a close-to-truth init
+reaches the new fixed point. Cold start (cache miss) still does the
+full 32-iter solve.
+
+| Config | pre-vec | full-JIT | + warm-start | total vs pre-vec |
+| --- | --- | --- | --- | --- |
+| R=20 6000-tick decisive | ~9.7s | 2.0s | **0.7s** | **~14×** |
+| R=30 6000-tick stalemate | 31.3s | 3.8s | **2.5s** | **12.5×** |
+| R=40 6000-tick stalemate | (45.5s post-vec) | 9.0s | **6.1s** | 7.5× post-vec |
+
+The cache is keyed by `id(neighbors)` because `copy_state` preserves
+neighbor identity within a game; each game maps to its own cache
+entries with no risk of cross-game contamination.
+`solver_vec.reset_potential_cache()` is exposed for explicit teardown
+between games where structure changes (different radius / players).
+
+## MLX experiment (commit `88d8fd3`)
+
+A microbenchmark of `compute_potential` alone measured MLX at 1.79×
+faster than Numba: 0.30 ms/call (Numba JIT) vs 0.17 ms/call
+(`mx.compile`'d 32-iter Bellman on M5 Max GPU). Wired into the actual
+solver hot path, MLX ran **slower** by ~1.5× because per-call
+`numpy→mx.array` upload + per-seat `mx.eval` synchronization exceeds
+the in-kernel savings — the benchmark had been reusing the same
+intrinsic tensor across all calls, hiding the real upload cost.
+
+To win with MLX would require keeping the whole solver pipeline
+(intrinsic, attack/relay masks, picker) in MLX and syncing once per
+AI tick across all 6 seats — a sizable rewrite. Left for future
+work; `FLUX_V2_BACKEND=numba` is the default. `FLUX_V2_BACKEND=mlx`
+exposes the hooks for that future direction.
+
 ## Numba JIT (commit `82e80b4`)
 
 Three @njit-cached cores added on top of the vectorized pipeline:
