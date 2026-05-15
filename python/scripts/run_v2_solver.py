@@ -64,6 +64,18 @@ def _lightning_attn_slam(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="attn_slam")
 
 
+def _lightning_vortex(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="vortex")
+
+
+def _lightning_flood(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="flood")
+
+
+def _lightning_random(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="random")
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -73,6 +85,9 @@ SOLVERS = {
     "lightning_attn": _lightning_attn,           # 2-head: attack + loop with frontier-tilt
     "lightning_attn_release": _lightning_attn_release,  # +build-release (frac=0.7)
     "lightning_attn_slam": _lightning_attn_slam,        # +build-release (frac=0.95, big shots)
+    "lightning_vortex": _lightning_vortex,       # CW loop (vs default CCW)
+    "lightning_flood": _lightning_flood,         # set all 6 outflows always
+    "lightning_random": _lightning_random,       # random action baseline
 }
 
 

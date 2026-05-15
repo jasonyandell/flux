@@ -319,6 +319,85 @@ def _attn_actions(
     return actions
 
 
+def _flood_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator],
+) -> np.ndarray:
+    """Flood: every owned cell sets all six outflows toward non-dead
+    neighbors. No gating, no field, no relays — just maximal output in
+    all valid directions. Baseline of 'always fire'.
+
+    Note: the v2 reducer's no-bidirectional-friendly invariant will
+    clear one side of every friendly edge, so the steady state has
+    each friendly edge owned by the higher-cell-index side.
+    """
+    N = state.N
+    owner = state.owner
+    nb = state.neighbors
+    outflow = state.outflow
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    is_mine = owner == seat
+    if not is_mine.any():
+        return actions
+    owned = np.where(is_mine)[0]
+    for c in owned:
+        c = int(c)
+        desired = np.zeros(K, dtype=np.bool_)
+        for k in range(K):
+            d = int(nb[c, k])
+            if d < 0:
+                continue
+            od = int(owner[d])
+            if od == DEAD:
+                continue
+            desired[k] = True
+        cur = outflow[c]
+        missing = np.where(desired & ~cur)[0]
+        if missing.size:
+            actions[c] = ACTION_SET_BASE + _pick(missing, rng)
+            continue
+        stale = np.where(cur & ~desired)[0]
+        if stale.size:
+            actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+    return actions
+
+
+def _random_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator],
+) -> np.ndarray:
+    """Pick a random action per owned cell. Baseline of 'no policy'."""
+    if rng is None:
+        rng = np.random.default_rng()
+    N = state.N
+    owner = state.owner
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    is_mine = owner == seat
+    owned = np.where(is_mine)[0]
+    for c in owned:
+        c = int(c)
+        nb_c = state.neighbors[c]
+        # Valid slots: non-off-board, non-dead.
+        valid = []
+        for k in range(K):
+            d = int(nb_c[k])
+            if d < 0:
+                continue
+            if int(owner[d]) == DEAD:
+                continue
+            valid.append(k)
+        if not valid:
+            continue
+        # Half chance noop, otherwise random SET/CLEAR on a random valid slot.
+        r = rng.random()
+        if r < 0.3:
+            continue  # noop
+        slot = int(rng.choice(valid))
+        if rng.random() < 0.7:
+            actions[c] = ACTION_SET_BASE + slot
+        else:
+            actions[c] = ACTION_CLEAR_BASE + slot
+    return actions
+
+
 def _loop_actions(
     state: State, seat: int, rng: Optional[np.random.Generator], curl_dir: int = 1,
 ) -> np.ndarray:
@@ -404,6 +483,7 @@ def lightning_solver_actions(
     fanout_eps: float = 0.05,
     mode: str = "max",
     curl_dir: int = 1,
+    **mode_kwargs,
 ) -> np.ndarray:
     """Return (N,) int32 actions for `seat`. Cells not owned by `seat` get NOOP.
     Owned cells emit the one action that nudges their outflow toward the
@@ -416,23 +496,33 @@ def lightning_solver_actions(
     """
     if mode == "loop":
         return _loop_actions(state, seat, rng, curl_dir=curl_dir)
+    if mode == "vortex":
+        # CW (curl_dir=-1) vs default CCW. Same shape, opposite spin.
+        return _loop_actions(state, seat, rng, curl_dir=-1)
     if mode == "attn":
         return _attn_actions(
             state, seat, rng,
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            **mode_kwargs,
         )
     if mode == "attn_release":
         return _attn_actions(
             state, seat, rng,
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
-            build_release_frac=0.7,
+            build_release_frac=mode_kwargs.pop("build_release_frac", 0.7),
+            **mode_kwargs,
         )
     if mode == "attn_slam":
         return _attn_actions(
             state, seat, rng,
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
-            build_release_frac=0.95,
+            build_release_frac=mode_kwargs.pop("build_release_frac", 0.95),
+            **mode_kwargs,
         )
+    if mode == "flood":
+        return _flood_actions(state, seat, rng)
+    if mode == "random":
+        return _random_actions(state, seat, rng)
 
     N = state.N
     owner = state.owner
