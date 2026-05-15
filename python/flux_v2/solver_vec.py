@@ -24,10 +24,11 @@ and documented in the wiki; the relevant ones are:
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 from .state import (
     ACTION_CLEAR_BASE,
@@ -41,6 +42,103 @@ from .state import (
     OPPOSITE_SLOT,
     State,
 )
+
+# ---------------------------------------------------------------------------
+# Backend selection: Numba (default) vs MLX (opt-in, GPU on Apple Silicon).
+# ---------------------------------------------------------------------------
+# A standalone microbenchmark of compute_potential alone showed MLX ~1.79x
+# faster than Numba on M5 Max. Wired into the real solver it ran ~1.5x
+# *slower* — the per-call numpy↔MLX upload + per-seat mx.eval sync exceeds
+# the kernel savings when each seat consumes pot as numpy immediately.
+#
+# To actually win with MLX would require keeping the whole solver pipeline
+# in MLX (intrinsic, attack/relay masks, picker) and syncing once per AI
+# tick across all 6 seats. That's a sizable rewrite — left out of this
+# pass.
+#
+# Default is "numba". Set FLUX_V2_BACKEND=mlx to opt in (useful for future
+# pipeline-in-MLX work; current hot path is faster on numba).
+
+_BACKEND_ENV = os.environ.get("FLUX_V2_BACKEND", "numba").lower()
+_MLX_AVAILABLE = False
+if _BACKEND_ENV == "mlx":
+    try:
+        import mlx.core as mx  # type: ignore[import-not-found]
+        _MLX_AVAILABLE = True
+    except Exception:
+        _MLX_AVAILABLE = False
+
+
+# Compile once: 32-iter Bellman value iteration as one MLX graph.
+# Inputs all dynamic (no closure over arrays) so this is shape-polymorphic.
+if _MLX_AVAILABLE:
+    @mx.compile
+    def _mlx_bellman_sum_32(
+        intrinsic, gamma, nb_safe, nbr_ok, safe_deg, alive_mask,
+    ):
+        pot = intrinsic * 1.0
+        for _ in range(32):
+            gathered = mx.take(pot, nb_safe, axis=0)
+            deg_at = mx.take(safe_deg, nb_safe, axis=0)
+            weighted = (gathered / deg_at) * nbr_ok
+            contrib = weighted.sum(axis=1)
+            pot = (intrinsic + gamma * contrib) * alive_mask
+        return pot
+
+    @mx.compile
+    def _mlx_bellman_max_32(
+        intrinsic, gamma, nb_safe, nbr_ok, alive_mask,
+    ):
+        pot = intrinsic * 1.0
+        NEG = mx.array(np.float32(-1.0e30))
+        for _ in range(32):
+            gathered = mx.take(pot, nb_safe, axis=0)
+            # mask out invalid neighbors with -inf so they don't win max
+            masked = mx.where(nbr_ok > 0.5, gathered, NEG)
+            mx_n = masked.max(axis=1)
+            pot = mx.maximum(intrinsic, gamma * mx_n) * alive_mask
+        return pot
+
+
+# Per-board MLX cache, keyed by id(neighbors). The cached entry stores the
+# (static, this-game) MLX arrays so per-call cost is just intrinsic upload.
+_mlx_board_cache: dict = {}
+
+
+def _get_mlx_board(state: State):
+    """Return cached MLX board structures for this state's geometry.
+
+    Cache key is id(state.neighbors). copy_state preserves neighbors
+    identity so a whole game maps to one cache entry. The DEAD pattern
+    is read from state.owner once (immutable per game by construction).
+    """
+    if not _MLX_AVAILABLE:
+        return None
+    key = id(state.neighbors)
+    entry = _mlx_board_cache.get(key)
+    if entry is not None:
+        return entry
+    neighbors = state.neighbors
+    owner = state.owner
+    nb_safe = np.maximum(neighbors, 0).astype(np.int32)
+    nb_valid = neighbors >= 0
+    is_dead = (owner == DEAD)
+    nbr_ok = (nb_valid & ~is_dead[nb_safe]).astype(np.float32)
+    deg = nbr_ok.sum(axis=1).astype(np.float32)
+    safe_deg = np.where(deg > 0, deg, np.float32(1.0)).astype(np.float32)
+    alive_mask = (1.0 - is_dead.astype(np.float32)).astype(np.float32)
+    entry = {
+        "nb_safe": mx.array(nb_safe),
+        "nbr_ok": mx.array(nbr_ok),
+        "safe_deg": mx.array(safe_deg),
+        "alive_mask": mx.array(alive_mask),
+    }
+    # Cap the cache so long-running processes don't leak memory across many
+    # board shapes (e.g., tournaments at different radii).
+    if len(_mlx_board_cache) > 16:
+        _mlx_board_cache.clear()
+    _mlx_board_cache[key] = entry
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +279,7 @@ _OPPOSITE_SLOT_ARR_VEC = np.asarray(OPPOSITE_SLOT, dtype=np.int32)
 def _compute_potential_core(
     owner: np.ndarray,
     intrinsic: np.ndarray,
+    init_pot: np.ndarray,
     neighbors: np.ndarray,
     edge_pressure: np.ndarray,
     opposite_slot: np.ndarray,
@@ -198,7 +297,9 @@ def _compute_potential_core(
     """
     N = owner.shape[0]
     K = neighbors.shape[1]
-    pot = intrinsic.copy()
+    # Start from init_pot (caller passes intrinsic for cold start, or the
+    # previous AI tick's converged pot for warm start).
+    pot = init_pot.copy()
     new_pot = np.empty_like(pot)
 
     # Precompute per-cell degree (count of non-DEAD non-off-grid neighbors).
@@ -215,7 +316,6 @@ def _compute_potential_core(
         deg[c] = n
 
     for _ in range(max_iter):
-        max_diff = 0.0
         if mode_id == 0:  # max
             for c in range(N):
                 if owner[c] == dead_id:
@@ -234,11 +334,6 @@ def _compute_potential_core(
                 gm = gamma * max_nbr
                 if gm > v:
                     v = gm
-                d_abs = v - pot[c]
-                if d_abs < 0.0:
-                    d_abs = -d_abs
-                if d_abs > max_diff:
-                    max_diff = d_abs
                 new_pot[c] = v
         elif mode_id == 1:  # sum (uniform)
             for c in range(N):
@@ -256,13 +351,7 @@ def _compute_potential_core(
                     if owner[d] == dead_id:
                         continue
                     contrib += pot[d] / dd
-                v = intrinsic[c] + gamma * contrib
-                d_abs = v - pot[c]
-                if d_abs < 0.0:
-                    d_abs = -d_abs
-                if d_abs > max_diff:
-                    max_diff = d_abs
-                new_pot[c] = v
+                new_pot[c] = intrinsic[c] + gamma * contrib
         else:  # 2: sum_pw (pressure-weighted)
             for c in range(N):
                 if owner[c] == dead_id:
@@ -275,7 +364,6 @@ def _compute_potential_core(
                         continue
                     if owner[d] == dead_id:
                         continue
-                    # weight = ep[d, opp(k)] / sum_k' ep[d, k']  (or 1/deg(d) fallback)
                     opp_k = opposite_slot[k]
                     ep_dc = edge_pressure[d, opp_k]
                     total = 0.0
@@ -287,13 +375,17 @@ def _compute_potential_core(
                         dd = deg[d]
                         w = 1.0 / dd if dd > 0 else 0.0
                     contrib += pot[d] * w
-                v = intrinsic[c] + gamma * contrib
-                d_abs = v - pot[c]
-                if d_abs < 0.0:
-                    d_abs = -d_abs
-                if d_abs > max_diff:
-                    max_diff = d_abs
-                new_pot[c] = v
+                new_pot[c] = intrinsic[c] + gamma * contrib
+
+        # Convergence check (reduction in a separate scan; cheap vs the
+        # inner loop).
+        max_diff = 0.0
+        for c in range(N):
+            d_abs = new_pot[c] - pot[c]
+            if d_abs < 0.0:
+                d_abs = -d_abs
+            if d_abs > max_diff:
+                max_diff = d_abs
 
         # swap pot ↔ new_pot
         tmp = pot
@@ -345,19 +437,85 @@ def compute_potential(
     if mode_id < 0:
         raise ValueError(f"unknown mode {mode!r}")
 
-    pot = _compute_potential_core(
-        np.ascontiguousarray(owner, dtype=np.int32),
-        np.ascontiguousarray(intrinsic, dtype=np.float32),
-        np.ascontiguousarray(state.neighbors, dtype=np.int32),
-        np.ascontiguousarray(state.edge_pressure, dtype=np.float32),
-        _OPPOSITE_SLOT_ARR_VEC,
-        float(gamma),
-        int(max_iter),
-        float(tol),
-        int(mode_id),
-        int(DEAD),
-    )
-    return pot.astype(np.float32, copy=False)
+    # Warm-start cache: keyed by (board id, seat, mode, gamma). The board
+    # geometry is fixed within a game (copy_state preserves neighbors
+    # identity). State changes per AI tick are small under fluid physics
+    # (~5 game ticks of slow edge-pressure evolution), so previous pot is a
+    # close-to-truth init and the Bellman fixed point is reached in 4-6
+    # iterations instead of 32.
+    cache_key = (id(state.neighbors), int(seat), mode, float(gamma))
+    prev_pot = _pot_warm_cache.get(cache_key)
+
+    if prev_pot is not None and prev_pot.shape == intrinsic.shape:
+        init_pot = prev_pot
+        iters = _WARM_ITERS
+    else:
+        init_pot = intrinsic
+        iters = int(max_iter)
+
+    # MLX fast path for sum / max modes when iters == 32 cold start.
+    # sum_pw uses runtime edge_pressure weights — left on Numba.
+    if (
+        _MLX_AVAILABLE
+        and mode_id in (0, 1)
+        and iters == 32
+        and prev_pot is None
+    ):
+        board = _get_mlx_board(state)
+        intrinsic_mx = mx.array(intrinsic.astype(np.float32))
+        gamma_mx = mx.array(np.float32(gamma))
+        if mode_id == 1:
+            pot_mx = _mlx_bellman_sum_32(
+                intrinsic_mx, gamma_mx,
+                board["nb_safe"], board["nbr_ok"], board["safe_deg"],
+                board["alive_mask"],
+            )
+        else:
+            pot_mx = _mlx_bellman_max_32(
+                intrinsic_mx, gamma_mx,
+                board["nb_safe"], board["nbr_ok"], board["alive_mask"],
+            )
+        mx.eval(pot_mx)
+        pot = np.asarray(pot_mx, dtype=np.float32)
+    else:
+        pot = _compute_potential_core(
+            np.ascontiguousarray(owner, dtype=np.int32),
+            np.ascontiguousarray(intrinsic, dtype=np.float32),
+            np.ascontiguousarray(init_pot, dtype=np.float32),
+            np.ascontiguousarray(state.neighbors, dtype=np.int32),
+            np.ascontiguousarray(state.edge_pressure, dtype=np.float32),
+            _OPPOSITE_SLOT_ARR_VEC,
+            float(gamma),
+            iters,
+            float(tol),
+            int(mode_id),
+            int(DEAD),
+        )
+
+    pot = pot.astype(np.float32, copy=False)
+    # Cache for next AI tick's warm start. Cap cache size; arbitrary keys
+    # could grow unbounded across long runs.
+    if len(_pot_warm_cache) > 256:
+        _pot_warm_cache.clear()
+    _pot_warm_cache[cache_key] = pot
+    return pot
+
+
+# Warm-start cache. (id(neighbors), seat, mode, gamma) -> last pot. Reset
+# when board structure changes (different game). Inside one game,
+# copy_state preserves neighbors identity so the key is stable.
+_pot_warm_cache: dict = {}
+
+# Number of iterations to run on a warm start. With state changing only
+# ~5% per AI tick under fluid physics (and γ=0.94 contraction factor),
+# 6 iters from prev pot tracks the slowly-moving fixed point closely.
+_WARM_ITERS = 6
+
+
+def reset_potential_cache() -> None:
+    """Clear the warm-start cache. Call between unrelated games to avoid
+    stale-init when board structure or seat layout changes mid-process."""
+    _pot_warm_cache.clear()
 
 
 
