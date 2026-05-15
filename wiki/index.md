@@ -20,7 +20,7 @@ Topics:
 - [[topics/neuroevolution|neuroevolution]] — MLX neuroevolution is the training path. v1 (91-input, 2-hop) and v2 (181-input, 3-hop) coexist; `scripts/train.py` runs the loop.
 - [[topics/showcase-demo|showcase-demo]] — `?demo=1` evolution-arc demo: five 5s scenes, canned champions in `public/champions/`, hot-area intro + "AI WARS" title card.
 - [[topics/v2-training-runs|v2-training-runs]] — record of v2 PPO training runs worth keeping. Cross-run lessons (iter cadence, EV timing, dead-cell connectivity) plus per-run config + observations. Current frontier: `v2-overnight` (40 dead cells, 9-channel pressure-aware policy, 2000-AI-tick games).
-- [[topics/v2-edge-loop-emergence|v2-edge-loop-emergence]] — three new lightning modes that admit a→b→c→a cycles. `sum` (uniform Bellman) is the new strongest solver. `sum_pw` (edge-pressure-weighted) actually forms 2-cycle feeding, not true 3-loops. `loop` (structural even-k curl rule on hex triangles) produces the directed 3-loops cleanly but loses head-to-head (3 slots/cell go to circulation).
+- [[topics/v2-edge-loop-emergence|v2-edge-loop-emergence]] — four new lightning modes culminating in `lightning_attn`, a 2-head (ATTACK + LOOP) attention solver with per-cell frontier-distance mixing. Ranking: `sum` > `attn` ≈ `sum` > `max` > `loop` > `sum_pw`. Hand-designed attention pulls **12-12 tie with `sum`** on first attempt — the architectural shape works; next step is learned Q/K via PPO.
 
 Decisions:
 

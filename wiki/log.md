@@ -6,6 +6,56 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-14 | workspace | lightning_attn — 2-head attention solver with frontier-tilt mixing]
+
+**Touched pages:** [[topics/v2-edge-loop-emergence]] [[log]]
+
+User intuition: "the pressure should be a reservoir rather than an
+ultimatum." Loop mode banks pressure in the back but never releases;
+sum mode releases at every step but stores nothing. Attention answers
+this by running both heads simultaneously with a per-cell mixing
+weight.
+
+Heads:
+- ATTACK head: `attack_score[k] = max(0, pot[nb[c,k]] - pot[c])`
+  (max-mode gradient).
+- LOOP head:  `loop_score[k] = 1 iff k ∈ {0, 2, 4} and slots k, k+1
+  both friendly` (the even-k curl from `lightning_loop`).
+
+Per-cell α from BFS frontier distance: α=0 at frontier (pure attack
+release), α=1 deep interior (pure triskelion storage), α intermediate
+(blend — loops "tilt" forward as the frontier gets closer). Combined
+score = (1-α)·attack + α·loop; friendly slots activate when ≥ 0.5×max.
+
+Initial head-to-head (R=6 P=6 4000 ticks):
+- All-attn self-play (6 games)   — 6/6 decisive, no deadlock, mean 1485
+  ticks. The mixing breaks the storage trap.
+- Sum vs attn (24 games)         — **12-12 tie**. First-pass even with
+  the previous champion.
+- max/sum/attn 3-way (24 games)  — sum 11 (45.8%), attn 8 (33.3%),
+  max 5 (20.8%). Attn decisively beats max but doesn't catch sum.
+
+Full solver ordering after this branch:
+`sum` > `attn` ≈ `sum` > `max` > `loop` > `sum_pw`.
+
+Interpretation: hand-designed attention pulling even with `sum` on the
+first attempt — with no tuning of `deep_threshold` or `relay_thresh` —
+says the architectural shape is right. The next step is *learned* Q/K,
+not more knob-tuning: a PPO head that produces `(attack_score,
+loop_score)` per slot plus a per-cell α, trained end-to-end on the
+existing v2 reward stack.
+
+**Added:** `lightning_attn` mode in `python/flux_v2/solver_lightning.py`;
+solver registration; three new `.flxr` replays.
+**Updated:** [[topics/v2-edge-loop-emergence]] (three new run tables,
+"reservoir-with-release" architecture section, solver-table update).
+**Retired:** none.
+**Questions opened:** does a learned attention head close the gap to
+`sum` and beat it? Does the visual triskelion-tilt actually match the
+"loops lean forward toward the frontier" prediction in the replay?
+Does the BFS-based α generalize to settings where the frontier moves
+fast (capture cascades)?
+
 ## [2026-05-14 | workspace | lightning_loop — structural curl rule that closes directed 3-loops]
 
 **Touched pages:** [[topics/v2-edge-loop-emergence]] [[log]]

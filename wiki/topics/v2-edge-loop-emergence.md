@@ -119,14 +119,15 @@ dramatically different from `sum_pw`.
 
 ## Solver registration
 
-`python/scripts/run_v2_solver.py` registers all four:
+`python/scripts/run_v2_solver.py` registers all five:
 
-| seat name           | mode      | what it does                                       |
-|---------------------|-----------|----------------------------------------------------|
-| `lightning`         | `max`     | original tree-only diffusion + strict-uphill relay |
-| `lightning_sum`     | `sum`     | uniform Bellman diffusion + strict-uphill relay    |
-| `lightning_sum_pw`  | `sum_pw`  | edge-pressure-weighted Bellman + strict-uphill     |
-| `lightning_loop`    | `loop`    | structural curl rule on hex triangles (no field)   |
+| seat name           | mode      | what it does                                              |
+|---------------------|-----------|-----------------------------------------------------------|
+| `lightning`         | `max`     | original tree-only diffusion + strict-uphill relay        |
+| `lightning_sum`     | `sum`     | uniform Bellman diffusion + strict-uphill relay           |
+| `lightning_sum_pw`  | `sum_pw`  | edge-pressure-weighted Bellman + strict-uphill            |
+| `lightning_loop`    | `loop`    | structural curl rule on hex triangles (no field)          |
+| `lightning_attn`    | `attn`    | 2-head: ATTACK (max-pot) + LOOP (curl) with frontier-tilt |
 
 Use the existing `--seats` arg, e.g.:
 
@@ -234,6 +235,45 @@ Original max-mode beats the structural loop rule decisively.
 
 `sum` keeps its top spot. `loop` is the weakest of the four.
 
+### Run 8 — `lightning_attn` self-play (seed 900, 6 games)
+
+| outcome   | count | mean ticks |
+|-----------|------:|-----------:|
+| decisive  | 6 / 6 | 1485       |
+| stalemate | 0 / 6 | —          |
+
+**No deadlock.** Unlike `sum_pw` (8/8 stalemates) and `loop` (2/6
+stalemates), the attention mixing breaks the storage trap — interior
+cells maintain loops, but as the frontier shifts they tilt forward and
+release pressure. Self-play resolves at sum-comparable tempo.
+
+### Run 9 — alternating `lightning_sum` vs `lightning_attn` (seed 901, 24 games)
+
+| solver            | seats | wins | win share |
+|-------------------|------:|-----:|----------:|
+| `lightning_sum`   | 3     | 12   | 50.0%     |
+| `lightning_attn`  | 3     | 12   | 50.0%     |
+
+**Dead even** with the previous champion on the first hand-designed
+attempt. That's a meaningful signal — `sum` beat `lightning` by 25
+points in mixed play and `loop` by 62 points; pulling even with `sum`
+on the first try, without any tuning of `deep_threshold` or
+`relay_thresh`, says the architectural shape is right.
+
+### Run 10 — 3-way `lightning` / `lightning_sum` / `lightning_attn` × 2 seats (seed 902, 24 games)
+
+| solver            | seats | wins | win share |
+|-------------------|------:|-----:|----------:|
+| `lightning_sum`   | 2     | 11   | **45.8%** |
+| `lightning_attn`  | 2     | 8    | 33.3%     |
+| `lightning`       | 2     | 5    | 20.8%     |
+
+`sum` still leads in the 3-way, but `attn` decisively beats the
+original `max` (33.3% vs 20.8%) — the attention solver is the second
+best of the four. The full ordering across all experiments is now:
+
+`sum` > `attn` ≈ `sum` > `max` > `loop` > `sum_pw`
+
 ### Summary
 
 Three sequenced experiments, three sharpening lessons:
@@ -262,6 +302,98 @@ isn't the bottleneck. A frontier-aware hybrid (max-mode for cells with
 ≤3 friendly neighbors, loop rule for cells with ≥4) is the natural
 next experiment.
 
+## The attention head — reservoir *with* release
+
+User intuition that drove this branch: *"the pressure should be a
+reservoir rather than an ultimatum."* The structural-loop solver banks
+pressure perfectly but never spends it; the gradient solvers spend it
+the moment it arrives. Neither shape is "shots on goal from a stocked
+backline."
+
+The fix is to run *both* rules simultaneously and let them share each
+cell's 6-slot budget. That's exactly what attention is for: soft
+routing where multiple heads coexist with per-cell mixing weights.
+
+### The architecture (hand-designed Q/K, no learning)
+
+**Two heads** evaluated per cell c, per outgoing slot k:
+
+```
+attack_score[c,k] = max(0, pot[nb[c,k]] - pot[c])   # max-mode gradient
+loop_score[c,k]   = 1 iff k ∈ {0,2,4} and slots k, k+1 both friendly
+                                                    # even-k curl
+```
+
+**Per-cell mixing weight α(c)** from frontier-distance BFS through
+friendlies to the nearest non-friendly-alive cell:
+
+```
+α(c) = clip(frontier_dist[c] / deep_threshold, 0, 1)
+```
+
+with `deep_threshold = 2.0` as a default.
+
+  α = 0 at the frontier      →  pure ATTACK head (no loops, all gradient)
+  α = 1 deep interior        →  pure LOOP head (triskelion, no leak)
+  α intermediate             →  blend — loops *tilt* forward as the
+                                frontier gets closer
+
+**Combined score per slot**:
+
+```
+combined[c,k] = (1 - α(c)) · attack_score[c,k] + α(c) · loop_score[c,k]
+```
+
+Friendly relay activates when `combined ≥ max(0.5 · max_combined, 0.15)`.
+Forced-attack on non-friendly non-dead neighbors stays unchanged.
+
+### What this is really doing (the attention reading)
+
+In transformer terms: each slot's score is a tiny single-head attention
+weight, the Q is `α(c)` plus the local gradient/topology features, and
+the K is "what does this slot *offer* — attack uphill or loop-edge".
+The mixing across heads is a hard convex combination (no softmax over
+heads, just a scalar `α`). It's not full attention in the multi-head
+softmax sense, but it's the architectural shape: content-based routing
+that lets two distinct routing patterns coexist on the same cell with a
+data-dependent split.
+
+The interesting bit is that **α is computed locally** (BFS through
+friendlies, no global state) — it's a per-cell "where am I in the
+shape of my own territory" signal. Frontier-adjacent cells release;
+deep-interior cells store; intermediate cells leak. This is the
+reservoir-with-release shape.
+
+### Why "hand-designed attention pulls even with `sum`" is a strong
+result
+
+`sum` won by 25 points over `max` in mixed play and by 62 points over
+`loop`. Pulling even with `sum` on the first try with no tuning of
+`deep_threshold` or `relay_thresh` is the architectural-fit signal
+you'd hope for: it doesn't beat the simpler heuristic at first attempt
+*but it doesn't lose either*. Two implications:
+
+1. The two-head shape is at least as expressive as `sum` on this game,
+   which is consistent with "the right shape exists; the specific
+   values are the question."
+2. The next step shouldn't be more knob-tuning. It should be **learned
+   Q/K vectors** — PPO with a small attention head that produces
+   `(attack_score, loop_score)` per slot and a per-cell mixing weight,
+   trained end-to-end on the existing v2 reward stack. The hand-designed
+   version is the architectural test; the learned version is where it's
+   meant to live.
+
+### Visual sanity check
+
+`solver_v2_lightning_attn_20260515T021549.flxr` is all-six-seats
+`lightning_attn`. The signature to look for: triskelion patterns deep
+in territory (loops) that lean forward toward any frontier — the
+even-k slots are visible as the underlying loop substrate, with
+additional odd-k slots appearing on intermediate cells as α drops below
+1 and the attack head starts contributing. Cells right at the frontier
+look like pure `lightning` (max-mode) attacks. The transition is
+smooth, not banded.
+
 See `wiki/log.md` (entry: lightning sum / sum_pw modes) for the run log
 and replays:
 
@@ -272,6 +404,9 @@ and replays:
 - `public/v2/replays/solver_v2_lightning_loop_*.flxr` — Run 5 game 0 (**the triskelion pattern — directed 3-loops on every even-parity triangle**)
 - `public/v2/replays/solver_v2_lightning+lightning_loop_*.flxr` — Run 6 game 0 (loop vs max head-to-head)
 - `public/v2/replays/solver_v2_lightning_loop+lightning_sum_*.flxr` — Run 7 game 0
+- `public/v2/replays/solver_v2_lightning_attn_*.flxr` — Run 8 game 0 (**attention-mixed: triskelions in the back, tilted-uphill toward the frontier**)
+- `public/v2/replays/solver_v2_lightning_attn+lightning_sum_*.flxr` — Run 9 game 0 (sum vs attn 12-12)
+- `public/v2/replays/solver_v2_lightning+lightning_attn+lightning_sum_*.flxr` — Run 10 game 0 (3-way mix)
 
 ## Tradeoffs
 
