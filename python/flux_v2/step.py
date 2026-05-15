@@ -18,6 +18,7 @@ from .state import (
     ACTION_SET_BASE,
     CAPTURE_STRENGTH,
     DEAD,
+    EDGE_ALPHA,
     K,
     MAX_EDGE,
     MAX_STRENGTH,
@@ -118,10 +119,17 @@ def apply_actions(state: State, actions: np.ndarray) -> State:
 # Per-tick physics
 # ---------------------------------------------------------------------------
 
-def tick(state: State) -> State:
-    """Apply the per-tick algorithm. Returns a fresh state. Edge pressure
-    recomputed from the cell's overflow this tick.
+def tick(state: State, edge_alpha: float | None = None) -> State:
+    """Apply the per-tick algorithm. Returns a fresh state.
+
+    edge_alpha controls edge-pressure momentum:
+      next = (1 - alpha) * old + alpha * target
+    alpha=1.0 → snap to target (original v2 physics, default).
+    alpha<1.0 → fluid-style buildup. None falls back to the module-level
+    EDGE_ALPHA constant.
     """
+    if edge_alpha is None:
+        edge_alpha = EDGE_ALPHA
     s = copy_state(state)
     N = s.N
     owner = s.owner
@@ -218,7 +226,11 @@ def tick(state: State) -> State:
     new_strength[is_dead] = 0.0
 
     # ---- Spill (rewrite edge_pressure for next tick) ----
-    new_edge_pressure = np.zeros_like(edge_pressure_prev)
+    # target_edge_pressure is what the edge *would* carry if it snapped
+    # instantly to the source's spill share this tick (the original v2
+    # behavior). new_edge_pressure is the relaxed value, blending the
+    # previous tick's pressure toward that target by `edge_alpha`.
+    target_edge_pressure = np.zeros_like(edge_pressure_prev)
     waste_this_tick = 0.0
 
     # Block 1: capturing cells lose their outflows.
@@ -228,18 +240,32 @@ def tick(state: State) -> State:
 
     num_active = new_outflow.sum(axis=1).astype(np.int32)              # (N,)
     can_spill = (num_active > 0) & (overflow > 0) & is_alive
+    per_edge = np.zeros(N, dtype=np.float32)
 
     if can_spill.any():
         per_edge_unclipped = np.zeros(N, dtype=np.float32)
         per_edge_unclipped[can_spill] = overflow[can_spill] / num_active[can_spill]
         per_edge = np.minimum(per_edge_unclipped, MAX_EDGE)
-        # Write pressure on active slots.
-        # Broadcast per-cell scalar to the active-slot mask.
-        new_edge_pressure = new_outflow * per_edge[:, None]
+        target_edge_pressure = new_outflow * per_edge[:, None]
         # Cap-bound waste: amount per slot above MAX_EDGE (busy waste).
         excess_per_slot = (per_edge_unclipped - per_edge)             # (N,)
         waste_this_tick += WASTE_WEIGHT_CAP_BOUND * float(
             (excess_per_slot[can_spill] * num_active[can_spill]).sum()
+        )
+
+    # Relax edges toward the spill target. With alpha=1.0 this collapses
+    # to the original "snap to target" behavior bit-for-bit. With alpha<1
+    # edges low-pass-filter the target — pressure builds up and bleeds
+    # off over ~1/alpha ticks, giving the system momentum (the "fluid"
+    # framing). Capturing cells' outflows have already been cleared, so
+    # their previous outflow rows decay toward 0 even though the source
+    # is gone.
+    if edge_alpha >= 1.0:
+        new_edge_pressure = target_edge_pressure
+    else:
+        new_edge_pressure = (
+            (1.0 - edge_alpha) * edge_pressure_prev
+            + edge_alpha * target_edge_pressure
         )
 
     # Cells with overflow > 0 but no active outflows → all overflow is waste.

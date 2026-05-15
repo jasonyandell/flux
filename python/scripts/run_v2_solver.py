@@ -348,9 +348,14 @@ def run_game(
     seat_solvers: list[str],
     record_stride: int = 25,
     connect_mode: str = "retry",
+    edge_alpha: float = 1.0,
 ):
     """Run one game with per-seat solver assignment. Returns (final_state,
-    frames, winner_seat, dead_cells)."""
+    frames, winner_seat, dead_cells).
+
+    edge_alpha: edge-pressure momentum (1.0 = snap-to-target, original v2;
+    <1 = fluid-style buildup, the brainstorm pilot).
+    """
     state, dead = _build_initial_state(
         radius, num_players, num_dead_cells, rng, connect_mode=connect_mode,
     )
@@ -364,7 +369,7 @@ def run_game(
                 per_seat.append(solver_fns[seat](state, seat, rng=rng))
             combined = _combine_actions(state, per_seat)
             state = apply_actions(state, combined)
-        state = tick(state)
+        state = tick(state, edge_alpha=edge_alpha)
         if t % record_stride == 0:
             frames.append(state_to_frame(state))
 
@@ -391,6 +396,7 @@ def _game_worker(payload: dict) -> dict:
         cfg["ai_period_ticks"], cfg["max_ticks"], rng,
         cfg["seat_solvers"], cfg["record_stride"],
         connect_mode=cfg["connect_mode"],
+        edge_alpha=cfg["edge_alpha"],
     )
     dt = time.time() - t0
     cells = _cells_per_seat(state, cfg["num_players"])
@@ -402,10 +408,13 @@ def _game_worker(payload: dict) -> dict:
         name = f"solver_v2_{cfg['tag']}_{cfg['stamp']}{suffix}.flxr"
         path = DEFAULT_OUT_DIR / name
         dead_list = [int(x) for x in dead] if dead is not None else []
+        ea = float(cfg["edge_alpha"])
+        ruleset = "v2-pressure" if ea >= 1.0 else f"v2-fluid-{ea:g}"
         metadata = {
             "kind": "solver_v2",
             "model": f"solver_{cfg['tag']}",
-            "ruleset": "v2-pressure",
+            "ruleset": ruleset,
+            "edge_alpha": ea,
             "saved_at": datetime.now(timezone.utc).isoformat(),
             "dead_cells": dead_list,
             "seats": cfg["seat_solvers"],
@@ -421,7 +430,8 @@ def _game_worker(payload: dict) -> dict:
             "file": path.name,
             "saved_at": metadata["saved_at"],
             "kind": "solver_v2", "model": metadata["model"],
-            "ruleset": "v2-pressure",
+            "ruleset": ruleset,
+            "edge_alpha": ea,
             "seats": cfg["seat_solvers"],
             "iteration": 0, "generation": cfg["game_idx"],
             "radius": cfg["radius"], "num_players": cfg["num_players"],
@@ -490,6 +500,11 @@ def main() -> None:
                     help="Number of worker processes for parallel games. "
                          "Default: min(games, cpu_count). Set to 1 to force "
                          "sequential. Ignored when 'trained' is in --seats.")
+    ap.add_argument("--edge-alpha", type=float, default=1.0,
+                    help="Edge-pressure momentum: 1.0 (default) = snap-to-target "
+                         "(original v2 physics). <1.0 = fluid-style buildup over "
+                         "~1/alpha ticks. Pilot value 0.05 ≈ 20 ticks to ~63%% "
+                         "of a held target.")
     args = ap.parse_args()
     if args.record_stride is None:
         args.record_stride = args.ai_period_ticks
@@ -543,6 +558,7 @@ def main() -> None:
             "total_games": args.games,
             "tag": tag,
             "stamp": stamp,
+            "edge_alpha": float(args.edge_alpha),
         }
         for g in range(args.games)
     ]

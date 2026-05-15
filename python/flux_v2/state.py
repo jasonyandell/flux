@@ -29,6 +29,16 @@ CAPTURE_STRENGTH: float = 50.0         # legacy; new rule uses surplus pressure
 REGEN_BASE_PER_TICK: float = 5.0       # baseline cell regen per game tick
 REGEN_SLOPE: float = 0.0               # linear scaling; 0 = flat regen
 
+# Edge-pressure momentum. Each tick the edge relaxes from its previous value
+# toward its source-overflow target:
+#   edge_pressure_next[c, k] = (1 - EDGE_ALPHA) * old + EDGE_ALPHA * target
+# EDGE_ALPHA = 1.0 → snap to target (original v2 physics, no momentum).
+# EDGE_ALPHA < 1.0 → fluid-style buildup; pressure takes ~1/EDGE_ALPHA ticks
+#                    to reach ~63% of a held target, ~3/EDGE_ALPHA to ~95%.
+# Pilot value: 0.05 (≈20 ticks to ~63%, ≈60 ticks to ~95%). See
+# wiki/topics/v2-vectorized for the brainstorm framing.
+EDGE_ALPHA: float = 1.0
+
 # Waste = "any regen you didn't send." If a cell has outflows set, its regen
 # is "sent" (whether or not the per-edge cap clips some of it — the cap is a
 # system limit, not the policy's fault). No-spill is the base waste category:
