@@ -189,6 +189,42 @@ Browser decode: `DecompressionStream('gzip')` is standard in modern
 browsers (Safari ≥ 16.4, all evergreen). No third-party gunzip
 needed. `parseReplay` is now `async`.
 
+## Numba JIT (commit `82e80b4`)
+
+Three @njit-cached cores added on top of the vectorized pipeline:
+
+- `step._tick_core` — explicit per-cell physics. Replaces the inner
+  K-loop + numpy chain in `tick()`. 28 µs per call at R=20 (was
+  ~500 µs in numpy).
+- `solver_vec._compute_potential_core` — JIT'd Bellman value iteration
+  (modes max / sum / sum_pw). 32-iter loop now runs as native code
+  instead of 32 small numpy reductions.
+- `solver_vec._picker_core` — explicit slot-walk in rotation order.
+  Replaces an `np.take_along_axis` + `argmax` chain that profiled
+  surprisingly heavy at this array size.
+
+Wallclock, 6000-tick 6-seat all `lightning_sum_long` under fluid
+`EDGE_ALPHA=0.05`, single process, M5 Max:
+
+| Board | pre-vec | post-vec | JIT | total speedup vs pre-vec |
+| --- | --- | --- | --- | --- |
+| R=20 (3539-tick decisive) | ~9.7s | 6.2s | **2.0s** | ~4.8× |
+| R=30 6000-tick | 31.3s | 23.5s | **6.4s** | **4.9×** |
+| R=40 6000-tick | — | 45.5s | **15.6s** | 2.9× vs post-vec |
+
+First call triggers a 1-2s JIT compile that's then disk-cached, so
+subsequent runs pay zero warmup. 141/141 tests still pass.
+
+**Why Numba mattered here:** pure-numpy on (1261,) / (1261, 6) arrays
+hits a small-array dispatch floor — each numpy op pays a fixed
+Python-side cost regardless of the array size, and the field
+iteration in `compute_potential` made ~30 such calls per tick per
+seat. JIT-compiling the inner loop as a single native function
+collapses 30 dispatches into one, which is where the 5× lives.
+
+Cost: +2 deps (numba 0.65.1, llvmlite 0.47.0). Acceptable for a
+research-mode project where the lab loop is the bottleneck.
+
 ## Fluid-mode pilot (EDGE_ALPHA, commit `b9b5b6b`)
 
 A separate one-line physics knob layered on top: edge pressure is no
