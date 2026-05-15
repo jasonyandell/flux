@@ -41,18 +41,29 @@ A single-shot rewrite of the v2 hot path:
 | | before | after |
 | --- | --- | --- |
 | 6000-tick R=20 6-seat `lightning_sum_long`, single-thread | 9.7s | 6.0s (1.6×) |
-| 18 same games, `--workers 18` | n/a (single-process baseline) | 19s wall (5,700 ticks/sec aggregate) |
+| 6000-tick R=30 6-seat `lightning_sum_long`, single-thread | 31.3s | 25.2s (1.24×) |
+| 18 same R=20 games, `--workers 18` | n/a (single-process baseline) | 19s wall (5,700 ticks/sec aggregate) |
 | Replay file size (R=20 6000-tick stride-5) | ~20 MB | 468 KB (~43×) |
 | Replay file size (R=20 6000-tick stride-25) | ~5 MB | 109 KB (~180×) |
 | Python tests | 141 pass | 141 pass |
 | `tsc --noEmit` | clean | clean |
 | `vite build` | clean | clean |
 
-The vectorized single-thread speedup is modest because
-`compute_potential` (the 32-iteration value-iteration field) is now
-the dominant cost — it was already vectorized. The bigger win is
-shape: parallel-throughput on `--workers 18` and the per-replay file
-size dropping from MB to KB.
+The single-thread speedup shrinks on bigger boards (1.6× at R=20,
+1.24× at R=30) because the picker-loop overhead I removed scaled
+with the count of *owned cells*, while `compute_potential`'s
+32-iteration `(N, K)` field iteration scales with *N* and was
+already vectorized. As `N` grows, `compute_potential` becomes the
+dominant cost. The bigger wins are shape, not raw throughput:
+parallel-throughput on `--workers 18`, and the per-replay file size
+dropping from MB to KB so the trainer-displayer can live on the
+Cloudflare free tier and load on a phone.
+
+Both R=30 runs stalemated at 6000 ticks under identical seeds with
+different surviving-seat counts (old=4 alive, new=5 alive) — the
+expected divergence from the two intentional semantic deltas
+documented below. Macro behavior class is the same (same regime,
+same dominance, same outcome).
 
 ## Why the file size dropped 43-180×
 
