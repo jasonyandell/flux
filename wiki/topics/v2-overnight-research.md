@@ -16,6 +16,62 @@ night." Constraint: no single run over 30 minutes wallclock.
 This page is the running log. Each experiment gets a section: what
 was tried, what happened, what I concluded, what came next.
 
+## Morning summary (skim this first)
+
+**Headline findings**:
+
+1. **The big-bag-of-pressure rule** (MAX=1000, REGEN=5.0, capture
+   surplus) is live. It flattens algorithm differences:
+   sum, bfs, max, and wave are all within ~10pp at R=20 10% dead.
+2. **10% dead is the sweet spot** for decisive games at R=20 under
+   big-bag. 20%+ dead causes long stalemates ("dominance 1.00 with 2
+   alive"); 50%+ creates fragmented islands.
+3. **`lightning_sum_wave`** (a new solver: gates sum-mode firing to
+   strength ≥ 60% MAX so pressure accumulates before releasing)
+   is mildly better than default sum — ~57% of decisive games
+   over 100 head-to-head matches. The original 10-game 9-1 was
+   variance.
+4. **Sample sizes matter a lot.** 8- and 10-game samples produced
+   30-pt swings in win rate for the same configs across reruns.
+   Future sweeps want ≥30 games per cell at minimum.
+5. **Seat-position bias** in the board sampler outweighs algorithm
+   choice in some samples. Future tournaments should rotate seats.
+6. **PPO via attn** was abandoned. The architectural ideas
+   (slot-equivariant pair heads, transit-credit shaping) work,
+   but the structural prior (attack + loop heads) underperforms
+   simpler aggregation under big-bag.
+
+**Things to watch (replays in `public/v2/replays/`)**:
+
+- R=25 all-sum (fast gradient attack): `solver_v2_lightning_sum_20260515T061812.flxr`
+- R=25 6-way zoo (stalemate at 15000): `solver_v2_bfs+lightning+lightning_attn+lightning_loop+lightning_sum+lightning_vortex_20260515T061831.flxr`
+- R=20 all-wave (pulse pattern): `solver_v2_lightning_sum_wave_20260515T062825.flxr`
+- R=25 all-wave: `solver_v2_lightning_sum_wave_20260515T062846.flxr`
+- R=20 wave vs sum 3v3 (10 games): `solver_v2_lightning_sum+lightning_sum_wave_20260515T062838.flxr`
+- R=20 wave + zoo (wave wins): `solver_v2_bfs+lightning+lightning_attn+lightning_loop+lightning_sum+lightning_sum_wave_20260515T062849.flxr`
+
+**Solvers added overnight**:
+
+- `lightning_vortex` (CW curl)
+- `lightning_flood` (always-fire on all 6 outflows)
+- `lightning_random`
+- `lightning_chase` (counter-attack)
+- `lightning_sum_long` (γ=0.94)
+- `lightning_sum_wide` (γ=0.94, expand=1.0)
+- `lightning_sum_wave` (sum + 60% MAX gate, "pulse mode")
+- `lightning_attn_release` (attn with 0.7 LOOP gate — lost everything)
+- `lightning_attn_slam` (attn with 0.95 LOOP gate — also lost)
+
+**Wasted effort to know about**:
+
+- PPO with attn architecture (lost everything to lightning_sum)
+- Attn hyperparameter sweep (13 configs, best at 25%)
+- attn build-and-release variants (0/12 in tournament)
+- Earlier sum hyperparameter sweep (single 100% result was variance)
+
+---
+
+
 ## Starting state
 
 - Worktree branch: `worktree-lightning-sum`
@@ -450,4 +506,35 @@ outflows" lets pressure dribble away as friendly relays carry it past
 the frontier without it accumulating into a meaningful attack pulse.
 Wave's gate stops that — pressure stays in the cell until it can deliver
 a decisive blow.
+
+### Exp 11 — wave_frac sweep (50 games, wave-on-even only)
+
+Tested 5 wave_frac values, all in the disadvantaged even-seat
+configuration (see seat-bias note above):
+
+| wave_frac | A wins | B wins | stale | share (raw) |
+|----------:|-------:|-------:|------:|------------:|
+| 0.30      | 26 | 19 | 5 | 52% |
+| 0.45      | 21 | 25 | 4 | 42% |
+| 0.60      | 25 | 22 | 3 | 50% |
+| 0.75      | 21 | 24 | 5 | 42% |
+| 0.90      | 16 | 32 | 2 | 32% |
+
+Even-seat handicap is ~5-10pp downward; adding that back, the best
+wave configs end up around 55-60%. The pattern is **non-monotone**,
+but **higher wave_frac is clearly worse** (0.90 falls to 32% raw).
+The "fire only when very full" intuition is wrong — a fully-charged
+cell wastes the next regen tick(s) before it can be useful again,
+and the gate's clear-when-charging behavior throws away outflows
+that would have been good defenders.
+
+The pragmatic recommendation: use `wave_frac` between 0.3 and 0.6
+if you want wave's modest edge; tighter gates hurt.
+
+Bottom-line on wave: the build-and-release intuition is approximately
+right but small. The 9-1 result was variance. Wave is a defensible
+choice as a default but not a dominant strategy — the real lesson is
+that under big-bag rules at R=20 10% dead, **sum, bfs, max, and wave
+are all within ~10 percentage points of each other**. Algorithm
+choice matters less than positional luck.
 
