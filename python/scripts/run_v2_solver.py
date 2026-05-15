@@ -80,11 +80,24 @@ def _lightning_chase(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="chase")
 
 
+def _lightning_sum_long(state, seat, rng=None):
+    # Exp 5 winner under big-bag R=20 10% dead: gamma=0.92 sum at 100% vs default.
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.92)
+
+
+def _lightning_sum_wide(state, seat, rng=None):
+    # Exp 5 runner-up: γ=0.92 + expand_bonus=1.0 (long-field + push neutrals harder).
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum",
+                                    gamma=0.92, expand_bonus=1.0)
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
     "lightning_sum": _lightning_sum,             # value-iteration sum
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
+    "lightning_sum_long": _lightning_sum_long,   # exp5 winner: γ=0.92 sum
+    "lightning_sum_wide": _lightning_sum_wide,   # γ=0.92 + expand_bonus=1.0
     "lightning_loop": _lightning_loop,           # structural CCW 3-loop curl
     "lightning_attn": _lightning_attn,           # 2-head: attack + loop with frontier-tilt
     "lightning_attn_release": _lightning_attn_release,  # +build-release (frac=0.7)

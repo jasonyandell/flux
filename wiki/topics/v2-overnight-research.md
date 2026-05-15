@@ -161,3 +161,53 @@ Conclusion: **attn is a fundamentally weaker shape under big-bag at
 R=20 10% dead.** Time to test (a) sum's own hyperparameters and (b)
 whether attn does well anywhere — maybe smaller boards, denser dead.
 
+---
+
+## Exp 5 — sum hyperparameter sweep (big-bag R=20 10% dead, 8 games)
+
+Tested 13 sum configurations vs default sum (3v3 alternating). The
+field has a discount γ that controls how far influence travels; the
+weak_bonus weights weaker enemies; expand_bonus weights neutrals.
+
+| config             | variant | def | stale | share |
+|--------------------|--------:|----:|------:|------:|
+| default(baseline)  | 4 | 2 | 2 | 50% |
+| gamma=0.7          | 6 | 2 | 0 | 75% |
+| **gamma=0.92**     | **8** | **0** | **0** | **100%** |
+| gamma=0.97         | 2 | 5 | 1 | 25% |
+| weak_bonus=2.0     | 3 | 4 | 1 | 38% |
+| weak_bonus=5.0     | 2 | 6 | 0 | 25% |
+| weak_bonus=0.5     | 4 | 3 | 1 | 50% |
+| expand=0.1         | 2 | 5 | 1 | 25% |
+| expand=1.0         | 6 | 2 | 0 | 75% |
+| expand=1.5         | 6 | 2 | 0 | 75% |
+| focused_attack     | 3 | 4 | 1 | 38% |
+| land_grab          | 4 | 3 | 1 | 50% |
+| long_field         | 6 | 1 | 1 | 75% |
+
+**Findings**:
+
+1. **gamma=0.92 dominates.** Default γ=0.85 was leaving wins on the
+   table; a slightly longer field reaches further targets and the sum
+   aggregation routes pressure efficiently along that gradient.
+2. **Too long is also bad.** γ=0.97 drops to 25% — the field flattens
+   and loses local directional signal. There's a sweet spot.
+3. **Higher expand_bonus helps.** 1.0 and 1.5 both beat default's 0.3.
+   Going wider on neutrals trumps focusing on contested borders.
+4. **weak_bonus is a trap.** Every weak_bonus ≥ 1 made things worse;
+   chasing weak enemies leaves your flank exposed and lets default
+   spread.
+
+So the build-and-release intuition translated to one thing: build a
+**longer-range field**. Lightning sum was already "always firing,"
+but its perception range was too short. γ=0.92 fixes that.
+
+The opposite-direction conclusion from exp 4 (no attn config beats
+sum) plus exp 5 (sum *can* improve by ~50% wins over baseline) means
+the right lever was sum's hyperparameters all along, not attn's
+machinery.
+
+Pivot: register the winning config as `lightning_sum_long` (γ=0.92,
+default expand/weak) and showcase it. Refine around the peak in
+exp 6.
+
