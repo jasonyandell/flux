@@ -37,6 +37,13 @@ was tried, what happened, what I concluded, what came next.
    (`wave`) is the most interesting non-loser but its measurable
    effect at this sample size is zero. PPO, attn-variants, pulse,
    and pulse_stagger all fail by larger margins.
+8. **But several variants are *clearly* worse than sum.** Exp 21:
+   sum vs attn at 100 games → sum 93% (87-6). attn isn't just tied,
+   it's catastrophically bad. pulse 0% (exp 15), pulse_stagger 0%
+   (exp 16). The "everything is variance" pessimism is wrong —
+   sum specifically outperforms a clear cluster of variants by
+   massive margins. It's only the *top* of the rankings that's
+   crowded.
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -916,6 +923,40 @@ Implications:
 (That said, the *concepts* explored are still useful for the wiki:
 wave gates work neutrally where pulse gates fail catastrophically;
 PPO/attn underperform vs simple aggregation under big-bag; etc.)
+
+---
+
+## Exp 21 — Definitive attn vs sum (100 games)
+
+The clearest single result of the night. Sanity check on one of the
+"this clearly loses" claims:
+
+| matchup                  | attn | sum | stale |
+|--------------------------|-----:|----:|------:|
+| attn[even] vs sum[odd]   | 4    | 44  | 2     |
+| sum[even] vs attn[odd]   | (B) 2 | (A) 43 | 5  |
+
+Pooled (93 decisive games): **sum 87, attn 6.** sum wins **93%**
+of decisive games. 95% CI is ~88-98% — about as definitive as a
+100-game sample gets.
+
+**Attn is genuinely, catastrophically worse than sum** under big-bag
+at R=20 10% dead. The structural prior (separate attack + loop
+heads with α frontier-tilt mixing) is not just unhelpful — it
+actively hurts. The cells idle or attack the wrong slots.
+
+This is reassuring for the overnight narrative: not every claim was
+variance. The "wave_long beats sum" claim turned out to be variance
+(both at 47-50% over 100 games), but the "attn loses to sum" claim
+is real (sum at 93%).
+
+The corrected solver hierarchy (high to low) under big-bag R=20 10%:
+
+> **`sum` ≥ {`bfs`, `max`, `max_wave`, `wave`, `wave_long`, `wave_keep_attack_long`}**
+> &nbsp;&nbsp;&nbsp;&nbsp;**>> `attn` (93% loss to sum) >> `pulse` (100% loss) >> `pulse_stagger` (0-20 vs plain pulse)**
+
+The top tier are all within ~10pp of each other. The bottom tier is
+*demonstrably* worse by large margins.
 
 ---
 
