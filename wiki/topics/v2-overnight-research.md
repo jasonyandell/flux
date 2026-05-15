@@ -97,6 +97,15 @@ was tried, what happened, what I concluded, what came next.
     > wave_long > sum > bfs ≈ max >> attn >> pulse/pulse_stagger
     Each adjacent pair has a real, signed advantage. The "tied"
     framing was wrong — the methodology was inadequate to see it.
+11. **Decomposition: γ=0.94 long-field is the active ingredient,
+    NOT the wave gate.** Exp 25 split wave_long into its components:
+    sum_wave (gate only) → 0/0 coherent decisions; sum_long (γ=0.94
+    only) → 5/6 = 83% coherent decisions. The gate is doing nothing
+    measurable; the long-range field is what wins. The simpler
+    `lightning_sum_long` is essentially as good as `wave_long`.
+    The "build-and-release" intuition was a red herring — what
+    matters is the discount factor letting cells see further toward
+    distant strategic targets.
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -1153,6 +1162,51 @@ becomes clean only with paired analysis on board-coherent decisions.
 **This is the corrected overnight headline ranking.** Earlier sections
 calling these "tied" were wrong — they were measuring the noise
 floor, not the signal.
+
+---
+
+## Exp 25 — Decomposing wave_long (the build-and-release intuition WAS a red herring)
+
+wave_long = sum + wave gate (60% MAX) + γ=0.94 long-field. Which
+component does the work? Matched-pair tests of each component alone:
+
+| solver vs sum | board-coherent decisions | better wins | implication |
+|---|--:|---|---|
+| sum_wave (gate only, γ=0.85) | **0** (out of 39 decisive) | — | **gate does NOTHING strategic** |
+| sum_long (γ=0.94 only, no gate) | 6 (out of 34) | sum_long 5/6 (83%) | **field-range is the active ingredient** |
+| wave_long (gate + γ=0.94) (exp 23) | 6 (out of 45) | wave_long 6/6 (100%) | combination is marginal upgrade |
+
+**Decomposition story:**
+
+1. **The wave gate alone is strategically neutral.** sum_wave vs sum
+   produced ZERO board-coherent decisions — every decisive board
+   had different winners depending on seat ordering. The gate
+   doesn't change who wins, just shuffles outcomes within the seat
+   bias.
+2. **γ=0.94 alone reproduces most of wave_long's advantage.**
+   5/6 coherent vs sum is the same ballpark as wave_long's 6/6.
+   The longer-range field is what wins games.
+3. **The combination adds a small marginal improvement** (5/6 → 6/6),
+   but it's tiny relative to the long-field effect.
+
+**Implication**: the simpler `lightning_sum_long` is essentially
+as good as `lightning_wave_long`. The build-and-release framing
+that motivated the wave gate was a *red herring* — the actual
+mechanism doing work is the field's discount factor, not the
+firing schedule.
+
+This reframes everything earlier in this research log that talked
+about "pressure accumulating before release." Pressure accumulation
+isn't what mattered. What mattered was that γ=0.94 lets each cell's
+"see further" — which lets the gradient flow toward distant
+strategic targets that γ=0.85 was undervaluing.
+
+**Updated solver hierarchy (final):**
+
+> **`lightning_sum_long` ≈ `lightning_wave_long` > `lightning_sum` > `lightning_bfs` ≈ `lightning` (max) >> `lightning_attn` >> `lightning_pulse` ≈ `lightning_pulse_stagger`**
+
+The simpler `sum_long` is preferred for clarity since the gate
+contributes nothing measurable on its own.
 
 ---
 
