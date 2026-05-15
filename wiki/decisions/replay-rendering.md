@@ -66,6 +66,11 @@ The browser's auto-speed targets **one recorded frame per browser frame at ~60Hz
 
 The replay player **plays each game to its last frame before swapping**. If a newer replay drops mid-game, it's queued via `pendingFile` and loaded only at end-of-replay. This lets you watch full games instead of jumping to the newest drop the moment it lands.
 
+The v2 trainer-displayer has its own playback rule in [[v2-trainer-displayer]]:
+it plays in game time at 10 ticks/sec when `tick_stride=1`, rebuilds on full
+board signature changes, and interrupts an old replay when the newest replay
+comes from a different board shape.
+
 ## Flow arrows
 
 Replays render directional arrows for each active flow at the rendering tick. Each flow is drawn as **three line segments per stack** (shaft + two arrowhead wings) at z=0.3 above the cell layer, with a gradient from a dim source-side colour to a brighter tip.

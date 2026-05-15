@@ -31,6 +31,21 @@ flow rendering, same auto-poll-and-swap replay flow.
 
 What's added: a media-style transport bar (see [Transport controls](#transport-controls)).
 
+## Playback contract
+
+The displayer rebuilds geometry from each replay's
+`(radius, num_players, num_nodes)` signature, so mixed training streams
+such as radius-9 followed by radius-5 can share the same replay index.
+When a new replay has a different board shape, the player interrupts the
+old replay instead of waiting for it to finish.
+
+Playback follows game time, not "fit this replay into N seconds". With
+`dt_per_tick_ms=100` and `tick_stride=1`, the UI shows every recorded
+physics tick at 10 ticks/sec. Wider strides still render correctly, but
+they visibly jump by that many game ticks per frame. The user-facing
+speed cycle in the transport bar applies a runtime multiplier on top of
+this baseline.
+
 ## Layout
 
 ```

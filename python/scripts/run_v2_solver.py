@@ -34,6 +34,11 @@ from flux_v2 import (
     random_seat_and_dead,
     tick,
 )
+from flux_v2.graph import (
+    carve_seat_connectors,
+    max_seat_pair_distance,
+    seats_mutually_reachable,
+)
 from flux_v2.replay import ReplayHeader, ReplayWriter, append_index, state_to_frame
 from flux_v2.solver import solver_actions
 from flux_v2.solver_lightning import lightning_solver_actions
@@ -53,13 +58,69 @@ def _build_initial_state(
     num_players: int,
     num_dead_cells: int,
     rng: np.random.Generator,
+    connect_mode: str = "retry",
 ):
-    """Build a single random board (random seats, connected dead-cell set)."""
+    """Build a single random board with seat-connectivity guaranteed.
+
+    connect_mode:
+      "retry"  — generate connectivity-preserving boards (random_seat_and_dead
+                  with neighbors=...) and retry up to 200 times until max
+                  seat-pair distance ≤ 4 × radius. Most uniform spatial
+                  character; rejects the snaky-corridor cases.
+      "carve"  — generate the OLD way (uniform random dead cells, no
+                  connectivity preservation), then revive dead cells along
+                  shortest paths to bridge any disconnected seat components.
+                  Preserves the random spatial pattern; thin carved channels
+                  bridge the islands. Typically only a handful of cells get
+                  carved.
+    """
     base = make_board(radius, num_players)
-    seats, dead = random_seat_and_dead(
-        base.N, num_players, num_dead_cells, rng,
-        neighbors=base.neighbors, min_seat_dist=2, coord=base.coord,
-    )
+
+    if connect_mode == "carve":
+        # Uniform-random dead cells (no connectivity preservation), then carve.
+        seats, dead = random_seat_and_dead(
+            base.N, num_players, num_dead_cells, rng,
+            neighbors=None, min_seat_dist=2, coord=base.coord,
+        )
+        new_dead, carved = carve_seat_connectors(seats, dead, base.neighbors)
+        if len(carved) > 0:
+            print(f"  (carve: bridged {len(carved)} cells "
+                  f"to connect {num_dead_cells - len(new_dead) + len(dead) - len(carved)} "
+                  f"+ carved → {len(new_dead)} dead final)")
+        dead = new_dead
+    else:
+        # 4× radius = 2× the empty hex diameter. Permissive enough to admit
+        # most 50%-dead boards on big radii, tight enough to reject the worst
+        # snake-corridor layouts where pressure can't traverse seat-to-seat
+        # in game time.
+        max_distance = max(4 * radius, 6)
+        seats = dead = None
+        rejected_disconnected = 0
+        rejected_far = 0
+        for attempt in range(200):
+            seats, dead = random_seat_and_dead(
+                base.N, num_players, num_dead_cells, rng,
+                neighbors=base.neighbors, min_seat_dist=2, coord=base.coord,
+            )
+            if not seats_mutually_reachable(seats, dead, base.neighbors):
+                rejected_disconnected += 1
+                continue
+            worst = max_seat_pair_distance(seats, dead, base.neighbors)
+            if worst < 0 or worst > max_distance:
+                rejected_far += 1
+                continue
+            if attempt > 0:
+                print(f"  (board accepted on attempt {attempt + 1}; "
+                      f"rejected: {rejected_disconnected} disconnected, "
+                      f"{rejected_far} too-far; max-pair-dist={worst} ≤ {max_distance})")
+            break
+        else:
+            raise RuntimeError(
+                f"could not produce a board with all seats reachable within "
+                f"{max_distance} hops after 200 attempts "
+                f"(radius={radius}, dead={num_dead_cells}, "
+                f"{rejected_disconnected} disconnected / {rejected_far} too-far)"
+            )
     s = copy_state(base)
     s.owner = np.full(base.N, NEUTRAL, dtype=np.int32)
     s.strength = np.full(base.N, 10.0, dtype=np.float32)
@@ -101,10 +162,13 @@ def run_game(
     rng: np.random.Generator,
     seat_solvers: list[str],
     record_stride: int = 25,
+    connect_mode: str = "retry",
 ):
     """Run one game with per-seat solver assignment. Returns (final_state,
     frames, winner_seat, dead_cells)."""
-    state, dead = _build_initial_state(radius, num_players, num_dead_cells, rng)
+    state, dead = _build_initial_state(
+        radius, num_players, num_dead_cells, rng, connect_mode=connect_mode,
+    )
     solver_fns = [SOLVERS[name] for name in seat_solvers]
 
     frames = [state_to_frame(state)]
@@ -168,6 +232,11 @@ def main() -> None:
     ap.add_argument("--seats", type=str, default=None,
                     help=f"comma-separated solver names per seat ({'/'.join(sorted(SOLVERS))}). "
                          f"Default: all 'bfs'. Example: bfs,lightning,bfs,lightning,bfs,lightning")
+    ap.add_argument("--connect-mode", choices=("retry", "carve"), default="retry",
+                    help="how to ensure seat connectivity. 'retry' rejects "
+                         "boards where max seat-pair distance > 4R; 'carve' "
+                         "generates uniformly then revives dead cells along "
+                         "shortest paths to bridge disconnected components.")
     args = ap.parse_args()
 
     if args.seats:
@@ -201,6 +270,7 @@ def main() -> None:
             args.radius, args.num_players, args.num_dead_cells,
             args.ai_period_ticks, args.max_ticks, rng,
             seat_solvers, args.record_stride,
+            connect_mode=args.connect_mode,
         )
         dt = time.time() - t0
         durations.append(state.tick)

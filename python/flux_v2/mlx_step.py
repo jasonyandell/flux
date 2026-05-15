@@ -29,6 +29,7 @@ from .state import (
     OPPOSITE_SLOT,
     REGEN_BASE_PER_TICK,
     REGEN_SLOPE,
+    TRANSIT_CREDIT_STRICT,
     WASTE_WEIGHT_CAP_BOUND,
     WASTE_WEIGHT_DEST_TERMINATED,
     WASTE_WEIGHT_NO_SPILL,
@@ -147,12 +148,12 @@ def tick_batched(
     alive: mx.array,
     num_players: int,
     neighbors: mx.array,
-) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
+) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array, mx.array]:
     """Apply one game tick to the batch.
 
     Returns (new_owner, new_strength, new_outflow, new_edge_pressure,
-             waste_per_cell). For dead games (`alive`==False) we keep all
-    tensors unchanged.
+             waste_per_cell, transit_credit_per_cell). For dead games
+    (`alive`==False) we keep all tensors unchanged.
     """
     G, N = owner.shape
     P = num_players
@@ -275,12 +276,30 @@ def tick_batched(
         ).sum(axis=-1)
         waste_per_cell = waste_per_cell + WASTE_WEIGHT_DEST_TERMINATED * dest_terminated
 
+    # Transit credit: positive local signal for pressure sent into a friendly
+    # relay. Strict mode pays only MAX-strength relays, mirroring the
+    # dest-terminated sink rule without rewarding ordinary fill traffic.
+    strength_d = mx.take(strength, nb_safe.reshape(-1), axis=1).reshape(G, N, K)
+    num_active_d = mx.take(num_active, nb_safe.reshape(-1), axis=1).reshape(G, N, K)
+    is_relay = is_friendly & (num_active_d > 0.0)
+    if TRANSIT_CREDIT_STRICT:
+        is_relay = is_relay & (strength_d >= MAX_STRENGTH)
+    transit_credit_per_cell = (
+        of_f
+        * is_relay.astype(mx.float32)
+        * can_spill.reshape(G, N, 1).astype(mx.float32)
+        * per_edge.reshape(G, N, 1)
+    ).sum(axis=-1)
+
     # Apply alive_mask: frozen games keep old state.
     alive_mask_b = alive.reshape(G, 1)
     new_owner_final = mx.where(alive_mask_b, new_owner, owner)
     new_strength_final = mx.where(alive_mask_b, new_strength, strength)
     new_outflow_final = mx.where(alive.reshape(G, 1, 1), new_outflow, outflow)
     waste_per_cell = waste_per_cell * alive.reshape(G, 1).astype(mx.float32)
+    transit_credit_per_cell = (
+        transit_credit_per_cell * alive.reshape(G, 1).astype(mx.float32)
+    )
 
     return (new_owner_final, new_strength_final, new_outflow_final,
-            new_edge_pressure, waste_per_cell)
+            new_edge_pressure, waste_per_cell, transit_credit_per_cell)

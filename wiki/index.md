@@ -19,7 +19,9 @@ Topics:
 - [[topics/galcon-like|galcon-like]] — the genre and its lineage.
 - [[topics/neuroevolution|neuroevolution]] — MLX neuroevolution is the training path. v1 (91-input, 2-hop) and v2 (181-input, 3-hop) coexist; `scripts/train.py` runs the loop.
 - [[topics/showcase-demo|showcase-demo]] — `?demo=1` evolution-arc demo: five 5s scenes, canned champions in `public/champions/`, hot-area intro + "AI WARS" title card.
-- [[topics/v2-training-runs|v2-training-runs]] — record of v2 PPO training runs worth keeping. Cross-run lessons (iter cadence, EV timing, dead-cell connectivity) plus per-run config + observations. Current frontier: `v2-overnight` (40 dead cells, 9-channel pressure-aware policy, 2000-AI-tick games).
+- [[topics/v2-training-runs|v2-training-runs]] — record of v2 PPO training runs worth keeping. Cross-run lessons plus per-run config + observations. Current frontier: small radius-5 arenas with 20% dead cells, single-tick AI decisions, and tick-by-tick v2 replays (`v2-r5-tick1-001`).
+- [[topics/v2-rules-one-pager|v2-rules-one-pager]] — compact reference for flux v2 rules, state, tick/capture/action semantics, reward intuition, and the current node/edge vision diagram.
+- [[topics/v2-edge-voting-policy|v2-edge-voting-policy]] — spec for an edge-centric local-flow representation: derived edge types, distributed edge votes, multi-signal flow channels, and pulse-preserving hold/release learning.
 
 Decisions:
 
@@ -40,7 +42,7 @@ Decisions:
 - [[decisions/regen-flow-rules|regen-flow-rules]] — second game ruleset. Outflow has no health cost; sender forfeits regen. Damage is symmetric. Linear regen scaling with strength. Capture is deterministic strength=1. Existing transfer-flow ruleset stays as the default; replays carry `ruleset` tag.
 - [[decisions/v2-edge-pressure-state|v2-edge-pressure-state]] — v2 makes directed half-edges first-class state. Set an outflow once; it persists. Loops, multi-hop transport, and maxed-cell fanout all fall out of one fill-then-overflow rule.
 - [[decisions/v2-set-clear-actions|v2-set-clear-actions]] — v2's 13-action space: Set k=0..5, Clear k=0..5, No-op. Idempotent, state-independent — the network doesn't need to invert "what does toggle do here?"
-- [[decisions/v2-three-term-reward|v2-three-term-reward]] — power Δ (per-seat strength delta) + waste (algorithmically attributed) + time, with a terminal win bonus. Engagement / output-boost coefs from v1 are gone — persistence makes activity measures meaningless.
+- [[decisions/v2-three-term-reward|v2-three-term-reward]] — action-conditioned v2 reward stack: power/damage/capture, attributed waste, optional strict transit credit, kill pressure, time, and terminal bonus. Engagement / output-boost coefs from v1 are gone — persistence makes activity measures meaningless.
 - [[decisions/v2-trainer-displayer|v2-trainer-displayer]] — v2 web UI is a stripped trainer-displayer at `/index-v2.html` (Vite). Plays back `.flxr` v2 replays from `/v2/replays/`. No in-browser game logic; v1 page unchanged.
 
 Questions:

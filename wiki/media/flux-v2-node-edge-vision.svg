@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
+  <title id="title">flux v2 node and edge vision</title>
+  <desc id="desc">Diagram of the current flux v2 policy view: a seat-relative cell embedding, aggregate pressure features, three rounds of neighbor message passing, and a 13-action set clear noop head over six directed slots.</desc>
+  <defs>
+    <style>
+      .bg { fill: #10151d; }
+      .panel { fill: #171f2b; stroke: #304158; stroke-width: 2; }
+      .panel-soft { fill: #121923; stroke: #27384e; stroke-width: 2; }
+      .cell-mine { fill: #4a90e2; stroke: #d7ecff; stroke-width: 4; }
+      .cell-friend { fill: #2c5c94; stroke: #86bfff; stroke-width: 2; }
+      .cell-enemy { fill: #e24a4a; stroke: #ffd0d0; stroke-width: 2; }
+      .cell-neutral { fill: #555c66; stroke: #c7cbd1; stroke-width: 2; }
+      .cell-dead { fill: #604455; stroke: #94798a; stroke-width: 2; }
+      .edge { stroke: #5f7694; stroke-width: 5; stroke-linecap: round; opacity: .75; }
+      .edge-flow { stroke: #60d7ff; stroke-width: 9; stroke-linecap: round; opacity: .9; marker-end: url(#arrowFlow); }
+      .edge-enemy { stroke: #ff7b68; stroke-width: 9; stroke-linecap: round; opacity: .92; marker-end: url(#arrowEnemy); }
+      .edge-relay { stroke: #7df0a0; stroke-width: 8; stroke-linecap: round; opacity: .9; marker-end: url(#arrowRelay); }
+      .muted { fill: #92a1b4; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 22px; }
+      .text { fill: #e9f1fb; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 25px; }
+      .small { fill: #b9c7d9; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 20px; }
+      .tiny { fill: #aebbd0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 17px; }
+      .title { fill: #f3f8ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 700; font-size: 38px; }
+      .h { fill: #f3f8ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 700; font-size: 27px; }
+      .label { fill: #10151d; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-weight: 700; font-size: 18px; }
+      .mono { fill: #d8e8ff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 19px; }
+      .chip { fill: #223047; stroke: #46607f; stroke-width: 1.5; }
+      .warn { fill: #ffdf8d; }
+    </style>
+    <marker id="arrowFlow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#60d7ff"/>
+    </marker>
+    <marker id="arrowEnemy" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#ff7b68"/>
+    </marker>
+    <marker id="arrowRelay" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#7df0a0"/>
+    </marker>
+    <g id="hex">
+      <path d="M45 0 L22.5 39 L-22.5 39 L-45 0 L-22.5 -39 L22.5 -39 Z"/>
+    </g>
+  </defs>
+
+  <rect class="bg" width="1400" height="900"/>
+  <text class="title" x="58" y="70">flux v2: current node + edge vision</text>
+  <text class="muted" x="58" y="105">The world has directed pressure edges; the policy sees mostly node aggregates, then chooses a slot action.</text>
+
+  <rect class="panel" x="45" y="145" width="680" height="690" rx="18"/>
+  <text class="h" x="78" y="195">World state around one owned cell</text>
+  <text class="small" x="78" y="225">Six directed slots, persistent outflow intents, pressure rewritten each tick.</text>
+
+  <g transform="translate(370 465)">
+    <line class="edge" x1="0" y1="0" x2="145" y2="0"/>
+    <line class="edge" x1="0" y1="0" x2="72" y2="-125"/>
+    <line class="edge" x1="0" y1="0" x2="-72" y2="-125"/>
+    <line class="edge" x1="0" y1="0" x2="-145" y2="0"/>
+    <line class="edge" x1="0" y1="0" x2="-72" y2="125"/>
+    <line class="edge" x1="0" y1="0" x2="72" y2="125"/>
+
+    <line class="edge-enemy" x1="46" y1="0" x2="105" y2="0"/>
+    <line class="edge-relay" x1="-24" y1="-41" x2="-51" y2="-89"/>
+    <line class="edge-flow" x1="-25" y1="42" x2="-52" y2="91"/>
+
+    <g transform="translate(0 0)"><use href="#hex" class="cell-mine"/><text class="label" text-anchor="middle" y="7">c</text></g>
+    <g transform="translate(145 0)"><use href="#hex" class="cell-enemy"/><text class="label" text-anchor="middle" y="7">enemy</text></g>
+    <g transform="translate(72 -125)"><use href="#hex" class="cell-neutral"/><text class="label" text-anchor="middle" y="7">neutral</text></g>
+    <g transform="translate(-72 -125)"><use href="#hex" class="cell-friend"/><text class="label" text-anchor="middle" y="7">relay</text></g>
+    <g transform="translate(-145 0)"><use href="#hex" class="cell-dead"/><text class="label" text-anchor="middle" y="7">dead</text></g>
+    <g transform="translate(-72 125)"><use href="#hex" class="cell-friend"/><text class="label" text-anchor="middle" y="7">friend</text></g>
+    <g transform="translate(72 125)"><use href="#hex" class="cell-friend"/><text class="label" text-anchor="middle" y="7">sink</text></g>
+
+    <text class="tiny" x="120" y="-24">enemy flow preferred</text>
+    <text class="tiny" x="-245" y="-103">friendly relay can pass pressure</text>
+    <text class="tiny" x="-260" y="165">incoming friendly pressure</text>
+  </g>
+
+  <rect class="panel-soft" x="78" y="685" width="610" height="118" rx="14"/>
+  <text class="mono" x="105" y="724">edge_pressure[c,k]</text>
+  <text class="small" x="105" y="758">A directed half-edge carries pressure this tick.</text>
+  <text class="small" x="105" y="786">outflow[c,k] says whether that slot is open.</text>
+
+  <rect class="panel" x="775" y="145" width="580" height="690" rx="18"/>
+  <text class="h" x="810" y="195">What the current policy receives</text>
+  <text class="small" x="810" y="225">Per seat, per cell: 9 scalar features.</text>
+
+  <g transform="translate(810 260)">
+    <rect class="chip" x="0" y="0" width="245" height="38" rx="8"/>
+    <text class="mono" x="16" y="25">strength_norm</text>
+    <rect class="chip" x="270" y="0" width="245" height="38" rx="8"/>
+    <text class="mono" x="286" y="25">is_mine</text>
+
+    <rect class="chip" x="0" y="50" width="245" height="38" rx="8"/>
+    <text class="mono" x="16" y="75">is_enemy</text>
+    <rect class="chip" x="270" y="50" width="245" height="38" rx="8"/>
+    <text class="mono" x="286" y="75">is_neutral</text>
+
+    <rect class="chip" x="0" y="100" width="245" height="38" rx="8"/>
+    <text class="mono" x="16" y="125">is_dead</text>
+    <rect class="chip" x="270" y="100" width="245" height="38" rx="8"/>
+    <text class="mono" x="286" y="125">outflow_count</text>
+
+    <rect class="chip" x="0" y="150" width="245" height="38" rx="8"/>
+    <text class="mono" x="16" y="175">pressure_in_friend</text>
+    <rect class="chip" x="270" y="150" width="245" height="38" rx="8"/>
+    <text class="mono" x="286" y="175">pressure_in_enemy</text>
+
+    <rect class="chip" x="0" y="200" width="245" height="38" rx="8"/>
+    <text class="mono" x="16" y="225">pressure_out</text>
+  </g>
+
+  <g transform="translate(810 535)">
+    <text class="h" x="0" y="0">3 message-passing layers</text>
+    <text class="small" x="0" y="34">Each cell blends its own features with direct neighbors.</text>
+    <text class="small" x="0" y="64">After 3 layers, the embedding has about 3-hop context.</text>
+
+    <rect class="chip" x="0" y="95" width="150" height="48" rx="10"/>
+    <text class="mono" x="30" y="126">layer 1</text>
+    <rect class="chip" x="185" y="95" width="150" height="48" rx="10"/>
+    <text class="mono" x="215" y="126">layer 2</text>
+    <rect class="chip" x="370" y="95" width="150" height="48" rx="10"/>
+    <text class="mono" x="400" y="126">layer 3</text>
+    <path d="M150 119 L185 119 M335 119 L370 119" stroke="#7d91ad" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <g transform="translate(810 710)">
+    <text class="h" x="0" y="0">Action head</text>
+    <text class="small" x="0" y="34">For each owned cell, emit logits for 13 actions:</text>
+    <text class="mono" x="0" y="70">Set slot 0..5 | Clear slot 0..5 | No-op</text>
+  </g>
+
+  <rect x="775" y="785" width="580" height="50" rx="12" fill="#2a2430" stroke="#7b5f45" stroke-width="2"/>
+  <text class="small warn" x="804" y="817">Important: current logits are slot actions from one node embedding.</text>
+</svg>

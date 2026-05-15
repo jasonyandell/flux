@@ -21,6 +21,8 @@ from flux_v2 import (
     apply_actions,
     make_board,
     tick,
+    transit_credit_per_cell_for_tick,
+    waste_per_cell_for_tick,
 )
 from flux_v2.mlx_step import apply_actions_batched, tick_batched
 
@@ -53,18 +55,21 @@ def test_step_parity_random():
     nb_mx = mx.array(s.neighbors)
     alive = mx.array(np.array([True]))
 
-    # Pure path: run 25 ticks.
+    # Pure and MLX paths: run 25 ticks, checking reducer state and the
+    # diagnostic reward channels emitted for each tick.
     cur = s
-    for _ in range(25):
-        cur = tick(cur)
-
-    # MLX path: run 25 ticks.
     o = o_mx; st = st_mx; of = of_mx; ep = ep_mx
     for _ in range(25):
-        o, st, of, ep, _waste = tick_batched(
+        waste_expected = waste_per_cell_for_tick(cur)
+        transit_expected = transit_credit_per_cell_for_tick(cur)
+        o, st, of, ep, waste_mx, transit_mx = tick_batched(
             o, st, of, ep, alive, s.num_players, nb_mx,
         )
-        mx.eval(o, st, of, ep)
+        cur = tick(cur)
+        mx.eval(o, st, of, ep, waste_mx, transit_mx)
+
+        assert np.allclose(np.array(waste_mx)[0], waste_expected, atol=1e-4)
+        assert np.allclose(np.array(transit_mx)[0], transit_expected, atol=1e-4)
 
     # Compare.
     o_np = np.array(o)[0]

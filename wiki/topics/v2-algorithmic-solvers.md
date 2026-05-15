@@ -84,6 +84,45 @@ frontier neighbors + relay interior by gradient" closed the gap entirely.
 The hybrid keeps the emergent property of focus-toward-weakest while not
 giving up neutral territory.
 
+## Board generation: seat-reachability guarantee
+
+`random_seat_and_dead` already maintains live-subgraph connectivity (adds
+dead cells one-at-a-time, rejecting any that would disconnect). On huge
+fields at 50% dead density that guarantee turns out to be necessary but
+not sufficient: seats remain *graph-reachable* through the dead-cell
+maze, but the path can be 2-3× the empty hex diameter, so pressure can't
+traverse seat-to-seat in game time and the board visually breaks into
+islands that play independent games.
+
+Concretely, on R=30 with 50% dead (1395 dead cells on 2791-cell board):
+empty hex diameter = 60 hops, observed max seat-pair graph distance =
+60-135 hops across random seeds. One observed seed had a max of 133 hops
+— seats are technically connected but the game ends before two of them
+could ever meet.
+
+Fix in `python/scripts/run_v2_solver.py::_build_initial_state`:
+
+```python
+max_distance = max(4 * radius, 6)  # 2× empty diameter
+for attempt in range(200):
+    seats, dead = random_seat_and_dead(...)
+    if not seats_mutually_reachable(seats, dead, neighbors): continue
+    if max_seat_pair_distance(seats, dead, neighbors) > max_distance: continue
+    break
+```
+
+Two new helpers in `python/flux_v2/graph.py`:
+- `seats_mutually_reachable(seats, dead, neighbors) -> bool` — every seat
+  reachable from every other via non-dead BFS. Defensive belt against the
+  edge case where the live-subgraph guarantee would somehow leak.
+- `max_seat_pair_distance(seats, dead, neighbors) -> int` — worst-case
+  seat-to-seat BFS distance. Returns -1 on disconnect.
+
+At 50% dead density on R=30/R=40 the bound (4R = 120 / 160) requires a few
+retries per board but stays within 200 attempts. Going tighter than 4R
+(e.g., 3R = 90) fails out completely at 50% density — the live subgraph
+is too snaky.
+
 ## Open knobs
 
 The lightning solver has three intrinsic-source weights (`weak_bonus`,

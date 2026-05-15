@@ -9,6 +9,21 @@ from __future__ import annotations
 import mlx.core as mx
 import mlx.nn as nn
 
+import numpy as np
+
+from .edge_features import (
+    EDGE_BLOCKED,
+    EDGE_CATEGORY_INDEX,
+    EDGE_CATEGORY_NAMES,
+    EDGE_FEATURE_INDEX,
+    EDGE_MINE_TO_ENEMY,
+    EDGE_MINE_TO_FRIENDLY_FILL,
+    EDGE_MINE_TO_FRIENDLY_RELAY,
+    EDGE_MINE_TO_FRIENDLY_SINK,
+    EDGE_MINE_TO_NEUTRAL,
+    NUM_EDGE_CATEGORIES,
+    build_edge_features,
+)
 from .state import K, MAX_EDGE, MAX_STRENGTH, NUM_ACTIONS, OPPOSITE_SLOT
 
 # Direct neighbors only for v2 (K=6); but the GCN message-passing depth lets
@@ -21,6 +36,23 @@ IN_DIM = 9
 HIDDEN = 32
 POLICY_OUT = NUM_ACTIONS            # 13
 VALUE_HIDDEN = 16
+EDGE_FEATURE_DIM = 25
+EDGE_HIDDEN = 32
+EDGE_TYPE_NAMES = EDGE_CATEGORY_NAMES
+EDGE_NUM_TYPES = NUM_EDGE_CATEGORIES
+EDGE_CHANNEL_NAMES = (
+    "attack_flow",
+    "expand_flow",
+    "relay_flow",
+    "fill_flow",
+    "sink_risk",
+    "threat_in",
+    "stored_pressure",
+    "front_break",
+    "follow_through",
+)
+EDGE_NUM_CHANNELS = len(EDGE_CHANNEL_NAMES)
+EDGE_TYPE_BLOCKED = EDGE_BLOCKED
 
 
 def _aggregate_neighbors(H: mx.array, neighbors: mx.array) -> mx.array:
@@ -184,3 +216,253 @@ class GNNActorCritic(nn.Module):
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
+
+
+def build_edge_auxiliary_targets_np(
+    owner: np.ndarray,
+    strength: np.ndarray,
+    outflow: np.ndarray,
+    edge_pressure: np.ndarray,
+    neighbors: np.ndarray,
+    num_players: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Derive edge-type labels and channel targets from v2 state.
+
+    Returns:
+      edge_type: (G, S, N, K) int labels in EDGE_TYPE_NAMES order.
+      channels:  (G, S, N, K, EDGE_NUM_CHANNELS) float targets.
+      mask:      (G, S, N, K) true for valid non-dead source/destination edges.
+
+    Category labels come from ``edge_features.build_edge_features`` so the
+    policy, pretraining script, heuristic, and trainer metrics share one
+    representation. Channel targets stay deliberately simple and soft: they
+    teach local edge vocabulary without hard-coding pulse timing.
+    """
+    batch = build_edge_features(
+        owner=owner,
+        strength=strength,
+        outflow=outflow,
+        edge_pressure=edge_pressure,
+        neighbors=neighbors,
+        num_players=num_players,
+    )
+    labels = batch.category.astype(np.int32)
+    channels = np.zeros(
+        labels.shape + (EDGE_NUM_CHANNELS,),
+        dtype=np.float32,
+    )
+    mine_to_enemy = labels == EDGE_MINE_TO_ENEMY
+    mine_to_neutral = labels == EDGE_MINE_TO_NEUTRAL
+    mine_to_friendly_relay = labels == EDGE_MINE_TO_FRIENDLY_RELAY
+    mine_to_friendly_sink = labels == EDGE_MINE_TO_FRIENDLY_SINK
+    mine_to_friendly_fill = labels == EDGE_MINE_TO_FRIENDLY_FILL
+    enemy_to_mine = labels == EDGE_CATEGORY_INDEX["enemy_to_mine"]
+
+    f = batch.features
+    source_strength = f[..., EDGE_FEATURE_INDEX["source_strength"]]
+    dest_strength = f[..., EDGE_FEATURE_INDEX["dest_strength"]]
+    dest_headroom = f[..., EDGE_FEATURE_INDEX["dest_headroom"]]
+    edge_pressure_norm = f[..., EDGE_FEATURE_INDEX["edge_pressure"]]
+    active = f[..., EDGE_FEATURE_INDEX["outflow_active"]]
+
+    channels[..., EDGE_CHANNEL_NAMES.index("attack_flow")] = mine_to_enemy
+    channels[..., EDGE_CHANNEL_NAMES.index("expand_flow")] = mine_to_neutral
+    channels[..., EDGE_CHANNEL_NAMES.index("relay_flow")] = mine_to_friendly_relay
+    channels[..., EDGE_CHANNEL_NAMES.index("fill_flow")] = mine_to_friendly_fill
+    channels[..., EDGE_CHANNEL_NAMES.index("sink_risk")] = mine_to_friendly_sink
+    channels[..., EDGE_CHANNEL_NAMES.index("threat_in")] = enemy_to_mine
+    channels[..., EDGE_CHANNEL_NAMES.index("stored_pressure")] = edge_pressure_norm
+    channels[..., EDGE_CHANNEL_NAMES.index("front_break")] = (
+        mine_to_enemy.astype(np.float32) * dest_headroom
+    )
+    channels[..., EDGE_CHANNEL_NAMES.index("follow_through")] = (
+        mine_to_enemy.astype(np.float32)
+        * active
+        * source_strength
+        * (dest_strength < 0.5).astype(np.float32)
+    )
+    mask = batch.masks.category_known.copy()
+    channels *= mask[..., None].astype(np.float32)
+    return labels, channels, mask
+
+
+class EdgeAwareActorCritic(nn.Module):
+    """Edge-scoring actor-critic with the same public forward contract.
+
+    The baseline `GNNActorCritic` stays node-centric. This variant reuses the
+    three-hop node encoder, scores each source-owned directed edge from
+    source embedding + destination embedding + per-edge features, then maps
+    open/clear preferences back into the v2 13-action surface.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.w1_self = nn.Linear(IN_DIM, HIDDEN, bias=False)
+        self.w1_neigh = nn.Linear(IN_DIM, HIDDEN, bias=True)
+        self.w2_self = nn.Linear(HIDDEN, HIDDEN, bias=False)
+        self.w2_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
+        self.w3_self = nn.Linear(HIDDEN, HIDDEN, bias=False)
+        self.w3_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
+        self.edge_feature = nn.Linear(EDGE_FEATURE_DIM, EDGE_HIDDEN)
+        self.edge_pair = nn.Linear(HIDDEN * 2 + EDGE_HIDDEN, EDGE_HIDDEN)
+        self.edge_score = nn.Linear(EDGE_HIDDEN, 2)
+        self.noop_head = nn.Linear(HIDDEN, 1)
+        self.edge_type_head = nn.Linear(EDGE_HIDDEN, EDGE_NUM_TYPES)
+        self.edge_channel_head = nn.Linear(EDGE_HIDDEN, EDGE_NUM_CHANNELS)
+        self.value_hidden = nn.Linear(HIDDEN, VALUE_HIDDEN)
+        self.value_out = nn.Linear(VALUE_HIDDEN, 1)
+
+    def _encode_nodes(
+        self,
+        owner: mx.array,
+        strength: mx.array,
+        outflow: mx.array,
+        edge_pressure: mx.array,
+        neighbors: mx.array,
+        num_players: int,
+    ) -> tuple[mx.array, mx.array]:
+        H0 = build_features(
+            owner, strength, outflow, edge_pressure, neighbors, num_players,
+        )
+        H0_agg = _aggregate_neighbors(H0, neighbors)
+        H1 = mx.maximum(self.w1_self(H0) + self.w1_neigh(H0_agg), 0)
+        H1_agg = _aggregate_neighbors(H1, neighbors)
+        H2 = mx.maximum(self.w2_self(H1) + self.w2_neigh(H1_agg), 0)
+        H2_agg = _aggregate_neighbors(H2, neighbors)
+        H3 = mx.maximum(self.w3_self(H2) + self.w3_neigh(H2_agg), 0)
+        return H0, H3
+
+    def _edge_features(
+        self,
+        H0: mx.array,
+        outflow: mx.array,
+        edge_pressure: mx.array,
+        neighbors: mx.array,
+    ) -> mx.array:
+        G, S, N, _ = H0.shape
+        nb_safe = mx.maximum(neighbors, 0)
+        nb_valid = (neighbors >= 0).astype(mx.float32)
+        H0_dst = mx.take(H0, nb_safe.reshape(-1), axis=-2).reshape(G, S, N, K, IN_DIM)
+        H0_src = H0.reshape(G, S, N, 1, IN_DIM)
+        outflow_f = mx.broadcast_to(
+            outflow.astype(mx.float32).reshape(G, 1, N, K), (G, S, N, K)
+        )
+        edge_pressure_norm = mx.broadcast_to(
+            (edge_pressure / float(MAX_EDGE)).reshape(G, 1, N, K), (G, S, N, K)
+        )
+        valid = mx.broadcast_to(nb_valid.reshape(1, 1, N, K), (G, S, N, K))
+        slot_onehot = mx.broadcast_to(
+            mx.eye(K, dtype=mx.float32).reshape(1, 1, 1, K, K),
+            (G, S, N, K, K),
+        )
+        scalars = mx.stack(
+            [
+                valid,
+                mx.broadcast_to(H0_src[..., 0], (G, S, N, K)),
+                H0_dst[..., 0],
+                1.0 - mx.broadcast_to(H0_src[..., 0], (G, S, N, K)),
+                1.0 - H0_dst[..., 0],
+                outflow_f,
+                edge_pressure_norm,
+                mx.broadcast_to(H0_src[..., 6], (G, S, N, K)),
+                mx.broadcast_to(H0_src[..., 7], (G, S, N, K)),
+                H0_dst[..., 6],
+                H0_dst[..., 7],
+                H0_dst[..., 5],
+                H0_dst[..., 1],
+                H0_dst[..., 2],
+                H0_dst[..., 3],
+                H0_dst[..., 4],
+                mx.broadcast_to(H0_src[..., 1], (G, S, N, K)),
+                mx.broadcast_to(H0_src[..., 2], (G, S, N, K)),
+                mx.broadcast_to(H0_src[..., 3], (G, S, N, K)),
+            ],
+            axis=-1,
+        )
+        return mx.concatenate([scalars, slot_onehot], axis=-1)
+
+    def _edge_hidden(
+        self,
+        H0: mx.array,
+        H: mx.array,
+        outflow: mx.array,
+        edge_pressure: mx.array,
+        neighbors: mx.array,
+    ) -> mx.array:
+        G, S, N, _ = H.shape
+        nb_safe = mx.maximum(neighbors, 0)
+        H_dst = mx.take(H, nb_safe.reshape(-1), axis=-2).reshape(G, S, N, K, HIDDEN)
+        H_src = mx.broadcast_to(H.reshape(G, S, N, 1, HIDDEN), (G, S, N, K, HIDDEN))
+        E = mx.maximum(self.edge_feature(self._edge_features(H0, outflow, edge_pressure, neighbors)), 0)
+        pair = mx.concatenate([H_src, H_dst, E], axis=-1)
+        return mx.maximum(self.edge_pair(pair), 0)
+
+    def edge_auxiliary(
+        self,
+        owner: mx.array,
+        strength: mx.array,
+        outflow: mx.array,
+        edge_pressure: mx.array,
+        neighbors: mx.array,
+        num_players: int,
+    ) -> tuple[mx.array, mx.array]:
+        H0, H = self._encode_nodes(
+            owner, strength, outflow, edge_pressure, neighbors, num_players,
+        )
+        edge_h = self._edge_hidden(H0, H, outflow, edge_pressure, neighbors)
+        return self.edge_type_head(edge_h), self.edge_channel_head(edge_h)
+
+    def forward(
+        self,
+        owner: mx.array,
+        strength: mx.array,
+        outflow: mx.array,
+        edge_pressure: mx.array,
+        neighbors: mx.array,
+        num_players: int,
+    ) -> tuple[mx.array, mx.array]:
+        H0, H = self._encode_nodes(
+            owner, strength, outflow, edge_pressure, neighbors, num_players,
+        )
+        edge_h = self._edge_hidden(H0, H, outflow, edge_pressure, neighbors)
+        scores = self.edge_score(edge_h)
+        open_scores = scores[..., 0]
+        clear_scores = scores[..., 1]
+
+        G, S, N, _ = H.shape
+        valid_slot = mx.broadcast_to((neighbors >= 0).reshape(1, 1, N, K), (G, S, N, K))
+        source_mine = H0[..., 1].reshape(G, S, N, 1) > 0.5
+        dst_is_dead = self._edge_features(H0, outflow, edge_pressure, neighbors)[..., 15] > 0.5
+        set_mask = source_mine & valid_slot & mx.logical_not(dst_is_dead)
+        clear_mask = source_mine & valid_slot
+        open_logits = mx.where(set_mask, open_scores, -20.0)
+        clear_logits = mx.where(clear_mask, clear_scores, -20.0)
+        noop_logits = mx.where(
+            source_mine.squeeze(-1),
+            self.noop_head(H).squeeze(-1),
+            0.0,
+        )
+        policy_logits = mx.concatenate(
+            [open_logits, clear_logits, noop_logits[..., None]], axis=-1
+        )
+
+        v_per_cell = self.value_out(
+            mx.maximum(self.value_hidden(H), 0)
+        ).squeeze(-1)
+        seat_idx = mx.arange(num_players).reshape(1, num_players, 1)
+        is_mine = (owner.reshape(G, 1, N) == seat_idx).astype(mx.float32)
+        denom = mx.maximum(is_mine.sum(axis=-1), 1.0)
+        value = (v_per_cell * is_mine).sum(axis=-1) / denom
+        return policy_logits, value
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+
+def make_actor_critic(name: str = "gnn") -> nn.Module:
+    """Factory used by scripts so the node baseline remains the default."""
+    if name == "gnn":
+        return GNNActorCritic()
+    if name == "edge":
+        return EdgeAwareActorCritic()
+    raise ValueError(f"unknown v2 model '{name}'")

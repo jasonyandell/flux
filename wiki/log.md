@@ -22,6 +22,137 @@ gate. New file `src_v2/render/playback.ts`. Speed cycle is a runtime
 multiplier on top of the configured `PLAYBACK_SPEED` (does not replace
 the auto-cadence logic).
 
+## [2026-05-14 | workspace | v2 edge-voting implementation slice]
+
+**Touched pages:** [[topics/v2-edge-voting-policy]] [[topics/v2-training-runs]] [[log]]
+**Added:** first staged edge-voting implementation: shared NumPy edge feature/category builder, edge-channel trainer metrics, non-learning edge-flow heuristic with tiny arena tests, `EdgeAwareActorCritic` behind `train_v2.py --model edge`, and `scripts/pretrain_v2_edge_aux.py` for auxiliary category/channel pretraining.
+**Updated:** [[topics/v2-edge-voting-policy]] now records implementation status and the remaining frontier; [[topics/v2-training-runs]] documents the `--model edge` checkpoint split and auxiliary pretrain smoke command.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-14 | workspace | v2 edge-channel metrics wired]
+
+**Touched pages:** [[topics/v2-training-runs]] [[log]]
+**Added:** trainer-side edge-channel structural metrics for active mine-to-enemy, mine-to-neutral, friendly-relay, and friendly-sink pressure; stored pressure behind frontier; three-AI-tick enemy-pressure release bursts; and capture follow-through pressure.
+**Updated:** [[topics/v2-training-runs]] now names the edge-channel wandb metrics, adds monitoring cadence and stop conditions for fresh runs, and records that stale open slots are intentionally unavailable until policy intent/open-score channels exist.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-14 | workspace | v2 edge-voting spec review guardrails]
+
+**Touched pages:** [[topics/v2-edge-voting-policy]] [[log]]
+**Added:** design guardrails for the edge-voting policy: observer votes advise but only source-owned edges actuate, aggregation must be visibility-normalized, deterministic local-flow labels are soft teachers rather than laws, and the existing v2 `Set`/`Clear`/`No-op` action surface remains the first implementation target.
+**Updated:** [[topics/v2-edge-voting-policy]] now includes early success criteria for pure edge-feature tests, channel metrics, heuristic baselines, category/channel prediction, and PPO timing improvement without always-open collapse.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-13 | workspace | v2 edge-voting policy spec]
+
+**Touched pages:** [[topics/v2-edge-voting-policy]] [[index]]
+**Added:** [[topics/v2-edge-voting-policy]] spec for shifting v2 perception from node-centric aggregate actions toward edge-centric local-flow votes. It defines derived edge types, visible-edge vote aggregation, multi-signal channels, pulse-preserving hold/release constraints, training paths, metrics, and a first implementation slice.
+**Updated:** [[index]] links the new spec from the topic route map.
+**Retired:** none.
+**Questions opened:** whether observers should include owned cells only, all visible cells, or all cells in the local patch; whether final action selection stays one cell action per AI tick or moves to direct edge gates.
+
+## [2026-05-13 | workspace | v2 rules one-pager]
+
+**Touched pages:** [[topics/v2-rules-one-pager]] [[index]]
+**Added:** [[topics/v2-rules-one-pager]] as a compact rules reference for v2 pressure-state, tick/capture/action semantics, invariants, reward intuition, and the current policy-vision limit. Added `wiki/media/flux-v2-node-edge-vision.svg` plus app-friendly rendered PNG diagram showing directed slots, edge pressure, node aggregate features, 3-hop GCN context, and the 13-action head.
+**Updated:** [[index]] links the new one-pager from the topic route map.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-13 | workspace | v2 small-board single-tick run launched]
+
+**Touched pages:** [[v2-training-runs]] [[v2-trainer-displayer]] [[replay-rendering]] [[index]] [[log]]
+**Added:** live run entry for `v2-r5-tick1-001`.
+**Updated:**
+- Killed `v2-transit-strict-001` intentionally at iter 61 while healthy to
+  pivot from large-board training to tiny arenas.
+- Launched `v2-r5-tick1-001`: radius=5, 12 seats, 18 dead cells, random
+  placement, `ai_period_ticks=1`, `record_stride=1`, `gamma=0.998`,
+  `gae_lambda=0.99`, and rescaled per-decision reward terms.
+- `/index-v2.html` now plays v2 replays at 10 game ticks/sec, shows the
+  active board/stride, rebuilds on full board signature changes, and
+  interrupts an old replay when a new radius/seat-count stream appears.
+**Retired:** none.
+**Questions opened:** whether single-tick tiny arenas learn transferable
+edge tactics faster than radius-9 arenas.
+
+## [2026-05-13 | workspace | v2 single-tick AI cadence made safe]
+
+**Touched pages:** [[v2-training-runs]] [[log]]
+**Added:** none new.
+**Updated:**
+- `train_v2.py` now uses an explicit AI diagnostic-accumulation window helper
+  so `--ai-period-ticks 1` resets waste/transit credit every physics tick
+  instead of accumulating across the rollout.
+- [[v2-training-runs]] documents the single-tick experiment caveat: 5x more
+  PPO decision steps, shorter real-time discount horizon at unchanged
+  `gamma`, and per-AI-tick rewards paying 5x as often unless rescaled.
+**Retired:** none.
+**Questions opened:** whether the first single-tick run should preserve
+real-time horizon by raising gamma to about 0.998 and reducing per-tick
+reward coefficients.
+
+## [2026-05-13 | workspace | Codex skill for v2 training runs]
+
+**Touched pages:** [[v2-training-runs]] [[log]]
+**Added:** none in-repo. Codex skill `flux-v2-training` created at
+`~/.codex/skills/flux-v2-training/SKILL.md`.
+**Updated:**
+- [[v2-training-runs]] now points to the Codex skill from the `Launching a run`
+  runbook section.
+- The skill routes future agents to the wiki, standard log path, wandb naming,
+  replay displayer, launch verification, and run archival steps.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-13 | workspace | v2-transit-strict-001 launched]
+
+**Touched pages:** [[v2-training-runs]] [[log]]
+**Added:** live run entry for `v2-transit-strict-001`.
+**Updated:**
+- Launched strict transit run from fresh policy with `--transit-coef 0.001`
+  and the known-good v2 reward block.
+- Confirmed first four iterations are in-scale: transit ~216-238 per rollout,
+  entropy stable at ~2.558, KL calm, and replays landing in the v2 displayer.
+- Trainer is teeing into `/tmp/flux-train-v2.log`; direct `nohup` launches
+  exited immediately in this Codex app session, so the persistent PTY is the
+  live process while keeping the standard log/replay/wandb surfaces.
+**Retired:** none.
+**Questions opened:** none.
+
+## [2026-05-13 | workspace | v2 strict transit credit wired]
+
+**Touched pages:** [[v2-training-runs]] [[v2-three-term-reward]] [[index]] [[log]]
+**Added:** none new.
+**Updated:**
+- Implemented strict slime-mold transit credit: sources receive an optional
+  positive reward when pressure lands on a friendly MAX-strength relay with
+  active outflows.
+- `tick_batched` now emits `transit_credit_per_cell` alongside
+  `waste_per_cell`; `train_v2.py` adds `--transit-coef` and logs
+  `reward_transit_iter`.
+- Pure diagnostic `transit_credit_per_cell_for_tick` plus tests keep MLX and
+  pure reducer accounting aligned.
+**Retired:** none.
+**Questions opened:** whether a later lax transit mode should also reward
+friendly below-MAX relays.
+
+## [2026-05-13 | workspace | strict transit coefficient corrected]
+
+**Touched pages:** [[v2-training-runs]] [[v2-three-term-reward]] [[index]] [[log]]
+**Added:** none new.
+**Updated:**
+- First strict transit launch at `--transit-coef 0.1` produced
+  `trn≈24k` and immediate KL/entropy trouble, so it was killed after two
+  iterations.
+- Restarted the live trainer at `--transit-coef 0.001`; early transit reward
+  is ~230 per rollout, in scale with kill/waste instead of dominating them.
+**Retired:** none.
+**Questions opened:** none.
+
 ## [2026-05-13 | workspace | v2-bigger-hidden64 run kicked off]
 
 **Touched pages:** [[v2-training-runs]] [[log]]

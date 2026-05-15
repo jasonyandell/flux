@@ -31,8 +31,15 @@ import mlx.optimizers as optim                                       # noqa: E40
 import numpy as np                                                   # noqa: E402
 
 from flux_v2.graph import make_board, random_seat_and_dead            # noqa: E402
+from flux_v2.edge_features import (                                   # noqa: E402
+    EDGE_MINE_TO_ENEMY,
+    EDGE_MINE_TO_FRIENDLY_RELAY,
+    EDGE_MINE_TO_FRIENDLY_SINK,
+    EDGE_MINE_TO_NEUTRAL,
+    build_edge_features,
+)
 from flux_v2.mlx_step import apply_actions_batched, tick_batched      # noqa: E402
-from flux_v2.ppo import GNNActorCritic                                # noqa: E402
+from flux_v2.ppo import make_actor_critic                             # noqa: E402
 from flux_v2.replay import (                                          # noqa: E402
     Frame,
     ReplayHeader,
@@ -53,6 +60,7 @@ from flux_v2.state import (                                           # noqa: E4
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = REPO_ROOT / "public" / "v2" / "replays"
 DEFAULT_CHECKPOINT_PATH = REPO_ROOT / "python" / "checkpoints" / "v2" / "latest.npz"
+DEFAULT_EDGE_CHECKPOINT_PATH = REPO_ROOT / "python" / "checkpoints" / "v2" / "latest_edge.npz"
 
 
 @dataclass
@@ -82,6 +90,7 @@ class PPOConfig:
     power_coef: float = 0.0          # deprecated: per-unit Δ(Σ strength_owned)
     capture_coef: float = 0.0        # deprecated: per-cell Δ(cells_owned)
     waste_coef: float = 0.05         # per-unit attributed waste
+    transit_coef: float = 0.0        # per-unit pressure sent into friendly relays
     time_coef: float = 0.01          # per AI-tick small penalty
     win_bonus: float = 50.0          # terminal reward for the winner
     # Killer-instinct signal: per-tick reward proportional to the number of
@@ -156,6 +165,14 @@ def _per_seat_waste(owner_np: np.ndarray, waste_np: np.ndarray, P: int) -> np.nd
     return out
 
 
+def _per_seat_transit(owner_np: np.ndarray, transit_np: np.ndarray, P: int) -> np.ndarray:
+    G = owner_np.shape[0]
+    out = np.zeros((G, P), dtype=np.float32)
+    for p in range(P):
+        out[:, p] = (transit_np * (owner_np == p)).sum(axis=1)
+    return out
+
+
 def _per_seat_cells(owner_np: np.ndarray, P: int) -> np.ndarray:
     G = owner_np.shape[0]
     out = np.zeros((G, P), dtype=np.int64)
@@ -211,8 +228,14 @@ class Rollout:
     reward_power: np.ndarray | None = None
     reward_capture: np.ndarray | None = None
     reward_waste: np.ndarray | None = None
+    reward_transit: np.ndarray | None = None
     reward_time: np.ndarray | None = None
     reward_kill: np.ndarray | None = None
+
+
+def _starts_ai_accum_window(tick: int, ai_period_ticks: int) -> bool:
+    """True on the first physics tick whose diagnostics feed one AI reward."""
+    return (tick - 1) % ai_period_ticks == 0
 
 
 def make_batched_initial_state(
@@ -262,7 +285,7 @@ def make_batched_initial_state(
 
 
 def collect_rollout(
-    model: GNNActorCritic,
+    model: nn.Module,
     config: PPOConfig,
     rng_np: np.random.Generator,
     rng_mx: mx.array,
@@ -295,6 +318,7 @@ def collect_rollout(
     reward_power_log: list[np.ndarray] = []
     reward_capture_log: list[np.ndarray] = []
     reward_waste_log: list[np.ndarray] = []
+    reward_transit_log: list[np.ndarray] = []
     reward_time_log: list[np.ndarray] = []
     reward_kill_log: list[np.ndarray] = []
 
@@ -309,6 +333,7 @@ def collect_rollout(
     ))
 
     waste_acc = mx.zeros((G, N), dtype=mx.float32)
+    transit_acc = mx.zeros((G, N), dtype=mx.float32)
     prev_strength_by_seat = _per_seat_strength(
         np.array(owner, copy=False), np.array(strength, copy=False), P,
     )
@@ -371,13 +396,18 @@ def collect_rollout(
             dones_log.append((~live_np).copy())
 
         # Physics tick.
-        owner, strength, outflow, edge_pressure, waste_per_cell = tick_batched(
+        (
+            owner, strength, outflow, edge_pressure,
+            waste_per_cell, transit_per_cell,
+        ) = tick_batched(
             owner, strength, outflow, edge_pressure, alive, P, neighbors,
         )
-        if t % config.ai_period_ticks == 1:
+        if _starts_ai_accum_window(t, config.ai_period_ticks):
             waste_acc = waste_per_cell
+            transit_acc = transit_per_cell
         else:
             waste_acc = waste_acc + waste_per_cell
+            transit_acc = transit_acc + transit_per_cell
 
         # Frame recording for game 0.
         if t % config.record_stride == 0:
@@ -391,15 +421,17 @@ def collect_rollout(
 
         # Reward at AI ticks (i.e. each apply_actions cadence step).
         if t % config.ai_period_ticks == 0:
-            mx.eval(owner, strength, waste_acc)
+            mx.eval(owner, strength, waste_acc, transit_acc)
             owner_np = np.array(owner, copy=False)
             strength_np = np.array(strength, copy=False)
             waste_np = np.array(waste_acc, copy=False)
+            transit_np = np.array(transit_acc, copy=False)
             live_np = np.array(alive, copy=False)
 
             seat_strength_now = _per_seat_strength(owner_np, strength_np, P)
             seat_cells_now = _per_seat_cells(owner_np, P).astype(np.float32)
             seat_waste = _per_seat_waste(owner_np, waste_np, P)
+            seat_transit = _per_seat_transit(owner_np, transit_np, P)
             outflow_np_now = np.array(outflow, copy=False)
             edge_pressure_np_now = np.array(edge_pressure, copy=False)
             seat_damage = _per_seat_damage_dealt(
@@ -423,6 +455,7 @@ def collect_rollout(
             )
             r_capture = config.capture_coef * delta_cells_gained
             r_waste = -config.waste_coef * seat_waste
+            r_transit = config.transit_coef * seat_transit
             r_time = -config.time_coef * np.ones_like(r_power)
             # Killer-instinct: attributed per-tick reward. When a seat
             # eliminates an enemy, that seat's `kills_per_seat` counter ticks
@@ -459,19 +492,24 @@ def collect_rollout(
             r_kill_pressure = config.kill_pressure_coef * kills_per_seat
             prev_owner_np = owner_np.copy()
             prev_alive_per_seat = alive_per_seat_now
-            reward = r_power + r_capture + r_waste + r_time + r_kill_pressure
+            reward = (
+                r_power + r_capture + r_waste
+                + r_transit + r_time + r_kill_pressure
+            )
             # Zero rewards for already-dead games.
             mask = live_np.reshape(G, 1).astype(np.float32)
             reward = reward * mask
             r_power = r_power * mask
             r_capture = r_capture * mask
             r_waste = r_waste * mask
+            r_transit = r_transit * mask
             r_time = r_time * mask
             r_kill_pressure = r_kill_pressure * mask
             rewards_log.append(reward.astype(np.float32))
             reward_power_log.append(r_power.astype(np.float32))
             reward_capture_log.append(r_capture.astype(np.float32))
             reward_waste_log.append(r_waste.astype(np.float32))
+            reward_transit_log.append(r_transit.astype(np.float32))
             reward_time_log.append(r_time.astype(np.float32))
             reward_kill_log.append(r_kill_pressure.astype(np.float32))
             prev_strength_by_seat = seat_strength_now
@@ -502,6 +540,7 @@ def collect_rollout(
         reward_power_log.append(np.zeros((G, P), dtype=np.float32))
         reward_capture_log.append(np.zeros((G, P), dtype=np.float32))
         reward_waste_log.append(np.zeros((G, P), dtype=np.float32))
+        reward_transit_log.append(np.zeros((G, P), dtype=np.float32))
         reward_time_log.append(np.zeros((G, P), dtype=np.float32))
         reward_kill_log.append(np.zeros((G, P), dtype=np.float32))
 
@@ -519,6 +558,7 @@ def collect_rollout(
         reward_power=np.stack(reward_power_log, axis=0) if T else np.zeros((0, G, P), dtype=np.float32),
         reward_capture=np.stack(reward_capture_log, axis=0) if T else np.zeros((0, G, P), dtype=np.float32),
         reward_waste=np.stack(reward_waste_log, axis=0) if T else np.zeros((0, G, P), dtype=np.float32),
+        reward_transit=np.stack(reward_transit_log, axis=0) if T else np.zeros((0, G, P), dtype=np.float32),
         reward_time=np.stack(reward_time_log, axis=0) if T else np.zeros((0, G, P), dtype=np.float32),
         reward_kill=np.stack(reward_kill_log, axis=0) if T else np.zeros((0, G, P), dtype=np.float32),
     )
@@ -558,7 +598,7 @@ def compute_gae(rollout: Rollout, gamma: float, lam: float) -> tuple[np.ndarray,
 
 
 def ppo_update(
-    model: GNNActorCritic,
+    model: nn.Module,
     optimizer: optim.Optimizer,
     rollout: Rollout,
     neighbors: mx.array,
@@ -686,7 +726,7 @@ def ppo_update(
 # ---------------------------------------------------------------------------
 
 
-def save_checkpoint(model: GNNActorCritic, path: Path, generation: int) -> None:
+def save_checkpoint(model: nn.Module, path: Path, generation: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     flat: dict[str, np.ndarray] = {}
     def walk(prefix: str, params):
@@ -705,7 +745,7 @@ def save_checkpoint(model: GNNActorCritic, path: Path, generation: int) -> None:
     os.replace(tmp, path)
 
 
-def load_checkpoint(model: GNNActorCritic, path: Path) -> int:
+def load_checkpoint(model: nn.Module, path: Path) -> int:
     if not path.exists():
         return 0
     data = np.load(path, allow_pickle=False)
@@ -793,6 +833,126 @@ class _FrameLike:
 # Diagnostics
 # ---------------------------------------------------------------------------
 
+_EDGE_BURST_WINDOW = 3
+_EDGE_FOLLOW_THROUGH_WINDOW = 3
+
+
+def _active_edge_channel_pressures(
+    owner_state: np.ndarray,
+    strength_state: np.ndarray,
+    outflow_state: np.ndarray,
+    edge_pressure_state: np.ndarray,
+    neighbors_np: np.ndarray,
+    P: int,
+) -> dict[str, np.ndarray]:
+    """Return per-(game, seat) active pressure by shared edge category."""
+    G, N = owner_state.shape
+    batch = build_edge_features(
+        owner=owner_state,
+        strength=strength_state,
+        outflow=outflow_state,
+        edge_pressure=edge_pressure_state,
+        neighbors=neighbors_np,
+        num_players=P,
+    )
+    active_pressure = (
+        edge_pressure_state.reshape(G, 1, N, K)
+        * outflow_state.astype(np.float32).reshape(G, 1, N, K)
+    )
+    masks = {
+        "mine_to_enemy": batch.category == EDGE_MINE_TO_ENEMY,
+        "mine_to_neutral": batch.category == EDGE_MINE_TO_NEUTRAL,
+        "mine_to_friendly_relay": batch.category == EDGE_MINE_TO_FRIENDLY_RELAY,
+        "mine_to_friendly_sink": batch.category == EDGE_MINE_TO_FRIENDLY_SINK,
+    }
+
+    out: dict[str, np.ndarray] = {}
+    for name, mask in masks.items():
+        out[name] = (active_pressure * mask.astype(np.float32)).sum(axis=(2, 3))
+    return out
+
+
+def _enemy_pressure_by_source_cell(
+    owner_state: np.ndarray,
+    outflow_state: np.ndarray,
+    edge_pressure_state: np.ndarray,
+    neighbors_np: np.ndarray,
+) -> np.ndarray:
+    """Active pressure from each owned source cell into enemy-owned cells."""
+    G, N = owner_state.shape
+    K_local = outflow_state.shape[-1]
+    nb_safe = np.maximum(neighbors_np, 0)
+    nb_valid = neighbors_np >= 0
+    src_owner = np.broadcast_to(owner_state[:, :, None], (G, N, K_local))
+    dst_owner = owner_state[:, nb_safe]
+    is_enemy = (
+        nb_valid.reshape(1, N, K_local)
+        & (src_owner >= 0)
+        & (dst_owner >= 0)
+        & (dst_owner != src_owner)
+    )
+    return (
+        edge_pressure_state * outflow_state.astype(np.float32) * is_enemy.astype(np.float32)
+    ).sum(axis=-1)
+
+
+def _mean_live_seat(values: np.ndarray, live_seat: np.ndarray) -> float:
+    return float(values[live_seat].mean()) if live_seat.any() else 0.0
+
+
+def _enemy_pressure_series(
+    rollout: Rollout, neighbors_np: np.ndarray, P: int,
+) -> np.ndarray:
+    T = rollout.owner.shape[0]
+    if T == 0:
+        return np.zeros((0, 0, P), dtype=np.float32)
+    G = rollout.owner.shape[1]
+    series = np.zeros((T, G, P), dtype=np.float32)
+    for t in range(T):
+        channels = _active_edge_channel_pressures(
+            rollout.owner[t],
+            rollout.strength[t],
+            rollout.outflow[t],
+            rollout.edge_pressure[t],
+            neighbors_np,
+            P,
+        )
+        series[t] = channels["mine_to_enemy"]
+    return series
+
+
+def _follow_through_after_capture(
+    rollout: Rollout, neighbors_np: np.ndarray,
+    window: int = _EDGE_FOLLOW_THROUGH_WINDOW,
+) -> float:
+    """Enemy-directed pressure from newly captured cells after one action chance."""
+    owner_arr = rollout.owner
+    T = owner_arr.shape[0]
+    if T < 3:
+        return 0.0
+
+    pressure_sum = 0.0
+    samples = 0
+    for t in range(1, T - 1):
+        prev_owner = owner_arr[t - 1]
+        capture_owner = owner_arr[t]
+        captured = (capture_owner >= 0) & (capture_owner != prev_owner)
+        if not captured.any():
+            continue
+        for tau in range(t + 1, min(T, t + 1 + window)):
+            pressure_by_cell = _enemy_pressure_by_source_cell(
+                owner_arr[tau],
+                rollout.outflow[tau],
+                rollout.edge_pressure[tau],
+                neighbors_np,
+            )
+            still_owned_by_capturer = captured & (owner_arr[tau] == capture_owner)
+            if not still_owned_by_capturer.any():
+                continue
+            pressure_sum += float(pressure_by_cell[still_owned_by_capturer].sum())
+            samples += int(still_owned_by_capturer.sum())
+    return pressure_sum / max(samples, 1)
+
 
 def _structural_metrics(rollout: Rollout, neighbors_np: np.ndarray, P: int) -> dict[str, float]:
     """Territory-shape metrics that say what kind of game the policy is playing.
@@ -818,6 +978,14 @@ def _structural_metrics(rollout: Rollout, neighbors_np: np.ndarray, P: int) -> d
             "enemy_pressure_per_frontier_end": 0.0,
             "expansion_rate": 0.0, "neutral_capture_rate": 0.0,
             "total_edge_pressure_end": 0.0, "max_edge_pressure_end": 0.0,
+            "edge_active_mine_to_enemy_pressure_end": 0.0,
+            "edge_active_mine_to_neutral_pressure_end": 0.0,
+            "edge_active_mine_to_friendly_relay_pressure_end": 0.0,
+            "edge_active_mine_to_friendly_sink_pressure_end": 0.0,
+            "stored_pressure_behind_frontier_end": 0.0,
+            "release_burst_enemy_pressure_mean": 0.0,
+            "release_burst_enemy_pressure_max": 0.0,
+            "follow_through_after_capture_pressure": 0.0,
         }
 
     owner_end = rollout.owner[-1]                                # (G, N)
@@ -908,6 +1076,50 @@ def _structural_metrics(rollout: Rollout, neighbors_np: np.ndarray, P: int) -> d
     active_edge_pressure = edge_pressure_end * outflow_end.astype(np.float32)
     total_edge_pressure = float(active_edge_pressure.sum() / max(G, 1))
     max_edge_pressure = float(active_edge_pressure.max()) if G > 0 else 0.0
+    live_seat = owned_count > 0
+
+    edge_channels_end = _active_edge_channel_pressures(
+        owner_end, strength_end, outflow_end, edge_pressure_end, neighbors_np, P,
+    )
+    edge_active_mine_to_enemy = _mean_live_seat(
+        edge_channels_end["mine_to_enemy"], live_seat,
+    )
+    edge_active_mine_to_neutral = _mean_live_seat(
+        edge_channels_end["mine_to_neutral"], live_seat,
+    )
+    edge_active_mine_to_friendly_relay = _mean_live_seat(
+        edge_channels_end["mine_to_friendly_relay"], live_seat,
+    )
+    edge_active_mine_to_friendly_sink = _mean_live_seat(
+        edge_channels_end["mine_to_friendly_sink"], live_seat,
+    )
+
+    inactive_pressure_b = (
+        edge_pressure_end.reshape(G, 1, N, K)
+        * np.logical_not(outflow_end).astype(np.float32).reshape(G, 1, N, K)
+    )
+    stored_pressure_behind_frontier_per_seat = (
+        inactive_pressure_b * is_interior.astype(np.float32).reshape(G, P, N, 1)
+    ).sum(axis=(2, 3))
+    stored_pressure_behind_frontier = _mean_live_seat(
+        stored_pressure_behind_frontier_per_seat, live_seat,
+    )
+
+    enemy_series = _enemy_pressure_series(rollout, neighbors_np, P)
+    if enemy_series.shape[0] > _EDGE_BURST_WINDOW:
+        positive_delta = np.maximum(
+            enemy_series[_EDGE_BURST_WINDOW:] - enemy_series[:-_EDGE_BURST_WINDOW],
+            0.0,
+        )
+        release_burst_enemy_pressure_mean = float(positive_delta.mean())
+        release_burst_enemy_pressure_max = float(positive_delta.max())
+    else:
+        release_burst_enemy_pressure_mean = 0.0
+        release_burst_enemy_pressure_max = 0.0
+
+    follow_through_after_capture = _follow_through_after_capture(
+        rollout, neighbors_np,
+    )
 
     return {
         "frontier_ratio_end": frontier_ratio,
@@ -917,6 +1129,14 @@ def _structural_metrics(rollout: Rollout, neighbors_np: np.ndarray, P: int) -> d
         "neutral_capture_rate": neutral_capture_rate,
         "total_edge_pressure_end": total_edge_pressure,
         "max_edge_pressure_end": max_edge_pressure,
+        "edge_active_mine_to_enemy_pressure_end": edge_active_mine_to_enemy,
+        "edge_active_mine_to_neutral_pressure_end": edge_active_mine_to_neutral,
+        "edge_active_mine_to_friendly_relay_pressure_end": edge_active_mine_to_friendly_relay,
+        "edge_active_mine_to_friendly_sink_pressure_end": edge_active_mine_to_friendly_sink,
+        "stored_pressure_behind_frontier_end": stored_pressure_behind_frontier,
+        "release_burst_enemy_pressure_mean": release_burst_enemy_pressure_mean,
+        "release_burst_enemy_pressure_max": release_burst_enemy_pressure_max,
+        "follow_through_after_capture_pressure": follow_through_after_capture,
     }
 
 
@@ -1032,6 +1252,9 @@ def main() -> None:
                          "outflows pointing at non-friendly cells. Rewards "
                          "active attack work even before captures land.")
     ap.add_argument("--waste-coef", type=float, default=0.05)
+    ap.add_argument("--transit-coef", type=float, default=0.0,
+                    help="reward per unit pressure sent into friendly relay "
+                         "destinations. Try 0.001 for the slime-mold run.")
     ap.add_argument("--time-coef", type=float, default=0.01)
     ap.add_argument("--win-bonus", type=float, default=50.0)
     ap.add_argument("--kill-pressure-coef", type=float, default=0.0,
@@ -1040,6 +1263,10 @@ def main() -> None:
                          "by making 'finish weakened enemies' pay ongoing.")
     ap.add_argument("--iterations", type=int, default=0,
                     help="stop after N iterations (0 = forever)")
+    ap.add_argument("--model", choices=("gnn", "edge"), default="gnn",
+                    help="actor-critic architecture. 'gnn' is the unchanged "
+                         "node-centric baseline; 'edge' scores directed v2 "
+                         "candidate edges then maps them to 13 cell logits.")
     ap.add_argument("--checkpoint", type=Path, default=None)
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--wandb", action="store_true")
@@ -1049,7 +1276,10 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.checkpoint is None:
-        args.checkpoint = DEFAULT_CHECKPOINT_PATH
+        args.checkpoint = (
+            DEFAULT_EDGE_CHECKPOINT_PATH if args.model == "edge"
+            else DEFAULT_CHECKPOINT_PATH
+        )
 
     config = PPOConfig(
         radius=args.radius, num_players=args.num_players,
@@ -1063,6 +1293,7 @@ def main() -> None:
         power_held_coef=args.power_held_coef,
         power_damage_coef=args.power_damage_coef,
         waste_coef=args.waste_coef,
+        transit_coef=args.transit_coef,
         time_coef=args.time_coef, win_bonus=args.win_bonus,
         kill_pressure_coef=args.kill_pressure_coef,
         num_dead_cells=args.num_dead_cells,
@@ -1073,7 +1304,7 @@ def main() -> None:
     N = base.N
     neighbors_mx = mx.array(base.neighbors)
 
-    model = GNNActorCritic()
+    model = make_actor_critic(args.model)
     optimizer = optim.Adam(learning_rate=args.lr)
     mx.eval(model.parameters())
 
@@ -1099,7 +1330,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     write_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-io")
 
-    print(f"training v2 PPO: radius={args.radius} N={N} G={args.games_per_rollout} "
+    print(f"training v2 PPO: model={args.model} radius={args.radius} N={N} G={args.games_per_rollout} "
           f"seats={args.num_players} max_ticks={args.max_ticks} dead={args.num_dead_cells}")
 
     iteration = iteration_offset
@@ -1122,6 +1353,7 @@ def main() -> None:
             mean_power = float(rollout.reward_power.sum(axis=0).mean())
             mean_capture = float(rollout.reward_capture.sum(axis=0).mean())
             mean_waste = float(rollout.reward_waste.sum(axis=0).mean())
+            mean_transit = float(rollout.reward_transit.sum(axis=0).mean())
             mean_time = float(rollout.reward_time.sum(axis=0).mean())
             mean_kill = float(rollout.reward_kill.sum(axis=0).mean())
             total_steps = rollout.actions.shape[0]
@@ -1130,7 +1362,8 @@ def main() -> None:
             print(
                 f"iter {iteration:4d}  rollout={t_rollout:.2f}s update={t_update:.2f}s "
                 f"steps={total_steps}  R={mean_reward:.2f} "
-                f"(pwr={mean_power:.1f} cap={mean_capture:.1f} kill={mean_kill:.1f} wst={mean_waste:.1f} t={mean_time:.1f})  "
+                f"(pwr={mean_power:.1f} cap={mean_capture:.1f} kill={mean_kill:.1f} "
+                f"trn={mean_transit:.1f} wst={mean_waste:.1f} t={mean_time:.1f})  "
                 f"pol={metrics['policy_loss']:.4f} ent={metrics['entropy']:.3f} "
                 f"kl={metrics['approx_kl']:.4f} ev={roll_diag['explained_variance']:.2f}"
             )
@@ -1144,6 +1377,7 @@ def main() -> None:
                     "reward_power_iter": mean_power,
                     "reward_capture_iter": mean_capture,
                     "reward_waste_iter": mean_waste,
+                    "reward_transit_iter": mean_transit,
                     "reward_time_iter": mean_time,
                     "reward_kill_iter": mean_kill,
                     "policy_loss": metrics["policy_loss"],
@@ -1175,13 +1409,7 @@ def main() -> None:
                     "alive_seats_end": roll_diag["alive_seats_end"],
                     "neutral_frac_end": roll_diag["neutral_frac_end"],
                     # --- structural metrics (the user's "dream scenario" KPIs) ---
-                    "frontier_ratio_end": struct["frontier_ratio_end"],
-                    "interior_max_frac_end": struct["interior_max_frac_end"],
-                    "enemy_pressure_per_frontier_end": struct["enemy_pressure_per_frontier_end"],
-                    "expansion_rate": struct["expansion_rate"],
-                    "neutral_capture_rate": struct["neutral_capture_rate"],
-                    "total_edge_pressure_end": struct["total_edge_pressure_end"],
-                    "max_edge_pressure_end": struct["max_edge_pressure_end"],
+                    **struct,
                 }
                 if iteration % 20 == 0 and rollout.owner.shape[0] > 0:
                     img = _render_end_state(rollout.owner[-1], config.num_players)
@@ -1202,7 +1430,7 @@ def main() -> None:
                 dead_g0_list = [int(x) for x in dead_g0]
                 metadata = {
                     "kind": "train_v2",
-                    "model": "v2",
+                    "model": args.model,
                     "ruleset": "v2-pressure",
                     "iteration": iteration,
                     "generation": iteration,
@@ -1211,6 +1439,7 @@ def main() -> None:
                     "dead_cells": dead_g0_list,
                     "power_reward": mean_power,
                     "waste_reward": mean_waste,
+                    "transit_reward": mean_transit,
                     "time_reward": mean_time,
                 }
                 frames_snapshot = frames_g0

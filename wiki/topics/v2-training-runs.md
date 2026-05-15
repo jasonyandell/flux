@@ -22,6 +22,11 @@ Operational runbook so a new run lands in the right places — wandb,
 the standard log path, and the displayer's replay drop — without
 having to rediscover the conventions each time.
 
+**Codex skill shortcut:** `flux-v2-training` lives at
+`~/.codex/skills/flux-v2-training/SKILL.md`. Use it for launch/watch/triage
+requests around v2 PPO runs. The skill is only a routing aid; this wiki page
+remains the authority.
+
 **Working directory:** always `python/`. The trainer's hardcoded
 `DEFAULT_OUT_DIR` is `REPO_ROOT/public/v2/replays/`, derived relative
 to the script, so any cwd technically works, but the venv lives at
@@ -42,6 +47,18 @@ nohup .venv/bin/python scripts/train_v2.py \
   --win-bonus 500 \
   --fresh --wandb --wandb-run-name <run-name> \
   > /tmp/flux-train-v2.log 2>&1 &
+```
+
+`--model gnn` is the default node-centric baseline. `--model edge` selects
+the edge-aware policy head and uses `python/checkpoints/v2/latest_edge.npz`
+when `--checkpoint` is omitted. Use `--fresh` for first edge-model runs; do
+not accidentally resume from a short smoke-test checkpoint.
+
+Before a long edge-model PPO run, use the auxiliary smoke/pretrain surface:
+
+```bash
+.venv/bin/python scripts/pretrain_v2_edge_aux.py \
+  --radius 5 --num-players 6 --batch-size 8 --steps 25
 ```
 
 The board / capacity / reward block above is the known-good
@@ -78,6 +95,21 @@ runs accumulate but stay manageable. Force-add a notable replay
 with `git add -f public/v2/replays/<file>.flxr` if you want it
 preserved as a demo artifact.
 
+**AI cadence:** default `--ai-period-ticks 5` means one PPO action sample
+every five 0.1s physics ticks. `--ai-period-ticks 1` is now supported for
+single-tick decisions; waste/transit diagnostic accumulators reset correctly
+for that cadence. Treat it as a new experiment, not a free toggle: decision
+steps per game increase 5x, `gamma=0.99` becomes a much shorter real-time
+horizon, and per-AI-tick rewards such as `time_coef` and kill-pressure pay
+5x as often unless rescaled.
+
+**Trainer-displayer cadence:** `/index-v2.html` plays v2 replays in game
+time, not "finish in N seconds" time. With `dt_per_tick_ms=100` and
+`record-stride=1`, playback is 10 visible physics ticks/sec. Mixed radius
+streams are supported: the viewer rebuilds geometry on board signature
+changes (`radius:num_players:num_nodes`) and interrupts an old replay when
+the newest index entry has a different board shape.
+
 **Watching a run:**
 - **wandb API:** the canonical live source. Most-recent run in the
   project is `api.runs('jasonyandell-forge42/flux-v2',
@@ -92,6 +124,18 @@ preserved as a demo artifact.
 - **Displayer**: `npm run dev` (from repo root) and open the URL it
   prints with `/index-v2.html` appended. Existing replays show in
   the drip bar; new ones land within the poll interval.
+
+**Monitoring cadence / stop conditions:** for a fresh policy or reward/feature
+change, check wandb about every 10 minutes until at least iter 30, then every
+20-30 minutes unless a graph turns sharply. Stop cleanly if `approx_kl` spikes
+and stays high for multiple iters, entropy collapses into a degenerate
+SET/CLEAR mix before outcome metrics improve, reward components differ by
+orders of magnitude, `explained_variance` is still near zero after about iter
+25, or edge-channel metrics show an always-open collapse: high
+`edge_active_mine_to_friendly_sink_pressure_end` with flat
+`edge_active_mine_to_enemy_pressure_end`, no release bursts, and no capture
+follow-through. Do not stop merely because reward plateaus for a few dozen
+iters if KL, entropy, dominance/alive seats, and edge channels remain sane.
 
 **Stopping cleanly:** `kill -TERM <pid>`. The trainer handles SIGTERM
 by writing a checkpoint (`python/checkpoints/v2/latest.npz`) and
@@ -263,6 +307,71 @@ the most recent run that exercised them.
   `v2-killer-tuned`).
 
 ## Runs
+
+### v2-r5-tick1-001 — 2026-05-13 (live)
+
+**wandb:** `jasonyandell-forge42/flux-v2/ioseoeki` (name
+`v2-r5-tick1-001`).
+
+**Why:** pivot from impressive-looking large maps to tiny training arenas
+where games are easier to inspect and PPO gets many fast, dense examples.
+The UI now plays tick-by-tick at 10 physics ticks/sec.
+
+**Config:** radius=5, `num_players=12`, `num_dead_cells=18` (20% of
+91 cells rounded down), `games_per_rollout=8`, `max_ticks=3000`,
+`ai_period_ticks=1`, `record_stride=1`, fresh policy. Reward block keeps
+the strict transit/waste/capture stack but rescales per-decision terms for
+single-tick decisions: `gamma=0.998`, `gae_lambda=0.99`,
+`power_coef=0.20`, `power_damage_coef=0.02`, `capture_coef=2.0`,
+`waste_coef=0.005`, `transit_coef=0.001`, `kill_pressure_coef=0.06`,
+`time_coef=0.002`, `entropy_coef=0.003`, `win_bonus=500`.
+
+**Early sanity (iter 1-4):**
+
+| iter | R | pwr | cap | kill | transit | waste | entropy | KL | EV |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 504 | 497 | 12 | 10 | 4 | -14 | 2.556 | 0.072 | 0.00 |
+| 2 | 505 | 502 | 12 | 7 | 4 | -13 | 2.557 | 0.018 | 0.53 |
+| 3 | 506 | 500 | 12 | 9 | 4 | -14 | 2.557 | 0.017 | 0.71 |
+| 4 | 501 | 503 | 12 | 2 | 3 | -12 | 2.557 | 0.010 | 0.83 |
+
+**Diagnosis so far:** scale is sane after the single-tick rescale:
+per-rollout time penalty is still ~-6, transit/waste are small but visible,
+and KL calmed immediately after the first update. Replays are ~2.3 MB with
+3001 frames, and the browser verified radius-5 geometry plus `1t/frame`
+playback without console errors.
+
+### v2-transit-strict-001 — 2026-05-13 (killed @ iter 61, healthy)
+
+**wandb:** `jasonyandell-forge42/flux-v2/ppfn5gnz` (name
+`v2-transit-strict-001`).
+
+**Launch:** standard radius=9 / 12-seat / G=4 v2 run, fresh policy, replay
+drop to `public/v2/replays/`, standard log at `/tmp/flux-train-v2.log`.
+The trainer is running in a persistent Codex PTY with `tee` into the standard
+log because direct `nohup` launches exited immediately in this app session;
+the user-facing surfaces are still the runbook surfaces: wandb, log, and
+the v2 displayer.
+
+**Config:** identical to `v2-no-dead-ends` plus strict transit credit:
+`--transit-coef 0.001`. Kept the known-good reward block:
+`power_coef=0.20`, `power_damage_coef=0.1`, `capture_coef=2.0`,
+`kill_pressure_coef=0.3`, `waste_coef=0.005`, `entropy_coef=0.003`,
+`win_bonus=500`.
+
+**Early sanity (iter 1-4):**
+
+| iter | R | pwr | cap | kill | transit | waste | entropy | KL | EV |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1693 | 1467 | 98 | 247 | 216 | -315 | 2.559 | 0.065 | 0.00 |
+| 2 | 1662 | 1406 | 92 | 295 | 238 | -347 | 2.558 | 0.094 | 0.30 |
+| 3 | 1687 | 1447 | 95 | 266 | 224 | -324 | 2.558 | 0.049 | 0.60 |
+| 4 | 1722 | 1471 | 100 | 256 | 228 | -313 | 2.558 | 0.060 | 0.72 |
+
+**Final note:** killed deliberately, not because of collapse, to pivot to
+small arenas. By iter 61 the run was still healthy: last visible rewards were
+around R=1800-1900, entropy ~2.551, EV ~0.96-0.97, and transit stayed in
+scale with kill/waste instead of dominating.
 
 ### v2-overnight — 2026-05-13 (killed @ iter ~70, plateaued)
 
@@ -869,12 +978,17 @@ fill traffic.
 - `python/flux_v2/mlx_step.py`: `tick_batched` now returns
   `transit_credit_per_cell` alongside `waste_per_cell`.
 - `python/scripts/train_v2.py`: `--transit-coef` (default off) adds
-  `r_transit` and logs `reward_transit_iter`; first planned value is `0.1`.
+  `r_transit` and logs `reward_transit_iter`.
 - Tests cover strict relay credit and MLX/pure parity for waste + transit.
 
+**Coefficient sanity:** `--transit-coef 0.1` was tried for two iterations
+and was instantly too hot (`trn≈24k`, KL spike, entropy collapse). Restarted
+as the live run with `--transit-coef 0.001`, where early transit reward is
+~230 per rollout, comparable to kill/waste scale.
+
 **Risk:** another dense reward term increases PPO cross-talk and
-makes it harder to attribute future changes. Start small (0.1
-weight, below dest-terminated 0.3) and watch entropy / KL
+makes it harder to attribute future changes. Start small (`0.001`
+coefficient live-tested) and watch entropy / KL
 trajectories. If signals stay clean, ramp; if entropy collapses or
 KL thrashes, dial down.
 
@@ -915,6 +1029,31 @@ priority throughout. Metrics designed to make that legible:
 - **`neutral_capture_rate`** — per-AI-tick rate of total neutral-cell
   consumption (any seat). The user flagged neutrals being abandoned in
   v2-attack-reward; this makes that visible.
+- **`edge_active_mine_to_enemy_pressure_end`** — mean per-live-seat active
+  pressure on owned source slots pointing at enemy-owned cells.
+- **`edge_active_mine_to_neutral_pressure_end`** — mean per-live-seat active
+  pressure on owned source slots pointing at neutral cells.
+- **`edge_active_mine_to_friendly_relay_pressure_end`** — mean per-live-seat
+  active pressure on owned source slots pointing at friendly cells that already
+  have active outflows.
+- **`edge_active_mine_to_friendly_sink_pressure_end`** — mean per-live-seat
+  active pressure on owned source slots pointing at friendly MAX-strength cells
+  with no active outflows. High values are sink-risk / dead-end pressure.
+- **`stored_pressure_behind_frontier_end`** — inactive `edge_pressure` on
+  owned non-frontier cells, averaged per live seat. This is staged pressure the
+  policy might later release.
+- **`release_burst_enemy_pressure_mean`** and
+  **`release_burst_enemy_pressure_max`** — positive three-AI-tick changes in
+  enemy-directed pressure, averaged across the rollout and maxed across any
+  game/seat. These track pulse structure without scripting pulse behavior.
+- **`follow_through_after_capture_pressure`** — enemy-directed pressure from
+  newly captured cells after the capturer has had a later action opportunity.
+  Zero can mean no follow-through or no useful capture window; inspect alongside
+  expansion/capture rates.
+
+Stale open slots remain intentionally unlogged until the policy exposes an
+intent/open-score channel. Without intent, the trainer cannot distinguish
+"stale" from "holding pressure" honestly.
 
 Together these turn "is the policy doing the right thing structurally?"
 from a visual-replay question into a wandb-graph question.

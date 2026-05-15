@@ -1,26 +1,31 @@
 ---
-title: v2 — three-term reward (power, waste, time)
+title: v2 — reward stack
 kind: decision
 first_seen: 2026-05-13
-last_updated: 2026-05-13b
+last_updated: 2026-05-13c
 status: active
 ---
 
 ## What
 
-v2 reward shape, per AI tick, per seat:
+v2 reward shape, per AI tick, per seat. The filename is historical: the
+initial shape was three-term, but the active trainer now keeps each
+action-conditioned signal separate so experiments can turn them on/off.
 
 ```
 step_reward[p] =
-    + power_coef   * Δ(Σ strength_owned[p])  # cells filling toward MAX
-    + capture_coef * Δ(cells_owned[p])        # net cells gained this tick
-    - waste_coef   * waste_per_player[p]      # dead-end pressure
-    - time_coef                                # impatience → speed
+    + power terms                             # owned strength / damage work
+    + capture_coef * Δ(cells_owned[p])        # net cells gained
+    + transit_coef * transit_credit[p]        # optional friendly relay credit
+    + kill_pressure_coef * kills[p]           # per-tick attributed eliminations
+    - waste_coef * waste_per_player[p]        # dead-end pressure
+    - time_coef                               # impatience → speed
 terminal_reward[winner] += win_bonus
 ```
 
-Defaults: `power_coef=0.05`, `capture_coef=0.0` (off by default;
-`50.0` enables it), `waste_coef=0.05`, `time_coef=0.01`, `win_bonus=50`.
+The historical CLI defaults are not the known-good recipe. Current successful
+runs use explicit flags from [[v2-training-runs]]. The strict transit experiment
+started with `--transit-coef 0.001`; `0.1` was immediately too hot.
 
 **Why `capture_coef` exists** (added 2026-05-13 after multiple runs went
 pacifist): `Δ(strength_owned)` saturates to zero once all owned cells are
@@ -58,6 +63,13 @@ overlapping ones — v1's hard-learned lesson.
   pressure passes through), so we only penalize the no-outflow sink case.
   Pass-through is what makes combos work; the rule is careful not to break
   that. See [[v2-training-runs]] for the run that surfaced the pathology.
+- **Transit credit** is the positive twin of `dest_terminated` waste. A source
+  cell gets credit when its active outflow sends pressure into a friendly
+  relay: a destination with active outflows of its own. `TRANSIT_CREDIT_STRICT`
+  is true, so the destination must also be at MAX strength. That targets the
+  combo/back-line pattern without paying ordinary fill traffic. The trainer
+  exposes this as `--transit-coef`; default is off, first live run uses
+  `0.001`.
 - **Time** is a small per-tick penalty that pushes finish-the-game pressure.
 - **Win bonus** is a terminal scalar for the last-alive seat.
 
@@ -78,10 +90,12 @@ if overkill dominates observed waste during training.
 
 ## Implementation
 
-- `python/scripts/train_v2.py::collect_rollout` — computes
-  `r_power`, `r_waste`, `r_time` per (G, P) per AI tick, stores them
-  separately for wandb panels alongside the combined reward.
+- `python/scripts/train_v2.py::collect_rollout` — computes `r_power`,
+  `r_capture`, `r_waste`, `r_transit`, `r_time`, and `r_kill` per (G, P)
+  per AI tick, stores them separately for wandb panels alongside the
+  combined reward.
 - The trainer broadcasts those panels (`reward_power_iter`,
-  `reward_waste_iter`, `reward_time_iter`) for tuning.
+  `reward_capture_iter`, `reward_waste_iter`, `reward_transit_iter`,
+  `reward_time_iter`, `reward_kill_iter`) for tuning.
 
 Related: [[v2-edge-pressure-state]] (where waste comes from).
