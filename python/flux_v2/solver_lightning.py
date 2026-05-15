@@ -182,6 +182,129 @@ def compute_potential(
     return pot
 
 
+def _attn_actions(
+    state: State,
+    seat: int,
+    rng: Optional[np.random.Generator],
+    deep_threshold: float = 2.0,
+    gamma: float = 0.85,
+    weak_bonus: float = 1.0,
+    expand_bonus: float = 0.6,
+    relay_thresh: float = 0.5,
+) -> np.ndarray:
+    """Two-head attention solver. Each owned cell c blends two heads:
+
+      ATTACK head: max-pot gradient (lightning's original max mode).
+                   attack_score[k] ∝ max(0, pot[nb[c,k]] - pot[c]).
+      LOOP head:   structural even-k curl (lightning_loop's mode).
+                   loop_score[k] = 1 iff k ∈ {0,2,4} and both slots k and k+1
+                                   point at friendlies.
+
+    Per-cell mixing weight α(c) = clip(frontier_dist[c] / deep_threshold, 0, 1)
+    where frontier_dist is BFS distance through friendly cells to the nearest
+    non-friendly-alive (enemy/neutral) cell.
+
+      α(c) = 0 at frontier      → pure ATTACK head (gradient relay)
+      α(c) = 1 deep interior    → pure LOOP head (triskelion)
+      α(c) intermediate         → blend: the loops "tilt" forward as the
+                                  frontier gets closer, so backline storage
+                                  gradually leaks toward shots-on-goal.
+
+    Combined per-slot score = (1-α) * attack_score + α * loop_score.
+    Forced-attack rule still applies on every non-friendly non-dead slot.
+    Friendly-slot relay activates when combined ≥ max(0.5 · combined.max,
+    `relay_thresh`).
+    """
+    N = state.N
+    owner = state.owner
+    nb = state.neighbors
+    outflow = state.outflow
+
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    is_mine = owner == seat
+    if not is_mine.any():
+        return actions
+
+    pot = compute_potential(
+        state, seat,
+        gamma=gamma, weak_bonus=weak_bonus,
+        expand_bonus=expand_bonus, defense_bonus=0.0, mode="max",
+    )
+
+    # Frontier-distance BFS through friendly cells.
+    nb_safe = np.maximum(nb, 0)
+    nb_valid = nb >= 0
+    not_friendly_alive = (owner != seat) & (owner != DEAD)
+    INF = np.float32(1e9)
+    fdist = np.full(N, INF, dtype=np.float32)
+    # Seed: friendly cell adjacent to any non-friendly-alive cell → 0.
+    for k in range(K):
+        v = nb_valid[:, k]
+        d_safe = nb_safe[:, k]
+        attacky_nbr = v & not_friendly_alive[d_safe]
+        fdist = np.where(is_mine & attacky_nbr, 0.0, fdist)
+    # Relax.
+    for _ in range(int(2 * deep_threshold) + 4):
+        prev = fdist.copy()
+        cand = np.full(N, INF, dtype=np.float32)
+        for k in range(K):
+            v = nb_valid[:, k]
+            d_safe = nb_safe[:, k]
+            d_is_friendly = v & is_mine[d_safe]
+            this = np.where(d_is_friendly, fdist[d_safe] + 1.0, INF)
+            cand = np.minimum(cand, this)
+        fdist = np.where(is_mine, np.minimum(fdist, cand), fdist)
+        if np.array_equal(fdist, prev):
+            break
+
+    alpha_arr = np.clip(fdist / max(deep_threshold, 1e-6), 0.0, 1.0).astype(np.float32)
+
+    owned = np.where(is_mine)[0]
+    for c in owned:
+        c = int(c)
+        a = float(alpha_arr[c])
+        attack_score = np.zeros(K, dtype=np.float32)
+        loop_score = np.zeros(K, dtype=np.float32)
+        is_friendly_slot = np.zeros(K, dtype=np.bool_)
+        force_attack = np.zeros(K, dtype=np.bool_)
+        for k in range(K):
+            d = int(nb[c, k])
+            if d < 0:
+                continue
+            od = int(owner[d])
+            if od == DEAD:
+                continue
+            if od != seat:
+                force_attack[k] = True
+            else:
+                is_friendly_slot[k] = True
+                if pot[d] > pot[c]:
+                    attack_score[k] = pot[d] - pot[c]
+        for k in (0, 2, 4):
+            kk = (k + 1) % K
+            if is_friendly_slot[k] and is_friendly_slot[kk]:
+                loop_score[k] = 1.0
+        amax = attack_score.max()
+        if amax > 0:
+            attack_score = attack_score / amax
+        combined = (1.0 - a) * attack_score + a * loop_score
+        desired = force_attack.copy()
+        cmax = combined.max() if is_friendly_slot.any() else 0.0
+        if cmax > 0:
+            thresh = max(relay_thresh * cmax, 0.15)
+            desired |= (combined >= thresh) & is_friendly_slot
+        cur = outflow[c]
+        missing = np.where(desired & ~cur)[0]
+        if missing.size:
+            actions[c] = ACTION_SET_BASE + _pick(missing, rng)
+            continue
+        stale = np.where(cur & ~desired)[0]
+        if stale.size:
+            actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+            continue
+    return actions
+
+
 def _loop_actions(
     state: State, seat: int, rng: Optional[np.random.Generator], curl_dir: int = 1,
 ) -> np.ndarray:
@@ -279,6 +402,11 @@ def lightning_solver_actions(
     """
     if mode == "loop":
         return _loop_actions(state, seat, rng, curl_dir=curl_dir)
+    if mode == "attn":
+        return _attn_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+        )
 
     N = state.N
     owner = state.owner
