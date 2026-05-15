@@ -33,10 +33,21 @@ import numpy as np                                                   # noqa: E40
 from flux_v2.graph import make_board, random_seat_and_dead            # noqa: E402
 from flux_v2.mlx_step import apply_actions_batched, tick_batched      # noqa: E402
 from flux_v2.ppo import AttnActorCritic, GNNActorCritic               # noqa: E402
+from flux_v2.solver import solver_actions as bfs_solver_actions       # noqa: E402
+from flux_v2.solver_lightning import lightning_solver_actions         # noqa: E402
 
 MODEL_REGISTRY = {
     "gnn": GNNActorCritic,
     "attn": AttnActorCritic,
+}
+
+PRETRAIN_SOLVERS = {
+    "bfs": bfs_solver_actions,
+    "lightning": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="max"),
+    "lightning_sum": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="sum"),
+    "lightning_sum_pw": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="sum_pw"),
+    "lightning_loop": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="loop"),
+    "lightning_attn": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="attn"),
 }
 
 
@@ -1011,6 +1022,138 @@ def _rollout_diagnostics(rollout: Rollout, P: int) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
+# Warmstart: supervised pretrain from a solver
+# ---------------------------------------------------------------------------
+
+
+def collect_solver_pretrain_data(
+    config: PPOConfig,
+    solver_fn,
+    rng_np: np.random.Generator,
+    base_board,
+) -> tuple[list, list]:
+    """Run G games with `solver_fn` driving all seats. Records (state, action)
+    pairs at each AI tick. Used as supervised data for warmstart.
+
+    Returns
+    -------
+    states_log : list of dict with keys owner/strength/outflow/edge_pressure
+                 (all MLX tensors of shape (G, ...))
+    actions_log : list of MLX (G, S, N) int32 — solver-chosen actions per cell
+                  per seat. Non-owned cells get ACTION_NOOP.
+    """
+    from flux_v2.state import State as PyState
+    P = config.num_players
+    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists = (
+        make_batched_initial_state(config, rng_np)
+    )
+    G = config.games_per_rollout
+    N = int(owner.shape[1])
+    neighbors_np = np.array(neighbors, copy=False)
+    pos_np = base_board.pos
+    coord_np = base_board.coord
+
+    states_log: list[dict] = []
+    actions_log: list[mx.array] = []
+
+    for t in range(1, config.max_ticks + 1):
+        if t % config.ai_period_ticks == 0:
+            mx.eval(owner, strength, outflow, edge_pressure)
+            owner_np = np.array(owner, copy=False)
+            strength_np = np.array(strength, copy=False)
+            outflow_np = np.array(outflow, copy=False)
+            ep_np = np.array(edge_pressure, copy=False)
+
+            # Build per-(g, s) action via solver. Solver returns (N,) int32.
+            actions_np = np.full((G, P, N), ACTION_NOOP, dtype=np.int32)
+            for g in range(G):
+                sg = PyState(
+                    N=N, pos=pos_np, coord=coord_np, neighbors=neighbors_np,
+                    owner=owner_np[g].copy(),
+                    strength=strength_np[g].copy(),
+                    outflow=outflow_np[g].copy(),
+                    edge_pressure=ep_np[g].copy(),
+                    tick=t, num_players=P,
+                )
+                for s in range(P):
+                    a = solver_fn(sg, s, rng=rng_np)
+                    actions_np[g, s] = a
+
+            states_log.append({
+                "owner": owner, "strength": strength,
+                "outflow": outflow, "edge_pressure": edge_pressure,
+            })
+            actions_log.append(mx.array(actions_np))
+
+            # Combine into per-cell action: each cell uses its owner's chosen action.
+            owner_safe = np.maximum(owner_np, 0)
+            seat_idx = owner_safe[..., None]
+            combined = np.take_along_axis(
+                actions_np.transpose(0, 2, 1), seat_idx, axis=-1,
+            ).squeeze(-1)
+            combined = np.where(owner_np >= 0, combined, ACTION_NOOP)
+
+            new_outflow = apply_actions_batched(
+                owner, outflow, mx.array(combined.astype(np.int32)), neighbors,
+            )
+            mx.eval(new_outflow)
+            outflow = new_outflow
+
+        # Physics tick.
+        owner, strength, outflow, edge_pressure, _waste = tick_batched(
+            owner, strength, outflow, edge_pressure, alive, P, neighbors,
+        )
+
+        # Optional: early-stop on alive==False for any seat — keeps data clean.
+        # (we don't worry about this for warmstart data quality.)
+
+    return states_log, actions_log
+
+
+def pretrain_supervised(
+    model,
+    optimizer: optim.Adam,
+    states_log: list,
+    actions_log: list,
+    neighbors_mx: mx.array,
+    num_players: int,
+    epochs: int,
+) -> None:
+    """Cross-entropy fit: model predicts solver's action choice per cell.
+    Only owned cells contribute to the loss (solver returns NOOP elsewhere
+    and we don't want to over-fit that)."""
+
+    def cell_loss(model, state, actions):
+        logits, _ = model(
+            state["owner"], state["strength"], state["outflow"],
+            state["edge_pressure"], neighbors_mx, num_players,
+        )  # (G, S, N, A)
+        log_probs = _log_probs_at_actions(logits, actions)              # (G, S, N)
+        # Mask: only cells owned by the seat contribute.
+        G = state["owner"].shape[0]
+        S = num_players
+        seat_idx = mx.arange(S).reshape(1, S, 1)
+        is_owned = (state["owner"].reshape(G, 1, -1) == seat_idx)
+        mask = is_owned.astype(mx.float32)
+        denom = mx.maximum(mask.sum(), 1.0)
+        loss = -(log_probs * mask).sum() / denom
+        return loss
+
+    grad_fn = nn.value_and_grad(model, cell_loss)
+    for ep in range(epochs):
+        ep_loss = 0.0
+        n_steps = 0
+        for state, actions in zip(states_log, actions_log):
+            loss, grads = grad_fn(model, state, actions)
+            optimizer.update(model, grads)
+            mx.eval(model.parameters(), optimizer.state, loss)
+            ep_loss += float(loss)
+            n_steps += 1
+        print(f"  pretrain epoch {ep + 1}: mean_loss={ep_loss / max(n_steps, 1):.4f} "
+              f"(over {n_steps} AI-tick batches)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1064,6 +1207,15 @@ def main() -> None:
                     help="actor-critic architecture: 'gnn' (default 3-layer GCN, "
                          "13-action softmax) or 'attn' (same backbone, SET-action "
                          "logits = (1-α)·attack_q + α·loop_q from learned heads)")
+    ap.add_argument("--pretrain-epochs", type=int, default=0,
+                    help="Run supervised behavior-cloning warmstart from a solver "
+                         "BEFORE the PPO loop. 0 = no warmstart.")
+    ap.add_argument("--pretrain-solver", choices=tuple(PRETRAIN_SOLVERS),
+                    default="lightning_sum",
+                    help="Solver to clone during warmstart.")
+    ap.add_argument("--pretrain-games", type=int, default=0,
+                    help="Number of games_per_rollout for the warmstart data "
+                         "collection pass. 0 = use --games-per-rollout.")
     args = ap.parse_args()
 
     if args.checkpoint is None:
@@ -1107,6 +1259,44 @@ def main() -> None:
 
     rng_mx = mx.random.key(args.seed)
     rng_np = np.random.default_rng(args.seed ^ 0xDEADBEEF)
+
+    # Warmstart: behavior-clone a solver before the PPO loop.
+    if args.pretrain_epochs > 0 and iteration_offset == 0:
+        solver_fn = PRETRAIN_SOLVERS[args.pretrain_solver]
+        pretrain_g = args.pretrain_games or args.games_per_rollout
+        pretrain_cfg = PPOConfig(
+            radius=config.radius, num_players=config.num_players,
+            games_per_rollout=pretrain_g,
+            ai_period_ticks=config.ai_period_ticks,
+            max_ticks=config.max_ticks,
+            num_dead_cells=config.num_dead_cells,
+            record_stride=config.record_stride,
+            gamma=config.gamma, gae_lambda=config.gae_lambda,
+            clip_eps=config.clip_eps, entropy_coef=config.entropy_coef,
+            value_coef=config.value_coef, lr=config.lr,
+            update_epochs=config.update_epochs,
+            minibatch_size=config.minibatch_size,
+            power_coef=config.power_coef, capture_coef=config.capture_coef,
+            power_held_coef=config.power_held_coef,
+            power_damage_coef=config.power_damage_coef,
+            waste_coef=config.waste_coef,
+            time_coef=config.time_coef, win_bonus=config.win_bonus,
+            kill_pressure_coef=config.kill_pressure_coef,
+        )
+        print(f"  warmstart: cloning {args.pretrain_solver} for {args.pretrain_epochs} "
+              f"epoch(s) on {pretrain_g} games × {config.max_ticks} ticks")
+        t_warm_collect = time.time()
+        states_log, actions_log = collect_solver_pretrain_data(
+            pretrain_cfg, solver_fn, rng_np, base,
+        )
+        print(f"  collected {len(states_log)} AI-tick batches in "
+              f"{time.time() - t_warm_collect:.1f}s — supervised loss next")
+        t_warm_train = time.time()
+        pretrain_supervised(
+            model, optimizer, states_log, actions_log, neighbors_mx,
+            config.num_players, args.pretrain_epochs,
+        )
+        print(f"  warmstart done in {time.time() - t_warm_train:.1f}s")
 
     wandb_run = None
     if args.wandb:
