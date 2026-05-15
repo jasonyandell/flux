@@ -554,11 +554,17 @@ def _pulse_actions(
     state: State, seat: int, rng: Optional[np.random.Generator],
     gamma: float, weak_bonus: float, expand_bonus: float,
     period: int, duty: float,
+    stagger: bool = False,
 ) -> np.ndarray:
     """Globally synchronized pulse: read state.tick, switch all owned cells
     between CHARGE (clear outflows, accumulate strength) and FIRE (sum-mode)
     phases together. Period=200 default, duty=0.5 means 100 ticks charge then
     100 ticks fire. Visual: the whole board's territory pulses in unison.
+
+    If stagger=True, split owned cells by index parity — even cells fire on
+    one half of the cycle, odd cells on the other — so half the territory
+    is always firing. Tests whether pulse failure is about charge time or
+    about synchronization specifically.
     """
     N = state.N
     owner = state.owner
@@ -570,25 +576,27 @@ def _pulse_actions(
         return actions
 
     cycle_pos = int(state.tick) % period
-    is_fire_phase = cycle_pos >= int(period * (1.0 - duty))
+    global_fire = cycle_pos >= int(period * (1.0 - duty))
 
-    if not is_fire_phase:
-        # Charge: clear any outflows on owned cells.
-        owned = np.where(is_mine)[0]
-        for c in owned:
-            c = int(c)
-            cur = outflow[c]
-            stale = np.where(cur)[0]
-            if stale.size:
-                actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
-        return actions
-
-    # Fire phase: identical to sum-mode actions.
     pot = compute_potential(state, seat, gamma=gamma, weak_bonus=weak_bonus,
                             expand_bonus=expand_bonus, mode="sum")
     owned = np.where(is_mine)[0]
     for c in owned:
-        c = int(c)
+        c_int = int(c)
+        if stagger:
+            # Even cells fire when global_fire is True; odd cells fire when False.
+            # So at any given tick, half the territory is firing.
+            cell_fire = global_fire if (c_int % 2 == 0) else (not global_fire)
+        else:
+            cell_fire = global_fire
+
+        if not cell_fire:
+            cur = outflow[c_int]
+            stale = np.where(cur)[0]
+            if stale.size:
+                actions[c_int] = ACTION_CLEAR_BASE + _pick(stale, rng)
+            continue
+        c = c_int
         attack = np.zeros(K, dtype=np.bool_)
         relay = np.zeros(K, dtype=np.bool_)
         my_pot = pot[c]
@@ -765,6 +773,15 @@ def lightning_solver_actions(
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
             period=mode_kwargs.pop("period", 200),
             duty=mode_kwargs.pop("duty", 0.5),
+            stagger=mode_kwargs.pop("stagger", False),
+        )
+    if mode == "pulse_stagger":
+        return _pulse_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            period=mode_kwargs.pop("period", 200),
+            duty=mode_kwargs.pop("duty", 0.5),
+            stagger=True,
         )
 
     N = state.N
