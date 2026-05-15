@@ -6,6 +6,35 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-14 | workspace | v2 viewer recent-runs strip + feature wiki consolidation]
+
+**Touched pages:** [[topics/v2-viewer]] [[decisions/v2-trainer-displayer]] [[index]] [[log]]
+
+The top bar's 3-iteration drip-feed is replaced with a clickable
+newest-first strip of all indexed runs (cap 50 in `append_index`), so
+older replays are reachable on reload without waiting for the round-robin
+to walk to them. The currently-playing chip is outlined; hover shows
+filename + relative `saved_at` + radius/seats/kind. Selection unpauses
+and sets `forceLoad` so it overrides the auto-cycle gate. New player API
+method `loadReplay(file)` and `recentEntries()` now returns the full
+index slice instead of the top 8. Topbar `setRecent` signature gained
+`(entries, currentFile)`; `setOnSelect(handler)` wires the click path.
+
+**Added:** [[topics/v2-viewer]] — feature catalog for the v2 viewer
+(recent-runs list, transport bar, auto-cadence, mixed-radius rebuild,
+FLXR v2 binary format, layout). Collected from
+[[decisions/v2-trainer-displayer]] and the operational notes in
+[[topics/v2-training-runs]] so anyone asking "what does the v2 viewer
+do?" has one page to read.
+
+**Updated:** [[decisions/v2-trainer-displayer]] trimmed to the decision
+itself (separate UI track + why) and now points at [[topics/v2-viewer]]
+for the feature catalog. [[index]] links the new topic.
+
+**Retired:** none.
+
+**Questions opened:** none.
+
 ## [2026-05-14 | workspace | v2 displayer gets media-style transport controls]
 
 **Touched pages:** [[v2-trainer-displayer]] [[log]]

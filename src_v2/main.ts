@@ -34,6 +34,12 @@ const player = createPlayer({
   playTicksPerSec: PLAY_TICKS_PER_SEC,
   playbackSpeed: PLAYBACK_SPEED,
 });
+topBar.setOnSelect((file) => {
+  // Selecting from the recent-runs list implies the user wants that
+  // specific run on screen — unpause if needed and load it.
+  if (player.isPaused()) player.setPaused(false);
+  player.loadReplay(file);
+});
 player.start();
 
 function stepFrame(delta: number) {
@@ -92,7 +98,7 @@ function frame(now: number) {
   // Surface live player status even before the first replay loads, so the
   // top bar shows polling / loading state to the user.
   topBar.setStatus(player.status());
-  topBar.setRecent(player.recentEntries());
+  topBar.setRecent(player.recentEntries(), player.currentName());
 
   const r = player.current();
   if (r) {

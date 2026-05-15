@@ -22,6 +22,7 @@ Topics:
 - [[topics/v2-training-runs|v2-training-runs]] — record of v2 PPO training runs worth keeping. Cross-run lessons plus per-run config + observations. Current frontier: small radius-5 arenas with 20% dead cells, single-tick AI decisions, and tick-by-tick v2 replays (`v2-r5-tick1-001`).
 - [[topics/v2-rules-one-pager|v2-rules-one-pager]] — compact reference for flux v2 rules, state, tick/capture/action semantics, reward intuition, and the current node/edge vision diagram.
 - [[topics/v2-edge-voting-policy|v2-edge-voting-policy]] — spec for an edge-centric local-flow representation: derived edge types, distributed edge votes, multi-signal flow channels, and pulse-preserving hold/release learning.
+- [[topics/v2-viewer|v2-viewer]] — feature catalog for `/index-v2.html`: clickable newest-first recent-runs strip (all 50 indexed runs), transport bar, auto-cadence, mixed-radius rebuild, FLXR v2 format.
 
 Decisions:
 

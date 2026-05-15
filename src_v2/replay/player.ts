@@ -38,6 +38,8 @@ export type Player = {
   setSpeedMultiplier(m: number): void;
   nextReplay(): void;
   prevReplay(): void;
+  // Jump to a specific replay file (newest-first list selection).
+  loadReplay(file: string): void;
 };
 
 export type Opts = {
@@ -262,7 +264,7 @@ export function createPlayer(opts: Opts): Player {
     current() { return replay; },
     currentFrame() { return frameIdx; },
     currentName() { return replayName; },
-    recentEntries() { return entriesCache.slice(0, 8); },
+    recentEntries() { return entriesCache.slice(); },
     status() { return statusMsg; },
     setSpeed(speed: number) {
       manualSpeedOverride = speed;
@@ -303,6 +305,12 @@ export function createPlayer(opts: Opts): Player {
     prevReplay() {
       const f = pickNeighborReplay(-1);
       if (f && f !== replayName) { pendingFile = f; forceLoad = true; }
+    },
+    loadReplay(file: string) {
+      if (!file || file === replayName) return;
+      if (skippedFiles.has(file)) return;
+      pendingFile = file;
+      forceLoad = true;
     },
     tick(dt: number) {
       if (!active) return;
