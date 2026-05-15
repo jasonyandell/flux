@@ -660,15 +660,79 @@ def _picker_core_split(
 # ---------------------------------------------------------------------------
 
 
+@njit(cache=True, fastmath=True)
+def _gradient_relay_core(
+    owner: np.ndarray,
+    neighbors: np.ndarray,
+    pot: np.ndarray,
+    seat: int,
+    fanout_eps: float,
+    dead_id: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-cell explicit loop building (attack, relay) (N, K) bool grids.
+
+    attack[c, k] : slot k points at a non-friendly non-dead non-off-grid cell.
+    relay[c, k]  : slot k points at a friendly cell whose pot is within
+                   fanout_eps of c's max friendly-slot pot AND strictly
+                   above pot[c].
+    """
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    attack = np.zeros((N, K), dtype=np.bool_)
+    relay = np.zeros((N, K), dtype=np.bool_)
+
+    NEG_INF = np.float32(-1.0e30)
+    for c in range(N):
+        pot_c = pot[c]
+        # First pass: classify slots and find max friendly pot.
+        max_friendly = NEG_INF
+        any_friendly = False
+        for k in range(K):
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            od = owner[d]
+            if od == dead_id:
+                continue
+            if od == seat:
+                any_friendly = True
+                p = pot[d]
+                if p > max_friendly:
+                    max_friendly = p
+            else:
+                attack[c, k] = True
+        if not any_friendly:
+            continue
+        # Second pass: mark slots whose pot is within eps of max and above self.
+        for k in range(K):
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            od = owner[d]
+            if od != seat:
+                continue
+            p = pot[d]
+            if p <= pot_c:
+                continue
+            if max_friendly - p <= fanout_eps:
+                relay[c, k] = True
+    return attack, relay
+
+
 def _gradient_relay_desired(
     state: State, seat: int,
     pot: np.ndarray, fanout_eps: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (attack, relay) (N, K) bool masks for the gradient-relay rule
-    used by max / sum / sum_pw modes."""
-    nb_safe, nb_valid, nb_owner, is_friendly, is_attack = _classify_slots(state, seat)
-    relay = _relay_mask(pot, nb_safe, is_friendly, fanout_eps)
-    return is_attack, relay
+    used by max / sum / sum_pw modes. Delegates to JIT'd core."""
+    return _gradient_relay_core(
+        np.ascontiguousarray(state.owner, dtype=np.int32),
+        np.ascontiguousarray(state.neighbors, dtype=np.int32),
+        np.ascontiguousarray(pot, dtype=np.float32),
+        int(seat),
+        float(fanout_eps),
+        int(DEAD),
+    )
 
 
 def _wave_gate(

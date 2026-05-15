@@ -36,93 +36,111 @@ from .state import (
 )
 
 
+# Module-level int32 OPPOSITE_SLOT view; passed into @njit cores.
+_OPPOSITE_SLOT_ARR = np.asarray(OPPOSITE_SLOT, dtype=np.int32)
+
+
 # ---------------------------------------------------------------------------
 # AI-tick action application
 # ---------------------------------------------------------------------------
 
-def apply_actions(state: State, actions: np.ndarray) -> State:
-    """Apply one action per cell. Fully vectorized over (N, K).
+@njit(cache=True)
+def _apply_actions_core(
+    owner: np.ndarray,
+    outflow: np.ndarray,
+    actions: np.ndarray,
+    neighbors: np.ndarray,
+    opposite_slot: np.ndarray,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+    dead_id: int,
+) -> np.ndarray:
+    """Apply one action per cell with friendly-bidirectional resolution.
 
-    Action 0..K-1 = set slot k; K..2K-1 = clear slot k-K; 2K = no-op.
-    Actions on unowned cells are masked out.
+    Returns new_outflow (N, K) bool. Pure: input outflow not mutated.
+    """
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    new_outflow = outflow.copy()
+    # Track newly-set friendly slots for bidirectional resolution.
+    # fresh_friendly[c, k] = True if this action set c→d (d friendly) anew.
+    fresh_friendly = np.zeros((N, K), dtype=np.bool_)
+
+    for c in range(N):
+        a = actions[c]
+        oc = owner[c]
+        if oc < 0:
+            continue
+        if a == action_noop:
+            continue
+        if a >= action_set_base and a < action_clear_base:
+            k = a - action_set_base
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            if owner[d] == dead_id:
+                continue
+            if new_outflow[c, k]:
+                continue
+            new_outflow[c, k] = True
+            if owner[d] == oc:
+                fresh_friendly[c, k] = True
+        elif a >= action_clear_base and a < action_noop:
+            k = a - action_clear_base
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            new_outflow[c, k] = False
+
+    # Resolve friendly bidirectional: for each fresh c→d, check back edge.
+    # Higher cell-index wins; loser's slot is cleared.
+    for c in range(N):
+        for k in range(K):
+            if not fresh_friendly[c, k]:
+                continue
+            d = neighbors[c, k]
+            opp_k = opposite_slot[k]
+            if not new_outflow[d, opp_k]:
+                continue
+            if c > d:
+                new_outflow[d, opp_k] = False
+            else:
+                new_outflow[c, k] = False
+                fresh_friendly[c, k] = False
+    return new_outflow
+
+
+def apply_actions(state: State, actions: np.ndarray) -> State:
+    """Apply one action per cell. Pure: returns a fresh State.
 
     Invariants:
       1. No friendly bidirectional flow — for each freshly-set c→d with d
-         friendly, if the back-edge d→c is also set, the lower cell-index
-         side is cleared. Higher cell-index wins ties.
+         friendly, if the back-edge d→c is also set, lower cell-index side
+         is cleared (higher wins).
       2. Capture-clears handled in `tick`, not here.
       3. Stale targets stay on (only owned-cell actions apply).
     """
     s = copy_state(state)
-    N = s.N
-    owner = s.owner
-    nb = s.neighbors
-    if actions.shape != (N,):
-        raise ValueError(f"actions shape mismatch: {actions.shape} vs ({N},)")
-
-    is_owned = owner >= 0
-    nb_safe = np.maximum(nb, 0)
-    nb_valid = nb >= 0
-    nb_owner = np.where(nb_valid, owner[nb_safe], NEUTRAL)
-    nb_is_dead = nb_valid & (nb_owner == DEAD)
-
-    slot_idx = np.arange(K, dtype=np.int32)
-    set_mask_cell = (actions >= ACTION_SET_BASE) & (actions < ACTION_CLEAR_BASE)
-    clear_mask_cell = (actions >= ACTION_CLEAR_BASE) & (actions < ACTION_NOOP)
-    set_slot = np.where(set_mask_cell, actions, 0)
-    clear_slot = np.where(clear_mask_cell, actions - ACTION_CLEAR_BASE, 0)
-    set_per_slot = (
-        set_mask_cell[:, None]
-        & (set_slot[:, None] == slot_idx[None, :])
-        & is_owned[:, None]
-        & nb_valid
-        & ~nb_is_dead
+    if actions.shape != (s.N,):
+        raise ValueError(f"actions shape mismatch: {actions.shape} vs ({s.N},)")
+    s.outflow = _apply_actions_core(
+        np.ascontiguousarray(s.owner, dtype=np.int32),
+        np.ascontiguousarray(s.outflow, dtype=np.bool_),
+        np.ascontiguousarray(actions, dtype=np.int32),
+        np.ascontiguousarray(s.neighbors, dtype=np.int32),
+        _OPPOSITE_SLOT_ARR,
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+        int(DEAD),
     )
-    clear_per_slot = (
-        clear_mask_cell[:, None]
-        & (clear_slot[:, None] == slot_idx[None, :])
-        & is_owned[:, None]
-        & nb_valid
-    )
-
-    new_outflow = s.outflow.copy()
-    fresh_set = set_per_slot & ~new_outflow          # only newly-on triggers invariant
-    new_outflow = new_outflow | fresh_set
-    new_outflow = new_outflow & ~clear_per_slot
-
-    # Bidirectional friendly: check back-edge on fresh friendly SETs.
-    fresh_friendly = fresh_set & (nb_owner == owner[:, None]) & is_owned[:, None]
-    if fresh_friendly.any():
-        opp = OPPOSITE_SLOT
-        slot_grid = np.broadcast_to(opp[None, :], (N, K))
-        back_set = new_outflow[nb_safe, slot_grid]    # outflow[d, opp(k)]
-        conflict = fresh_friendly & back_set
-        if conflict.any():
-            cell_idx_grid = np.broadcast_to(
-                np.arange(N, dtype=np.int32)[:, None], (N, K),
-            )
-            higher_wins_c = cell_idx_grid > nb_safe   # c > d → c wins (clear d)
-            clear_back = conflict & higher_wins_c
-            clear_self = conflict & ~higher_wins_c
-            if clear_back.any():
-                cs, ks = np.where(clear_back)
-                ds = nb_safe[cs, ks]
-                opps = opp[ks]
-                new_outflow[ds, opps] = False
-            if clear_self.any():
-                cs, ks = np.where(clear_self)
-                new_outflow[cs, ks] = False
-
-    s.outflow = new_outflow
     return s
 
 
 # ---------------------------------------------------------------------------
 # Per-tick physics
 # ---------------------------------------------------------------------------
-
-_OPPOSITE_SLOT_ARR = np.asarray(OPPOSITE_SLOT, dtype=np.int32)
-
 
 @njit(cache=True, fastmath=True)
 def _tick_core(
