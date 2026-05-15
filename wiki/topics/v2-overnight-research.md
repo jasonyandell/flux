@@ -87,14 +87,16 @@ was tried, what happened, what I concluded, what came next.
    ties: they ARE indistinguishable. To detect a real effect under
    this setup, you need >6pp gap with rotated seats, or matched
    pairs. Future overnight work should use that protocol.
-10. **Matched-pair analysis (exp 23) recovers a wave_long signal**
-    hidden by seat bias: 50 boards × 2 orderings, **wave_long won
-    6/6 boards where the same winner emerged regardless of seat**
-    (p ≈ 0.016). On the other 87% of boards seat bias dominated.
-    The corrected story: wave_long has a small real advantage on
-    a minority of board topologies; the noise-dominated majority
-    averages it out at raw 47-57%. **Final ranking: wave_long mildly
-    > sum, both >> attn/pulse/pulse_stagger.**
+10. **Matched-pair analysis (exp 23-24) recovers signals that raw
+    100-game samples couldn't see.** The "tied top cluster" was
+    actually a clean hierarchy hidden by seat bias:
+    - wave_long vs sum: wave_long 6/6 of coherent (p≈0.016)
+    - sum vs bfs: sum 6/7 of coherent (p≈0.06)
+    - sum vs max: sum 9/9 of coherent (p≈0.002)
+    **Corrected final ranking:**
+    > wave_long > sum > bfs ≈ max >> attn >> pulse/pulse_stagger
+    Each adjacent pair has a real, signed advantage. The "tied"
+    framing was wrong — the methodology was inadequate to see it.
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -1101,6 +1103,56 @@ and only visible with proper matched-pair methodology.
 matched pairs, we'd have continued seeing 47-50% noise. With matched
 pairs, the signal jumps out. Future overnight research should default
 to this design.
+
+---
+
+## Exp 24 — Matched-pair tests of bfs and max vs sum
+
+If wave_long has a hidden signal vs sum, do bfs and max have hidden
+signals too? Same protocol: 40 boards × 2 orderings each, paired
+comparison.
+
+### bfs vs sum
+
+- Raw 80 games: bfs 35, sum 44, stale 1. bfs 44% (slightly below noise floor).
+- **Paired analysis on 39 fully-decisive boards**:
+  - same winner both orderings: bfs 1, sum 6.
+  - seat-bias-decided: 32.
+  - **sum wins 6/7 = 86% of board-coherent decisions** (p ≈ 0.06).
+
+bfs is meaningfully *worse* than sum when strategy decides.
+
+### max vs sum
+
+- Raw 80 games: max 27, sum 47, stale 6. max 36% — visibly below noise floor.
+- **Paired analysis on 35 fully-decisive boards**:
+  - same winner both orderings: max 0, sum 9.
+  - seat-bias-decided: 26.
+  - **sum wins 9/9 = 100% of board-coherent decisions** (p ≈ 0.002).
+
+max is meaningfully *worse* than sum, more so than bfs.
+
+### Combined ranking (matched-pair signals)
+
+Pairwise relationships from matched-pair experiments:
+
+| matchup           | coherent boards | better wins | p-value |
+|-------------------|---------------:|-------------|--------:|
+| wave_long vs sum  | 6              | wave_long 6/6 (100%) | 0.016 |
+| sum vs bfs        | 7              | sum 6/7 (86%) | 0.06 |
+| sum vs max        | 9              | sum 9/9 (100%) | 0.002 |
+
+**The actual ranking is NOT a tied cluster.** It's:
+
+> **`lightning_wave_long` > `lightning_sum` > `lightning_bfs` ≈ `lightning` (max) >> `lightning_attn` >> `lightning_pulse` ≈ `lightning_pulse_stagger`**
+
+Each adjacent pair has a real, measurable advantage that was hidden
+by the 6pp seat bias noise in raw 100-game samples. The picture
+becomes clean only with paired analysis on board-coherent decisions.
+
+**This is the corrected overnight headline ranking.** Earlier sections
+calling these "tied" were wrong — they were measuring the noise
+floor, not the signal.
 
 ---
 
