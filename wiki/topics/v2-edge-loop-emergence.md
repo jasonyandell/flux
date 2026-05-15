@@ -540,6 +540,128 @@ For the visual proof-of-concept on a phone-watchable board:
   that the geometry argument matches what's drawn on screen, before
   trusting the hybrid idea above.
 
+## Phase III: PPO training, moonshot speedups, and the reward-shape bug
+
+After landing the hand-designed `lightning_attn` at parity with `sum`,
+the next move was learning Q/K via PPO end-to-end. Documented here
+because every step exposed a different architectural or reward-shape
+issue that's worth keeping recorded for the next round.
+
+### Moonshot recipe (cheap iteration cycle)
+
+The canonical `v2-killer-tuned` recipe takes ~75s per iteration on
+R=9 P=12 max_ticks=10000. Iterating on policy architecture or reward
+shape at that pace is dead — you need 1-2 hours per experiment. The
+moonshot stack collapses iteration time to ~5 min for 40 iters:
+
+- `--radius 5 --num-players 6 --num-dead-cells 10` — ~91 cells vs 271
+- `--max-ticks 2000` — 5× shorter games
+- `--games-per-rollout 12` — 3× gradient diversity per iter
+- `--ai-period-ticks 5` — unchanged
+- `--opponent-seats "0,2,4" --opponent-solver lightning_sum` —
+  half the seats run a fixed solver, anchoring gradient direction
+
+Tradeoffs: small-board dynamics differ from R=9 (less room for
+loops, faster captures), but the architectural and reward-shape bugs
+that need fixing show up at this scale too — and you can SEE them in
+the displayer instead of waiting an hour.
+
+### The slot-direction-bias bug
+
+First PPO run at moonshot scale gave a stable plateau (R≈470, no
+deadlock, no NaN) but **0-23 head-to-head** against `lightning_sum`.
+Watching the replay made the bug obvious: the trained policy spread
+*only east and southeast* (slots 0 and 5 in axial coords) and
+ignored neutrals in other directions.
+
+Diagnosis: `AttnActorCritic`'s SET head was
+`Linear(HIDDEN, K)` — six per-slot scores from six **independent**
+linear projections of the cell embedding. The slot index existed in
+the parameters. Random init gave slot 0 slightly higher weights;
+PPO's first iter amplified the asymmetry; entropy was sticky around
+1.84 so the policy never broke out of the directional rut.
+
+Fix: replace the per-slot independent heads with shared pair-functions
+over `(cell_emb, neighbor-at-slot-k_emb)`:
+
+```python
+self.attack_pair = Linear(2 * HIDDEN, 1)
+# applied per (c, k) to concat(H3[c], H3[nb[c, k]])
+```
+
+The slot index never appears as a learnable parameter. Slot 0 differs
+from slot 3 *only* because they point at different neighbors. PPO
+cannot develop a slot-0 fixation because slot 0 has no special
+parameter to amplify.
+
+Sanity check: on a uniform-state board (all NEUTRAL, equal strength),
+an interior cell's 6 SET logits are identical (std = 0.0).
+
+Param count drops too: old policy heads = ~660 params, new = ~261.
+Smaller and slot-symmetric.
+
+After the fix, training-time metrics improved across the board:
+entropy held at 2.38 (vs 1.84), value EV climbed 0 → 0.45 (vs 0.34),
+captures rose slightly. **But the head-to-head was still 0-23.**
+
+### The missing-relay-reward bug
+
+The equivariant trained policy looked structurally healthy but
+visually had a different pathology: many cells with **zero outflows
+at all** sitting idle in the interior. The model hadn't learned to
+issue CLEAR (when outflows go stale) and hadn't learned to issue
+SET-toward-relay (when interior cells should chain pressure forward).
+
+Reading off the per-tick reward signals at `MAX_EDGE = 100`:
+
+| action | per-tick reward signal |
+|--------|-----------------------:|
+| pump at enemy/neutral | `+10` |
+| **pump at friendly relay (chain forward)** | **`0`** |
+| pump at friendly sink | `-0.15` |
+| NOOP | `-0.01` |
+
+For an interior cell with all-friendly neighbors, **NOOP is literally
+optimal**. There's no positive signal to chase. The trained policy
+correctly learned to do nothing on interior cells.
+
+`flux_v2.step.transit_credit_per_cell_for_tick` was already
+implemented as "the positive twin of destination-terminated waste" —
+pays a source cell when its outflow lands on a MAX-strength friendly
+relay with active outflows. But it was marked "diagnostic" and never
+wired into the trainer.
+
+Fix (in `python/scripts/train_v2.py`): batched numpy implementation
+`_batched_transit_credit()`, new `--transit-credit-coef` flag,
+`r_transit` term added to total reward. With
+`--transit-credit-coef 0.05` and `--waste-coef 0.1`, interior cells
+now see:
+
+| action | new per-tick signal |
+|--------|--------------------:|
+| pump at relay | `+1.5` |
+| pump at sink | `-3` |
+| NOOP | `-0.01` |
+
+Interior cells now have a clear positive reason to chain pressure
+forward and a clear negative reason to point at sinks.
+
+### Reward-shape audit takeaway
+
+The "ignores neutrals / sits idle / can't sustain pressure" failure
+mode wasn't an under-training symptom — it was a **literally rational
+response to the existing reward function**. The hand-designed
+solvers in [[v2-algorithmic-solvers]] get the maintenance behavior
+"for free" because they recompute desired outflows from scratch
+every AI tick from local geometric rules. PPO has to *learn* both
+the attack behavior AND the maintenance behavior, and the gradient
+signal for maintenance was missing.
+
+This is the kind of bug that's invisible without a UI. The training
+metrics looked fine; the policy was visually broken. Replay-driven
+iteration was what surfaced it.
+
 Related: [[v2-algorithmic-solvers]],
 [[decisions/v2-edge-pressure-state]], [[v2-edge-voting-policy]],
-[[v2-training-runs]].
+[[v2-training-runs]],
+[[decisions/v2-three-term-reward]] (the reward stack's design).
