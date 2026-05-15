@@ -408,7 +408,9 @@ def main() -> None:
     ap.add_argument("--games", type=int, default=4)
     ap.add_argument("--ai-period-ticks", type=int, default=5)
     ap.add_argument("--max-ticks", type=int, default=4000)
-    ap.add_argument("--record-stride", type=int, default=25)
+    ap.add_argument("--record-stride", type=int, default=None,
+                    help="ticks between recorded frames. Default: match "
+                         "--ai-period-ticks so every AI decision is captured.")
     ap.add_argument("--seed", type=int, default=int(time.time()) & 0xFFFFFFFF)
     ap.add_argument("--write-replay", action="store_true",
                     help="write one .flxr to public/v2/replays/ for game 0")
@@ -426,6 +428,8 @@ def main() -> None:
     ap.add_argument("--trained-model-kind", choices=("attn", "gnn"), default="attn",
                     help="Architecture of the trained checkpoint.")
     args = ap.parse_args()
+    if args.record_stride is None:
+        args.record_stride = args.ai_period_ticks
 
     if args.seats:
         seat_solvers = [s.strip() for s in args.seats.split(",")]
