@@ -72,31 +72,61 @@ The uniform-fallback handles the cold-start case (no pressure flowing
 yet) — early-game `sum_pw` collapses to `sum`, and the symmetry breaks
 once any flow appears.
 
-## How loops actually form in practice
+## How loops actually form in practice (post-experiment)
 
-Max mode: never. The action rule (`pot[d] > pot[c]` strictly) plus the
-single-parent operator is a hard fence against cycles.
+**The diffusion change was necessary but not sufficient.** Sum/sum_pw
+smooth the field, but the strict-uphill action rule (`pot[d] > pot[c]`
+gated by `fanout_eps`) is still tree-only by transitivity: you can't
+have `pot[a] < pot[b] < pot[c] < pot[a]`. What `sum_pw` actually
+produces in replay is *bidirectional feeding* between near-equal-pot
+cells (a↔b 2-cycles) and Y-shaped confluences — not the directed
+3-cycles the hypothesis predicted.
 
-Sum / sum_pw: cycles emerge when the potential field is "flat enough"
-that several mutually-pointing cells along a ring all see slightly-higher
-neighbor pot than themselves. The action rule (still strictly uphill at
-the same `fanout_eps` threshold) admits these once the field stops
-being strictly monotone — which is the operator's natural state once
-contributions are summed rather than maxed.
+The fix is structural, not field-based. See `mode="loop"` below.
 
-For `sum_pw` specifically, the key dynamic is symmetry-breaking by
-ambient noise (random action choice, intrinsic-source asymmetry) followed
-by exponential amplification through the pressure-weighted feedback.
+### `mode="loop"` — structural curl rule (no potential field)
+
+Hex grid geometry: a cell c's neighbors at slots k and k+1 (mod 6) are
+themselves mutually adjacent (this is what makes hex grids triangular at
+every scale). Every such triangle has a fixed slot-parity — from each
+of its three corners, the slot pair used is *either* both-even-k *or*
+both-odd-k. So restricting the rule to k ∈ {0,2,4} fills the even-k
+triangles uniformly with directed 3-cycles, and the odd-k triangles
+stay empty.
+
+Why even-only? The v2 reducer's "no friendly bidirectional flow"
+invariant ([`step.apply_actions`](../../python/flux_v2/step.py)) clears
+one side whenever both directions of an edge get set on the same tick.
+Opposite slots are `(k, k+3)` — pairs of opposite parity. So if all
+"loop relay" outflows live on even-k, every back-edge candidate is on
+odd-k and is never set, the invariant never triggers, and clean directed
+3-cycles survive.
+
+Concretely (verified by sanity test on R=3 all-friendly board):
+
+```
+For cell c, for k in {0, 2, 4}:
+    if nb[c,k] friendly AND nb[c,(k+1)%6] friendly:
+        set outflow slot k on c
+```
+
+Plus the original frontier-attack rule on non-friendly neighbors.
+Result: every interior cell has outflows on exactly slots `{0, 2, 4}`
+(a "triskelion"), and every even-parity friendly triangle has a closed
+a→b→c→a CCW 3-cycle. Visible in
+`solver_v2_lightning_loop_20260515T015923.flxr` — the visual pattern is
+dramatically different from `sum_pw`.
 
 ## Solver registration
 
-`python/scripts/run_v2_solver.py` registers all three:
+`python/scripts/run_v2_solver.py` registers all four:
 
-| seat name           | mode      |
-|---------------------|-----------|
-| `lightning`         | `max`     |
-| `lightning_sum`     | `sum`     |
-| `lightning_sum_pw`  | `sum_pw`  |
+| seat name           | mode      | what it does                                       |
+|---------------------|-----------|----------------------------------------------------|
+| `lightning`         | `max`     | original tree-only diffusion + strict-uphill relay |
+| `lightning_sum`     | `sum`     | uniform Bellman diffusion + strict-uphill relay    |
+| `lightning_sum_pw`  | `sum_pw`  | edge-pressure-weighted Bellman + strict-uphill     |
+| `lightning_loop`    | `loop`    | structural curl rule on hex triangles (no field)   |
 
 Use the existing `--seats` arg, e.g.:
 
@@ -173,28 +203,75 @@ sweeps. The 1 stalemate is the same dynamic as Run 2: when two adjacent
 `sum_pw` seats happen to interlock loops before max can break in, the
 position freezes.
 
+### Run 5 — `lightning_loop` self-play (seed 800, 6 games)
+
+| outcome   | count | mean ticks |
+|-----------|------:|-----------:|
+| decisive  | 4 / 6 | 1541       |
+| stalemate | 2 / 6 | 4000       |
+
+The triskelion pattern is unambiguously visible from frame 0 in
+`solver_v2_lightning_loop_20260515T015923.flxr`. Loops resolve eventually
+but with a longer mean tick count than `sum` (2361 vs 1501 overall) —
+the committed slot budget for circulation slows down attack focus.
+
+### Run 6 — alternating `lightning` vs `lightning_loop` (seed 801, 24 games)
+
+| solver            | seats | wins | win share |
+|-------------------|------:|-----:|----------:|
+| `lightning`       | 3     | 17   | **70.8%** |
+| `lightning_loop`  | 3     | 7    | 29.2%     |
+
+Original max-mode beats the structural loop rule decisively.
+
+### Run 7 — `lightning_sum` vs `lightning_loop` (seed 802, 24 games)
+
+| solver            | seats | wins | win share |
+|-------------------|------:|-----:|----------:|
+| `lightning_sum`   | 3     | 18   | **75.0%** |
+| `lightning_loop`  | 3     | 3    | 12.5%     |
+| (stalemate)       | —     | 3    | 12.5%     |
+
+`sum` keeps its top spot. `loop` is the weakest of the four.
+
 ### Summary
 
-The hypothesis ("loops are stronger pressure generators") was correct
-mechanically — `sum_pw` does form them, and the visual evidence is in
-the replay. But the **strategic implication was inverted**: cycle
-pressure is *defensive infrastructure*, not offensive throughput.
-Against passive opponents the loops never get tested; against active
-attackers the loops cost slots that would otherwise be on the frontier.
+Three sequenced experiments, three sharpening lessons:
 
-`lightning_sum` (the loop-permitting operator *without* the
-edge-pressure feedback) ended up being the genuine improvement — it
-beats the original max-mode by ~6 games out of 24, despite using the
-same action rule. The geometric-series Bellman aggregation is just a
-better local heuristic for relay routing.
+1. **Field smoothing alone doesn't make loops.** Sum/sum_pw smooth the
+   potential field but the strict-uphill action rule is still tree-only
+   by transitivity. `sum_pw` replays show 2-cycle feeding and
+   Y-confluences, not the predicted directed 3-cycles.
+2. **Structural rules do.** The even-k slot rule on hex triangles
+   produces clean directed 3-loops with no field at all, no
+   bidirectional invariant conflicts, and a striking triskelion visual
+   signature. Hypothesis confirmed at the structural level.
+3. **But loops aren't free.** Every interior cell commits 3 outflow
+   slots to circulation. That's bandwidth diverted from attack focus.
+   In head-to-head, `loop` loses to both `lightning` (29.2%) and
+   `lightning_sum` (12.5%).
+
+The genuine win of this experiment arc was `lightning_sum` —
+non-edge-weighted Bellman aggregation, which beats original max-mode
+by ~25 percentage points without any cycle structure. The geometric-
+series field is just a better local relay heuristic.
+
+The structural loop rule is the right tool *if* you can pay the slot
+cost — e.g., late-game when the frontier is small and attack saturation
+isn't the bottleneck. A frontier-aware hybrid (max-mode for cells with
+≤3 friendly neighbors, loop rule for cells with ≥4) is the natural
+next experiment.
 
 See `wiki/log.md` (entry: lightning sum / sum_pw modes) for the run log
 and replays:
 
 - `public/v2/replays/solver_v2_lightning_sum_*.flxr` — Run 1 game 0
-- `public/v2/replays/solver_v2_lightning_sum_pw_*.flxr` — Run 2 game 0 (the deadlock — watch the rings)
+- `public/v2/replays/solver_v2_lightning_sum_pw_*.flxr` — Run 2 game 0 (2-cycle feeding / Y-confluences — *not* true 3-cycles)
 - `public/v2/replays/solver_v2_lightning+lightning_sum+lightning_sum_pw_*.flxr` — Run 3 game 0
 - `public/v2/replays/solver_v2_lightning+lightning_sum_pw_*.flxr` — Run 4 game 0
+- `public/v2/replays/solver_v2_lightning_loop_*.flxr` — Run 5 game 0 (**the triskelion pattern — directed 3-loops on every even-parity triangle**)
+- `public/v2/replays/solver_v2_lightning+lightning_loop_*.flxr` — Run 6 game 0 (loop vs max head-to-head)
+- `public/v2/replays/solver_v2_lightning_loop+lightning_sum_*.flxr` — Run 7 game 0
 
 ## Tradeoffs
 
@@ -237,6 +314,14 @@ and replays:
   62.5% > 37.5% in mixed play is a clear gap. If a focused
   `fanout_eps` / `γ` tune on sum-mode widens it, switching the default
   baseline is justified.
+- **Frontier-aware loop hybrid.** Apply the loop rule only when a cell
+  has ≥4 friendly neighbors (deep interior, where the slot budget for
+  circulation isn't displacing attack slots), and use `sum` relay
+  elsewhere. Untested.
+- **Test the structural-loop visual.** The `solver_v2_lightning_loop_*`
+  replay should make the triskelion pattern obvious — a sanity check
+  that the geometry argument matches what's drawn on screen, before
+  trusting the hybrid idea above.
 
 Related: [[v2-algorithmic-solvers]],
 [[decisions/v2-edge-pressure-state]], [[v2-edge-voting-policy]],

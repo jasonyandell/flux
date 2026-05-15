@@ -6,6 +6,57 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-14 | workspace | lightning_loop — structural curl rule that closes directed 3-loops]
+
+**Touched pages:** [[topics/v2-edge-loop-emergence]] [[log]]
+
+Follow-up to the sum / sum_pw modes. User pointed out (via screenshot) that
+sum_pw replays show bidirectional feeding and Y-confluences, not the
+directed 3-cycles the hypothesis predicted. Diagnosis: the diffusion
+change was necessary but not sufficient — the strict-uphill action rule
+(`pot[d] > pot[c]`) is still tree-only by transitivity regardless of how
+smooth the field is.
+
+Fix: structural rule that ignores the potential field entirely. On a hex
+grid, neighbors at slots k and k+1 (mod 6) are mutually adjacent — they
+form a triangle with c. Each such triangle has a fixed slot-parity (from
+all three corners, the slot pair is either both-even-k or both-odd-k).
+Restricting the relay rule to k ∈ {0, 2, 4} fills the even-parity
+triangles with directed 3-cycles and guarantees the back-edges (slot
+k+3, always odd) are never set on the destination — so the v2 reducer's
+"no friendly bidirectional flow" invariant never triggers.
+
+Sanity-checked on R=3 all-friendly board: 18/18 interior cells set
+exactly slots {0, 2, 4} (triskelion pattern), and the a→b→x→a 3-cycle
+closes cleanly with all back-edges off.
+
+Head-to-head (R=6 P=6 4000 ticks):
+
+- All-`loop` self-play (6 games) — 4 decisive, 2 stalemates, mean 2361
+  ticks. Loops resolve but slower than `sum`.
+- `lightning` vs `lightning_loop` (24 games) — 17-7. Max-mode wins
+  decisively.
+- `lightning_sum` vs `lightning_loop` (24 games) — 18-3, 3 stalemates.
+  Sum keeps its top spot.
+
+Headline: hypothesis confirmed at the structural level (loops form and
+the triskelion pattern is unambiguous in
+`solver_v2_lightning_loop_*.flxr`), but the strategic cost is real —
+3 outflow slots per interior cell go to circulation, away from attack
+focus. Worth a frontier-aware hybrid (max-mode where ≤3 friendly
+neighbors, loop rule where ≥4) as the next experiment.
+
+**Added:** `lightning_loop` mode in
+`python/flux_v2/solver_lightning.py`; solver registration in
+`python/scripts/run_v2_solver.py`; three new `.flxr` replays in
+`public/v2/replays/`.
+**Updated:** [[topics/v2-edge-loop-emergence]] (three new run tables,
+geometry explanation, solver registration table, replay list).
+**Retired:** none.
+**Questions opened:** frontier-aware hybrid effectiveness; whether the
+triskelion visual matches expectation; whether a 4-cycle / 6-cycle
+variant would have a different slot-cost / pressure-storage tradeoff.
+
 ## [2026-05-14 | workspace | lightning sum / sum_pw modes — diffusion that admits loops]
 
 **Touched pages:** [[topics/v2-edge-loop-emergence]] [[topics/v2-algorithmic-solvers]] [[index]] [[log]]
