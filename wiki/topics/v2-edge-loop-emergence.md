@@ -6,6 +6,22 @@ last_updated: 2026-05-14
 status: active
 ---
 
+## Note on rankings (2026-05-15)
+
+This page's "final ranking" of `sum > attn ≈ sum > max > loop > sum_pw` was
+the May-14 conclusion from single-direction tournaments. Overnight matched-
+pair experiments the next day ([[v2-overnight-research|v2-overnight-research]])
+established a 6pp seat-bias noise floor that invalidated several of the
+close gaps here. **The current ranking is:**
+
+> `wave_long` > `sum` > `bfs` ≈ `max` >> `attn` >> `pulse` / `pulse_stagger`
+
+`attn` did *not* hold its tie with `sum` once seat-bias was removed —
+matched-pair `sum` beat `attn` 87-6 over 100 games. Keep this page for the
+mechanism story (uniform-Bellman vs max-aggregation, the structural 3-loop
+curl, attention as reservoir-with-release) and the PPO reward-shape deep
+dive; treat its head-to-head tables as historical.
+
 ## The observation
 
 Both algorithmic solvers in [[v2-algorithmic-solvers]] produce
