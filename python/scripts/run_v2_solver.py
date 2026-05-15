@@ -91,6 +91,14 @@ def _lightning_sum_wide(state, seat, rng=None):
                                     gamma=0.94, expand_bonus=1.0)
 
 
+def _lightning_sum_wave(state, seat, rng=None):
+    # "Pulse" sum: each cell holds pressure until ≥60% MAX, then fires.
+    # Visual showpiece — territory should appear to pulse rather than
+    # continuously bleed pressure outward.
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum_wave",
+                                    wave_frac=0.6)
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -106,6 +114,7 @@ SOLVERS = {
     "lightning_flood": _lightning_flood,         # set all 6 outflows always
     "lightning_random": _lightning_random,       # random action baseline
     "lightning_chase": _lightning_chase,         # counter-attack on inbound threat
+    "lightning_sum_wave": _lightning_sum_wave,   # pulse: fires when strength ≥ 60% MAX
 }
 
 

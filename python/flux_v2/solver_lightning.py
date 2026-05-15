@@ -541,6 +541,76 @@ def _loop_actions(
     return actions
 
 
+def _sum_wave_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator],
+    gamma: float, weak_bonus: float, expand_bonus: float,
+    wave_frac: float,
+) -> np.ndarray:
+    """Sum-mode but each cell only fires when strength ≥ wave_frac * MAX.
+    Sub-threshold cells clear all outflows so they charge up before
+    discharging. Visual: territory pulses — pressure builds up, then
+    each cell snaps to its sum-mode action when full.
+    """
+    from .state import MAX_STRENGTH
+    N = state.N
+    owner = state.owner
+    nb = state.neighbors
+    outflow = state.outflow
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    is_mine = owner == seat
+    if not is_mine.any():
+        return actions
+
+    pot = compute_potential(state, seat, gamma=gamma, weak_bonus=weak_bonus,
+                            expand_bonus=expand_bonus, mode="sum")
+    thresh = wave_frac * MAX_STRENGTH
+
+    owned = np.where(is_mine)[0]
+    for c in owned:
+        c = int(c)
+        s_c = float(state.strength[c])
+        cur = outflow[c]
+        if s_c < thresh:
+            # Charging: clear any existing outflow so pressure accumulates.
+            stale = np.where(cur)[0]
+            if stale.size:
+                actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+            continue
+        # Above threshold: pick sum-mode action.
+        attack = np.zeros(K, dtype=np.bool_)
+        relay = np.zeros(K, dtype=np.bool_)
+        my_pot = pot[c]
+        best_friendly_pot = my_pot
+        best_friendly_slots: list[int] = []
+        for k in range(K):
+            d = int(nb[c, k])
+            if d < 0:
+                continue
+            od = int(owner[d])
+            if od == DEAD:
+                continue
+            if od != seat:
+                attack[k] = True
+                continue
+            pd = pot[d]
+            if pd > best_friendly_pot + 0.05:
+                best_friendly_pot = pd
+                best_friendly_slots = [k]
+            elif abs(pd - best_friendly_pot) <= 0.05 and pd > my_pot:
+                best_friendly_slots.append(k)
+        for k in best_friendly_slots:
+            relay[k] = True
+        desired = attack | relay
+        missing = np.where(desired & ~cur)[0]
+        if missing.size:
+            actions[c] = ACTION_SET_BASE + _pick(missing, rng)
+            continue
+        stale = np.where(cur & ~desired)[0]
+        if stale.size:
+            actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+    return actions
+
+
 def lightning_solver_actions(
     state: State,
     seat: int,
@@ -594,6 +664,12 @@ def lightning_solver_actions(
         return _random_actions(state, seat, rng)
     if mode == "chase":
         return _chase_actions(state, seat, rng)
+    if mode == "sum_wave":
+        return _sum_wave_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            wave_frac=mode_kwargs.pop("wave_frac", 0.6),
+        )
 
     N = state.N
     owner = state.owner
