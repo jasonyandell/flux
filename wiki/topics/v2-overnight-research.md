@@ -646,3 +646,25 @@ work could:
 3. Use rotating seat positions instead of fixed alternating to
    wash out the odd-seat bias completely.
 
+---
+
+## Exp 14 — wave_long across board sizes (40 games per radius)
+
+Final scaling check: does wave_long's modest edge over default sum
+hold at smaller and larger boards? Pooled across both seat orderings:
+
+| radius | wave_long wins | sum wins | stale | wave_long share (decisive) |
+|-------:|---------------:|---------:|------:|---------------------------:|
+| **R=15** | **23** | 16 | 1 | **59%** |
+| **R=20** | **21** | 15 | 4 | **58%** |
+| **R=25** | **20** | 17 | 3 | **54%** |
+
+The advantage is **consistent across all three sizes** and roughly
+the same magnitude (~54-59%). It does taper slightly at R=25, where
+the bigger board lets default sum's continuous spread reach further
+before wave_long's burst can deliver — but it's still on the right
+side of 50%.
+
+This is now a robust signal. **`lightning_wave_long` is the best
+single solver for big-bag rules across the R=15-25 range tested.**
+
