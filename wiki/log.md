@@ -6,6 +6,57 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-15 | workspace | wiki curation — entry-page rewrite + ranking reconciliation]
+
+**Touched pages:** [[entities/flux]] [[index]]
+[[decisions/webgpu-evolution]] [[topics/neuroevolution]]
+[[topics/v2-edge-voting-policy]] [[topics/v2-edge-loop-emergence]]
+[[questions/open]] [[log]]
+
+Driver: `entities/flux.md` was the route-map entry point per `index.md`
+but described only v1. With all the v2 work (PPO, edge-pressure, Lightning
+solver family, trainer-displayer at `/index-v2.html`, overnight research),
+new readers were being routed to a page that read as if v2 didn't exist.
+
+**Added:** none new.
+
+**Updated:**
+- [[entities/flux]] rewritten as a v1+v2 project overview. Top sections:
+  "What flux is now," "v2 frontier (read this)," "v1 surface (still
+  deployed, not the frontier)." Implementation map covers
+  `python/flux_v2/`, `src_v2/`, `python/scripts/`, and the v1 surface.
+- [[index]] route map regrouped: Topics split into Context / v2 reference
+  / v2 research (freshest first). Decisions split into v2 / cross-track /
+  v1 / earlier-experiments / retired. The stale `lightning_attn 12-12 tie
+  with sum` line is replaced by the matched-pair ranking. Index now points
+  v2-curious readers straight at
+  [[topics/v2-rules-one-pager|v2-rules-one-pager]] +
+  [[topics/v2-overnight-research|v2-overnight-research]].
+- [[decisions/webgpu-evolution]] status flipped to `superseded` with a
+  "Status (2026-05)" preamble. Still kept live as the parity reference and
+  the home of the deployed `evolved` seat.
+- [[topics/neuroevolution]] Tier 5 split: v1 MLX path marked saturated;
+  added Tier 6 (v2 PPO on persistent-edge sim) as the active training path
+  with backlinks to [[../decisions/ppo-gnn|ppo-gnn]],
+  [[../decisions/v2-edge-pressure-state]], and the overnight research.
+- [[topics/v2-edge-voting-policy]] status flipped to `proposed`. Page now
+  opens with what landed (`edge_features.py`, `edge_flow.py`, `--model
+  edge`) vs what hasn't (full per-edge logit policy beating `sum`).
+- [[topics/v2-edge-loop-emergence]] gained a "Note on rankings" preamble
+  flagging that its `sum > attn ≈ sum > max > loop > sum_pw` ranking is
+  superseded by overnight matched-pair results; the mechanism story is
+  still useful.
+- [[questions/open]] rewritten. v1-bootstrap-era questions moved to
+  "Closed / answered." New v2 questions: can a learned policy beat
+  `wave_long`, is `wave_long`'s gate doing anything beyond `sum_long`,
+  why does γ=0.94 help `sum` and hurt `max`, and is `regen-flow` better
+  for emergence than transfer-flow.
+
+**Retired:** none (`inbound-bonus`, `loop-bonus` already retired and now
+linked from the index under "Retired").
+
+**Questions opened:** all consolidated into [[questions/open]].
+
 ## [2026-05-14 | workspace | lightning_attn — 2-head attention solver with frontier-tilt mixing]
 
 **Touched pages:** [[topics/v2-edge-loop-emergence]] [[log]]

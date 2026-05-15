@@ -3,8 +3,20 @@ title: WebGPU Evolution
 kind: decision
 first_seen: workspace
 last_updated: workspace
-status: active
+status: superseded
 ---
+
+## Status (2026-05)
+
+Superseded as the active training path by Python + MLX neuroevolution (v1)
+and PPO (v2). The browser still ships the WebGPU runtime, kernels, and
+`evolved` seat, but champions now come from Python — the in-browser
+evolution loop is no longer where the work happens. Kept live because: it
+remains the parity reference for WGSL ≡ JS `step`, the trained `evolved`
+seat plays in the v1 spectator zoo, and the architectural notes below are
+still the cleanest explanation of how the WebGPU compute path was wired.
+See [[../topics/neuroevolution|neuroevolution]] for the Tier 5 MLX path
+that replaced this.
 
 ## Choice
 
