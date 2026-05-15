@@ -43,6 +43,9 @@ was tried, what happened, what I concluded, what came next.
 
 **Things to watch (replays in `public/v2/replays/`)**:
 
+- **R=25 ultimate 6-way zoo (the headline visual)**: `solver_v2_bfs+lightning+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave_20260515T065255.flxr` — 1951 cells, all six leading solvers, R=25
+- R=20 ultimate 6-way (wave wins 4/12): `solver_v2_bfs+lightning+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave_20260515T065252.flxr`
+- R=20 max_wave vs max (max_wave 8-2, dramatic gating effect): `solver_v2_lightning+lightning_max_wave_20260515T065322.flxr`
 - R=25 all-sum (fast gradient attack): `solver_v2_lightning_sum_20260515T061812.flxr`
 - R=25 6-way zoo (stalemate at 15000): `solver_v2_bfs+lightning+lightning_attn+lightning_loop+lightning_sum+lightning_vortex_20260515T061831.flxr`
 - R=20 all-wave (pulse pattern): `solver_v2_lightning_sum_wave_20260515T062825.flxr`
@@ -58,7 +61,8 @@ was tried, what happened, what I concluded, what came next.
 - `lightning_chase` (counter-attack)
 - `lightning_sum_long` (γ=0.94)
 - `lightning_sum_wide` (γ=0.94, expand=1.0)
-- `lightning_sum_wave` (sum + 60% MAX gate, "pulse mode")
+- `lightning_sum_wave` (sum + 60% MAX gate, "pulse mode" — modest winner)
+- `lightning_max_wave` (max + 60% MAX gate — *strong* winner: 8-2 vs max)
 - `lightning_attn_release` (attn with 0.7 LOOP gate — lost everything)
 - `lightning_attn_slam` (attn with 0.95 LOOP gate — also lost)
 
@@ -537,4 +541,58 @@ choice as a default but not a dominant strategy — the real lesson is
 that under big-bag rules at R=20 10% dead, **sum, bfs, max, and wave
 are all within ~10 percentage points of each other**. Algorithm
 choice matters less than positional luck.
+
+---
+
+## Exp 12 — Ultimate 6-way zoo + max_wave
+
+Final tournament across all six leading designs, plus a max_wave
+shakedown. R=20 10% dead, 12 games, 1 seat per solver:
+
+| solver               | wins |
+|----------------------|-----:|
+| **lightning_sum_wave** | **4** |
+| lightning_sum_long   | 3 |
+| lightning_sum        | 1 |
+| bfs                  | 1 |
+| lightning (max)      | 1 |
+| lightning_attn       | 0 |
+| (stalemates)         | 2 |
+
+**Wave consistently tops the chart.** sum_long (γ=0.94) is the next
+best — its modest +γ adjustment is real, and combined with wave-style
+gating, it would likely beat wave alone (untested). Attn is the
+weakest design under big-bag, confirmed across multiple tournaments.
+
+### max_wave vs max (10 games)
+
+A speculative test: does the wave gate help max-mode too?
+
+**max_wave 8, max 2.** 80% over 10 games (95% CI ≈ 49-94%). The
+gate is even more impactful on max-mode than on sum-mode — max
+fires only one outflow per cell, so without a gate, each cell's
+single discharge is constantly leaving the cell undercharged. The
+gate lets the cell pool pressure for a meaningful single shot. The
+"lightning bolt" gets bigger.
+
+Need more games to confirm the magnitude, but the direction is
+clear: **wave-gating is a general improvement, not specific to
+sum.** Future direction: try gating bfs-mode too.
+
+### Wave self-play (symmetry check)
+
+12 games all-wave at R=20: even seats 5, odd seats 5, 2 stalemates.
+The wave gate doesn't introduce a position bias of its own — the
+game's intrinsic seat-position asymmetry shows up but doesn't
+favor a particular direction with wave.
+
+Replays:
+- `solver_v2_bfs+lightning+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave_20260515T065252.flxr`
+  — R=20 ultimate 6-way (wave wins 4/12)
+- `solver_v2_bfs+lightning+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave_20260515T065255.flxr`
+  — R=25 ultimate 6-way (visual showpiece)
+- `solver_v2_lightning+lightning_max_wave_20260515T065322.flxr`
+  — max_wave vs max 3v3 (max_wave wins 8-2)
+- `solver_v2_lightning_sum_wave_20260515T065411.flxr`
+  — all-wave self-play (12 games, symmetric)
 
