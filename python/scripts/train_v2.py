@@ -38,6 +38,15 @@ MODEL_REGISTRY = {
     "gnn": GNNActorCritic,
     "attn": AttnActorCritic,
 }
+
+
+def _ckpt_label(path) -> str:
+    """Best-effort relative path for log messages — falls back to absolute
+    when the checkpoint lives outside the repo (e.g., a job temp dir)."""
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 from flux_v2.replay import (                                          # noqa: E402
     Frame,
     ReplayHeader,
@@ -1092,7 +1101,7 @@ def main() -> None:
     if not args.fresh:
         iteration_offset = load_checkpoint(model, args.checkpoint)
         if iteration_offset > 0:
-            print(f"resumed from {args.checkpoint.relative_to(REPO_ROOT)} at iter {iteration_offset}")
+            print(f"resumed from {_ckpt_label(args.checkpoint)} at iter {iteration_offset}")
     if iteration_offset == 0:
         print("starting from fresh policy")
 
@@ -1256,7 +1265,7 @@ def main() -> None:
     finally:
         write_executor.shutdown(wait=True)
         save_checkpoint(model, args.checkpoint, iteration)
-        print(f"checkpoint saved → {args.checkpoint.relative_to(REPO_ROOT)}")
+        print(f"checkpoint saved → {_ckpt_label(args.checkpoint)}")
         if wandb_run is not None:
             wandb_run.finish()
 
