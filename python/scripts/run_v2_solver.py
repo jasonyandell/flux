@@ -93,6 +93,15 @@ def _lightning_sum_long(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.94)
 
 
+def _lightning_live(state, seat, rng=None):
+    # One-pass live-field proxy. Designed for fluid rules (EDGE_ALPHA < 1.0)
+    # where edge_pressure is a time-integrated steady-state approximation.
+    # Skips the 32-iter Bellman solve in compute_potential — 5-10x faster
+    # per AI tick on R≥20. Multi-hop information comes from the
+    # already-propagated edge_pressure field instead.
+    return lightning_solver_actions(state, seat, rng=rng, mode="live", gamma=0.85)
+
+
 def _lightning_sum_wide(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum",
                                     gamma=0.94, expand_bonus=1.0)
@@ -156,6 +165,7 @@ SOLVERS = {
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
     "lightning_sum_long": _lightning_sum_long,   # exp5 winner: γ=0.92 sum
     "lightning_sum_wide": _lightning_sum_wide,   # γ=0.92 + expand_bonus=1.0
+    "lightning_live": _lightning_live,           # live-field proxy; for EDGE_ALPHA<1.0
     "lightning_loop": _lightning_loop,           # structural CCW 3-loop curl
     "lightning_attn": _lightning_attn,           # 2-head: attack + loop with frontier-tilt
     "lightning_attn_release": _lightning_attn_release,  # +build-release (frac=0.7)

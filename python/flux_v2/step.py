@@ -147,37 +147,43 @@ def tick(state: State, edge_alpha: float | None = None) -> State:
     not_dead = ~is_dead
 
     # ---- Gather pressure_in_friendly and pressure_in_enemy at each cell ----
-    pressure_in_friendly = np.zeros(N, dtype=np.float32)
-    pressure_in_enemy = np.zeros(N, dtype=np.float32)
+    # Vectorized over the K-loop: build (N, K) grids of pressure, neighbor
+    # owner, and friendly/enemy masks, then collapse along axis 1.
     enemy_pressure_by_player = np.zeros((N, max(s.num_players, 1)), dtype=np.float32)
 
-    # Regen contributes to friendly pressure only on owned cells.
+    pressure_in_friendly = np.zeros(N, dtype=np.float32)
     pressure_in_friendly[is_alive] = regen(strength[is_alive]).astype(np.float32)
 
-    # For each neighbor slot k of each cell c, look at edge_pressure[d, slot_d→c]
-    # where d = neighbors[c, k].  d → c slot is OPPOSITE_SLOT[k].
-    for k in range(K):
-        d_ids = nb[:, k]                                   # (N,)
-        valid = d_ids >= 0
-        opp = int(OPPOSITE_SLOT[k])
-        # Pressure flowing from d into c along slot opp.
-        # Only counts if d had outflow[d, opp] = True (otherwise edge_pressure[d, opp] is 0).
-        pressure = np.zeros(N, dtype=np.float32)
-        valid_d = d_ids[valid]
-        pressure[valid] = edge_pressure_prev[valid_d, opp]
-        # Partition by friendly vs enemy (relative to receiver c).
-        d_owner = np.full(N, NEUTRAL, dtype=np.int32)
-        d_owner[valid] = owner[valid_d]
-        is_friendly_d = valid & (d_owner == owner) & is_alive
-        is_enemy_d = valid & (d_owner != owner) & (d_owner >= 0) & not_dead
-        pressure_in_friendly += pressure * is_friendly_d.astype(np.float32)
-        pressure_in_enemy   += pressure * is_enemy_d.astype(np.float32)
-        # Attribute enemy pressure by the source player so we can resolve
-        # captures (which attacker takes the cell).
-        if is_enemy_d.any():
-            idxs = np.where(is_enemy_d)[0]
-            attackers = d_owner[idxs]
-            enemy_pressure_by_player[idxs, attackers] += pressure[idxs]
+    nb_safe = np.maximum(nb, 0)
+    nb_valid = nb >= 0
+    opp = OPPOSITE_SLOT                                       # (K,)
+    # Pressure flowing in: edge_pressure_prev[d, opp(k)] for d = nb[c, k].
+    pressure_grid = edge_pressure_prev[nb_safe, opp[None, :]] # (N, K)
+    pressure_grid = np.where(nb_valid, pressure_grid, 0.0)
+    # Neighbor owner per (c, k).
+    nb_owner = np.where(nb_valid, owner[nb_safe], NEUTRAL)    # (N, K)
+    is_friendly_d = nb_valid & (nb_owner == owner[:, None]) & is_alive[:, None]
+    is_enemy_d = (
+        nb_valid
+        & (nb_owner != owner[:, None])
+        & (nb_owner >= 0)
+        & not_dead[:, None]
+    )
+    pressure_in_friendly = pressure_in_friendly + (
+        pressure_grid * is_friendly_d.astype(np.float32)
+    ).sum(axis=1)
+    pressure_in_enemy = (
+        pressure_grid * is_enemy_d.astype(np.float32)
+    ).sum(axis=1)
+    # Attribute enemy pressure by the source player (for capture resolution).
+    if is_enemy_d.any():
+        c_idx, k_idx = np.where(is_enemy_d)
+        attackers = nb_owner[c_idx, k_idx]
+        np.add.at(
+            enemy_pressure_by_player,
+            (c_idx, attackers),
+            pressure_grid[c_idx, k_idx],
+        )
 
     # ---- Fill first ----
     headroom = np.maximum(MAX_STRENGTH - strength, 0.0)

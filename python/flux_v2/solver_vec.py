@@ -75,6 +75,104 @@ def _inbound_enemy_pressure(state: State, seat: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def compute_potential_live(
+    state: State,
+    seat: int,
+    gamma: float = 0.85,
+    weak_bonus: float = 1.0,
+    expand_bonus: float = 0.6,
+    defense_bonus: float = 0.0,
+    flow_weight: float = 1.0,
+    strength_weight: float = 0.5,
+) -> np.ndarray:
+    """Live-field potential proxy. Skips iterated value-iteration.
+
+    Returns (N,) float32. Four additive parts:
+
+      * intrinsic — same source field as `compute_potential` (high on
+        weak enemies / neutrals).
+      * one-hop neighbor average of intrinsic, discounted by `gamma`.
+        Gives frontline-adjacent friendlies some pull.
+      * strength_signal — friendly cells get `strength_weight * (1 -
+        strength/MAX_STRENGTH)`. Sets the *rear → front* gradient
+        from cell state alone, no iteration needed. Full backline
+        cells have low pot, drained frontline cells have high pot,
+        so relay always points toward where pressure is needed.
+      * flow_signal — normalized total of inbound + outbound
+        edge_pressure at each cell. Encodes "this cell is on an
+        active pressure pathway." Under fluid physics
+        (`EDGE_ALPHA < 1`) this field has been propagating for many
+        ticks, so it captures multi-hop information without iter.
+
+    Strategically useful only when edge_pressure carries time-
+    integrated signal (i.e., when `EDGE_ALPHA < 1`) and the
+    strength gradient bootstraps the relay direction. Under
+    snap-to-target rules the live field is just this-tick's spill
+    share and the strength gradient may be misaligned (full backline
+    cells under snap still need to relay forward even though they
+    have low pot here) — pick `sum` / `sum_long` for the original
+    rules.
+    """
+    N = state.N
+    owner = state.owner
+    strength = state.strength
+    nb_safe, nb_valid, _ = _neighbor_owner_grid(state)
+
+    is_enemy = (owner >= 0) & (owner != seat)
+    is_neutral = owner == NEUTRAL
+    is_mine = owner == seat
+    is_dead = owner == DEAD
+
+    intrinsic = np.zeros(N, dtype=np.float32)
+    if is_enemy.any():
+        intrinsic[is_enemy] = (
+            weak_bonus * (1.0 - strength[is_enemy] / MAX_STRENGTH)
+        ).clip(0.0, weak_bonus)
+    intrinsic[is_neutral] = expand_bonus
+    if defense_bonus > 0.0 and is_mine.any():
+        inbound = _inbound_enemy_pressure(state, seat)
+        threat = (inbound / MAX_EDGE).clip(0.0, 1.0)
+        intrinsic[is_mine] = defense_bonus * threat[is_mine]
+    intrinsic[is_dead] = 0.0
+
+    nbr_dead = (owner[nb_safe] == DEAD) & nb_valid
+    nbr_ok = nb_valid & ~nbr_dead
+    nbr_ok_f = nbr_ok.astype(np.float32)
+
+    # One-hop neighbor average of intrinsic.
+    deg_self = nbr_ok_f.sum(axis=1)
+    safe_deg = np.where(deg_self > 0, deg_self, 1.0)
+    one_hop = (intrinsic[nb_safe] * nbr_ok_f).sum(axis=1) / safe_deg
+
+    # Friendly strength gradient: empty cells > full cells. Pulls relay
+    # from rear to front without needing the pressure field to have
+    # propagated yet (bootstraps from game start).
+    strength_signal = np.where(
+        is_mine,
+        (1.0 - strength / MAX_STRENGTH).clip(0.0, 1.0),
+        0.0,
+    ).astype(np.float32)
+
+    # Flow signal from live edge_pressure: inbound + outbound, normalized.
+    ep = state.edge_pressure
+    opp = OPPOSITE_SLOT[None, :]
+    inbound_grid = ep[nb_safe, opp] * nbr_ok_f
+    inbound_total = inbound_grid.sum(axis=1)
+    outbound_total = (ep * nbr_ok_f).sum(axis=1)
+    norm = max(2.0 * K * MAX_EDGE, 1.0)
+    flow_signal = (inbound_total + outbound_total) / norm
+
+    pot = (
+        intrinsic
+        + gamma * one_hop
+        + strength_weight * strength_signal
+        + flow_weight * flow_signal
+    )
+    pot = pot.astype(np.float32)
+    pot[is_dead] = 0.0
+    return pot
+
+
 def compute_potential(
     state: State,
     seat: int,
@@ -644,6 +742,20 @@ def lightning_actions(
         pot = compute_potential(
             state, seat, gamma=gamma, weak_bonus=weak_bonus,
             expand_bonus=expand_bonus, defense_bonus=defense_bonus, mode=mode,
+        )
+        attack, relay = _gradient_relay_desired(state, seat, pot, fanout_eps)
+        return _actions_from_desired(is_mine, attack | relay, cur, rng)
+
+    if mode == "live":
+        # One-pass live-field proxy. Skips the 32-iter Bellman solve.
+        # Designed for fluid (EDGE_ALPHA < 1.0) rules where edge_pressure
+        # is time-integrated; the strength_signal term bootstraps the
+        # relay gradient at game start before pressure has propagated.
+        pot = compute_potential_live(
+            state, seat, gamma=gamma, weak_bonus=weak_bonus,
+            expand_bonus=expand_bonus, defense_bonus=defense_bonus,
+            flow_weight=mode_kwargs.pop("flow_weight", 1.0),
+            strength_weight=mode_kwargs.pop("strength_weight", 0.5),
         )
         attack, relay = _gradient_relay_desired(state, seat, pot, fanout_eps)
         return _actions_from_desired(is_mine, attack | relay, cur, rng)
