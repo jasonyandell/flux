@@ -338,3 +338,50 @@ Visual showcases written to `public/v2/replays/`:
 - `solver_v2_lightning_chase+lightning_flood+lightning_random+lightning_sum_20260515T061834.flxr`
   — chaos baselines vs sum at R=20, sum seat 3 wins at tick 2412.
 
+---
+
+## Exp 9 — 50-game definitive bfs vs sum at R=20
+
+Settle the question with a larger sample, both seat orderings:
+
+| matchup                          | A wins | B wins | stale | A share (95% CI) |
+|----------------------------------|-------:|-------:|------:|------------------|
+| bfs[A] vs sum[B] alt             | 18     | 27     | 5     | 36% ± 13pp |
+| sum[A] vs bfs[B] alt             | 25     | 23     | 2     | 50% ± 14pp |
+
+Pooled across 100 games (93 decisive): sum 50, bfs 43, stale 7 →
+sum 54% (95% CI 43–64%) of decisive games.
+
+**Finding**: bfs and sum are statistically indistinguishable at big-bag
+R=20 10% dead. Most of the apparent advantage in either direction
+across smaller experiments was sample variance.
+
+What this means for the wiki rankings on [[v2-edge-loop-emergence]]:
+"sum is the strongest solver under big-bag" is too strong a claim.
+The honest statement is "sum, bfs, and lightning (max) are roughly
+equivalent for 3v3 at R=20 10% dead under big-bag rules — much closer
+than the smaller initial samples suggested."
+
+There's also a hint that seat ordering (even vs odd) influences outcome
+more than algorithm choice at this sample. The board sampler places
+players in particular hex positions; some positions may be
+intrinsically advantaged. Future cleanups: rotate seat assignments
+across games to wash out the position effect.
+
+---
+
+## Exp 10 — `lightning_sum_wave` (pulse mode)
+
+Added a new solver: each owned cell clears outflows when strength is
+below `wave_frac · MAX_STRENGTH`, then snaps to sum-mode actions when
+it crosses the threshold. The visual: territory pulses outward in
+waves of pressure rather than continuously bleeding it.
+
+Default `wave_frac = 0.6` (fire at 60% MAX). Registered as
+`lightning_sum_wave`.
+
+The competitive value is open — wave is throttled output, so it
+likely loses to default sum's continuous discharge. The point is
+spectacle: pressure builds visibly before releasing. Showcase
+replays at R=20 and R=25 generating now.
+
