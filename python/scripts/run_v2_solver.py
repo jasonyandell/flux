@@ -15,8 +15,10 @@ opponent.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -377,6 +379,63 @@ def run_game(
     return state, frames, winner, dead
 
 
+def _game_worker(payload: dict) -> dict:
+    """Run one game in a worker process. Writes its own replay (if requested)
+    and returns lightweight metadata. Avoids pickling the frames list (often
+    100MB+ for long games) back to the parent."""
+    cfg = payload
+    rng = np.random.default_rng(cfg["seed"])
+    t0 = time.time()
+    state, frames, winner, dead = run_game(
+        cfg["radius"], cfg["num_players"], cfg["num_dead_cells"],
+        cfg["ai_period_ticks"], cfg["max_ticks"], rng,
+        cfg["seat_solvers"], cfg["record_stride"],
+        connect_mode=cfg["connect_mode"],
+    )
+    dt = time.time() - t0
+    cells = _cells_per_seat(state, cfg["num_players"])
+
+    replay_info = None
+    if cfg["write_replay"]:
+        DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = f"_g{cfg['game_idx']}" if cfg["total_games"] > 1 else ""
+        name = f"solver_v2_{cfg['tag']}_{cfg['stamp']}{suffix}.flxr"
+        path = DEFAULT_OUT_DIR / name
+        dead_list = [int(x) for x in dead] if dead is not None else []
+        metadata = {
+            "kind": "solver_v2",
+            "model": f"solver_{cfg['tag']}",
+            "ruleset": "v2-pressure",
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "dead_cells": dead_list,
+            "seats": cfg["seat_solvers"],
+            "iteration": 0,
+            "generation": cfg["game_idx"],
+        }
+        write_replay(
+            path, frames,
+            cfg["radius"], cfg["num_players"], state.N,
+            cfg["record_stride"], metadata,
+        )
+        replay_info = {
+            "file": path.name,
+            "saved_at": metadata["saved_at"],
+            "kind": "solver_v2", "model": metadata["model"],
+            "ruleset": "v2-pressure",
+            "seats": cfg["seat_solvers"],
+            "iteration": 0, "generation": cfg["game_idx"],
+            "radius": cfg["radius"], "num_players": cfg["num_players"],
+        }
+    return {
+        "game_idx": cfg["game_idx"],
+        "dt": dt,
+        "winner": winner,
+        "tick": int(state.tick),
+        "cells": cells.tolist(),
+        "replay_info": replay_info,
+    }
+
+
 def write_replay(
     path: Path,
     frames: list,
@@ -427,6 +486,10 @@ def main() -> None:
                     help="Path to a PPO checkpoint (.npz). Required if 'trained' appears in --seats.")
     ap.add_argument("--trained-model-kind", choices=("attn", "gnn"), default="attn",
                     help="Architecture of the trained checkpoint.")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="Number of worker processes for parallel games. "
+                         "Default: min(games, cpu_count). Set to 1 to force "
+                         "sequential. Ignored when 'trained' is in --seats.")
     args = ap.parse_args()
     if args.record_stride is None:
         args.record_stride = args.ai_period_ticks
@@ -447,42 +510,86 @@ def main() -> None:
     else:
         seat_solvers = ["bfs"] * args.num_players
 
-    rng = np.random.default_rng(args.seed)
     print(f"v2 solver play: radius={args.radius} P={args.num_players} "
           f"G={args.games} max_ticks={args.max_ticks} dead={args.num_dead_cells}")
     print(f"  seats: {seat_solvers}")
 
+    # Per-game seeds derived from the base seed so reruns are reproducible.
+    seed_seq = np.random.SeedSequence(args.seed)
+    game_seeds = [int(s.generate_state(1)[0]) for s in seed_seq.spawn(args.games)]
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    tag = "+".join(sorted(set(seat_solvers)))
+
+    payloads = [
+        {
+            "game_idx": g,
+            "seed": game_seeds[g],
+            "radius": args.radius,
+            "num_players": args.num_players,
+            "num_dead_cells": args.num_dead_cells,
+            "ai_period_ticks": args.ai_period_ticks,
+            "max_ticks": args.max_ticks,
+            "record_stride": args.record_stride,
+            "seat_solvers": seat_solvers,
+            "connect_mode": args.connect_mode,
+            "write_replay": bool(args.write_replay),
+            "total_games": args.games,
+            "tag": tag,
+            "stamp": stamp,
+        }
+        for g in range(args.games)
+    ]
+
+    # MLX-backed trained solvers don't survive process spawn (model lives in a
+    # closure with mx.array state) — fall back to sequential when needed.
+    has_trained = "trained" in seat_solvers
+    default_workers = min(args.games, os.cpu_count() or 1)
+    n_workers = args.workers if args.workers is not None else default_workers
+    if has_trained and n_workers > 1:
+        print(f"  (sequential: 'trained' solver does not parallelize)")
+        n_workers = 1
+    n_workers = max(1, min(n_workers, args.games))
+
     win_counts = np.zeros(args.num_players, dtype=np.int64)
     stalemates = 0
     durations: list[int] = []
+    replay_infos: list[dict] = []
+    wall0 = time.time()
 
-    saved_games: list[tuple[list, list, object]] = []  # (frames, dead, state)
-
-    for g in range(args.games):
-        t0 = time.time()
-        state, frames, winner, dead = run_game(
-            args.radius, args.num_players, args.num_dead_cells,
-            args.ai_period_ticks, args.max_ticks, rng,
-            seat_solvers, args.record_stride,
-            connect_mode=args.connect_mode,
-        )
-        dt = time.time() - t0
-        durations.append(state.tick)
-        cells = _cells_per_seat(state, args.num_players)
+    def _record(result: dict) -> None:
+        nonlocal stalemates
+        g = result["game_idx"]
+        durations.append(result["tick"])
+        cells = np.array(result["cells"], dtype=np.int64)
         dom = float(cells.max() / max(cells.sum(), 1))
+        winner = result["winner"]
         if winner < 0 or (cells > 0).sum() > 1:
             stalemates += 1
-            print(f"  game {g}: stalemate at tick {state.tick} "
-                  f"(dominance {dom:.2f}, alive {(cells > 0).sum()}, {dt:.1f}s)")
+            print(f"  game {g}: stalemate at tick {result['tick']} "
+                  f"(dominance {dom:.2f}, alive {(cells > 0).sum()}, {result['dt']:.1f}s)")
         else:
             win_counts[winner] += 1
-            print(f"  game {g}: seat {winner} wins at tick {state.tick} "
-                  f"(dominance {dom:.2f}, {dt:.1f}s)")
-        if args.write_replay:
-            saved_games.append((frames, dead, state))
+            print(f"  game {g}: seat {winner} wins at tick {result['tick']} "
+                  f"(dominance {dom:.2f}, {result['dt']:.1f}s)")
+        if result["replay_info"] is not None:
+            replay_infos.append(result["replay_info"])
+
+    if n_workers == 1:
+        for payload in payloads:
+            _record(_game_worker(payload))
+    else:
+        print(f"  workers: {n_workers} (parallel)")
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            futures = {ex.submit(_game_worker, p): p["game_idx"] for p in payloads}
+            for fut in as_completed(futures):
+                _record(fut.result())
+
+    wall = time.time() - wall0
 
     print()
-    print(f"  total: {args.games} games, mean ticks {np.mean(durations):.0f}")
+    print(f"  total: {args.games} games, mean ticks {np.mean(durations):.0f}, "
+          f"wall {wall:.1f}s")
     for p in range(args.num_players):
         print(f"    seat {p} ({seat_solvers[p]:>17s}): {int(win_counts[p])} wins")
     if stalemates:
@@ -497,40 +604,13 @@ def main() -> None:
             seats_count = seat_solvers.count(name)
             print(f"    {name:>17s} ({seats_count} seats): {w} wins")
 
-    if args.write_replay and saved_games:
-        DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        tag = "+".join(sorted(set(seat_solvers)))
-        for g, (frames_g, dead_g, state_g) in enumerate(saved_games):
-            suffix = f"_g{g}" if len(saved_games) > 1 else ""
-            name = f"solver_v2_{tag}_{stamp}{suffix}.flxr"
-            path = DEFAULT_OUT_DIR / name
-            dead_list = [int(x) for x in dead_g] if dead_g is not None else []
-            metadata = {
-                "kind": "solver_v2",
-                "model": f"solver_{tag}",
-                "ruleset": "v2-pressure",
-                "saved_at": datetime.now(timezone.utc).isoformat(),
-                "dead_cells": dead_list,
-                "seats": seat_solvers,
-                "iteration": 0,
-                "generation": g,
-            }
-            write_replay(
-                path, frames_g,
-                args.radius, args.num_players, state_g.N,
-                args.record_stride, metadata,
-            )
-            append_index(DEFAULT_OUT_DIR, {
-                "file": path.name,
-                "saved_at": metadata["saved_at"],
-                "kind": "solver_v2", "model": metadata["model"],
-                "ruleset": "v2-pressure",
-                "seats": seat_solvers,
-                "iteration": 0, "generation": g,
-                "radius": args.radius, "num_players": args.num_players,
-            })
-            print(f"  wrote replay: {path.relative_to(REPO_ROOT)}")
+    if replay_infos:
+        # Workers already wrote the .flxr files; append index entries in
+        # game-index order so the file ordering and index ordering match.
+        replay_infos.sort(key=lambda r: r.get("generation", 0))
+        for info in replay_infos:
+            append_index(DEFAULT_OUT_DIR, info)
+            print(f"  wrote replay: public/v2/replays/{info['file']}")
 
 
 if __name__ == "__main__":
