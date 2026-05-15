@@ -106,6 +106,17 @@ was tried, what happened, what I concluded, what came next.
     The "build-and-release" intuition was a red herring — what
     matters is the discount factor letting cells see further toward
     distant strategic targets.
+12. **Mechanism (the deepest finding): γ=0.94 helps SUM, HURTS MAX**
+    (exp 27). sum(γ=0.94) vs max(γ=0.94) won 16/16 board-coherent
+    decisions (p≈0.000015). max(γ=0.94) vs max(γ=0.85) lost 0/7
+    coherent — γ=0.94 actively hurts max. Reason: sum integrates
+    discounted enemy contributions, so longer reach adds richer
+    info; max picks ONE term, so longer reach just adds distracting
+    noise. **Aggregator semantics constrain which hyperparameter
+    regimes are useful.** This is the night's clearest mechanistic
+    explanation for why sum dominates max under big-bag rules — and
+    a transferable principle for future solver design (prefer
+    integrating aggregators when the goal is long-horizon planning).
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -122,7 +133,8 @@ was tried, what happened, what I concluded, what came next.
 
 **Things to watch (replays in `public/v2/replays/`)**:
 
-- **R=25 all-`lightning_wave_long` (the BEST solver, big-board pulse pattern)**: `solver_v2_lightning_wave_long_20260515T071432.flxr`
+- **R=25 all-`lightning_sum_long` (γ=0.94, the simplest winning recipe — exp 27 final)**: `solver_v2_lightning_sum_long_20260515T111538.flxr`
+- **R=25 all-`lightning_wave_long` (more visually striking — pulse effect on big board)**: `solver_v2_lightning_wave_long_20260515T071432.flxr`
 - **R=25 wave_long vs sum 3v3 (champion fight, wave_long wins seat 4 at tick 2395)**: `solver_v2_lightning_sum+lightning_wave_long_20260515T071546.flxr`
 - **R=20 final 6-way zoo (wave_long, sum_wave, sum_long, sum, bfs, attn)**: `solver_v2_bfs+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave+lightning_wave_long_20260515T071445.flxr`
 - R=25 ultimate 6-way zoo: `solver_v2_bfs+lightning+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave_20260515T065255.flxr` — 1951 cells, all six leading solvers, R=25
