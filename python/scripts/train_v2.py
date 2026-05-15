@@ -118,6 +118,13 @@ class PPOConfig:
     num_dead_cells: int = 40
     # Convenience.
     record_stride: int = 25          # game ticks between recorded frames
+    # Mixed-seat rollouts: opponent seats use a hand-written solver instead of
+    # the model. Their seats still contribute to the environment (rewards,
+    # captures, etc.) but their actions and gradient are masked out of the
+    # PPO loss, so the model trains against a stationary opponent rather
+    # than itself. Empty tuple = pure self-play.
+    opponent_seats: tuple[int, ...] = ()
+    opponent_solver_name: str = "lightning_sum"
 
 
 def _categorical_sample(logits: mx.array, rng_key: mx.array) -> tuple[mx.array, mx.array]:
@@ -282,7 +289,7 @@ def make_batched_initial_state(
     return (
         mx.array(owner), mx.array(strength), mx.array(outflow),
         mx.array(edge_pressure), mx.array(alive),
-        mx.array(neighbors_np), dead_lists,
+        mx.array(neighbors_np), dead_lists, base,
     )
 
 
@@ -299,7 +306,7 @@ def collect_rollout(
     for game 0 (the recorded game)."""
     P = config.num_players
 
-    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists = (
+    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists, base_for_rollout = (
         make_batched_initial_state(config, rng_np)
     )
     G = config.games_per_rollout
@@ -366,6 +373,29 @@ def collect_rollout(
             # Combine into a single per-cell action by selecting the action for
             # the cell's current owner. For unowned cells, action = NOOP.
             actions_np = np.array(actions, copy=False)
+
+            # Mixed-seat rollouts: override the opponent seats' actions with
+            # solver-chosen actions. The model still produced logits and
+            # log_probs for those seats; we'll mask them out of the PPO loss.
+            if config.opponent_seats:
+                from flux_v2.state import State as _PyState
+                solver_fn = PRETRAIN_SOLVERS[config.opponent_solver_name]
+                for opp_s in config.opponent_seats:
+                    for g in range(G):
+                        sg = _PyState(
+                            N=N, pos=base_for_rollout.pos,
+                            coord=base_for_rollout.coord,
+                            neighbors=neighbors_np_local,
+                            owner=owner_np[g].copy(),
+                            strength=strength_np[g].copy(),
+                            outflow=outflow_np[g].copy(),
+                            edge_pressure=edge_pressure_np[g].copy(),
+                            tick=t, num_players=P,
+                        )
+                        actions_np[g, opp_s] = solver_fn(sg, opp_s, rng=rng_np)
+                actions = mx.array(actions_np)
+                mx.eval(actions)
+
             owner_safe = np.maximum(owner_np, 0)
             seat_idx = owner_safe[..., None]                              # (G, N, 1)
             combined = np.take_along_axis(
@@ -607,6 +637,19 @@ def ppo_update(
 
     learn_mask = ~flat_dones
 
+    # Mixed-seat: model_seat_mask[s] = 1.0 if seat s is model-controlled, else 0.0.
+    # Used to mask the per-seat policy/value loss so opponent seats don't drive
+    # gradient (they took solver actions, not model actions).
+    if config.opponent_seats:
+        opp = set(int(s) for s in config.opponent_seats)
+        seat_mask_np = np.array(
+            [0.0 if s in opp else 1.0 for s in range(S)], dtype=np.float32,
+        )
+    else:
+        seat_mask_np = np.ones(S, dtype=np.float32)
+    seat_mask_mx = mx.array(seat_mask_np)
+    seat_mask_sum = float(seat_mask_np.sum())
+
     metrics: dict[str, float] = {
         "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0, "approx_kl": 0.0,
         "clip_fraction": 0.0, "ratio_mean": 0.0, "ratio_max": 0.0,
@@ -638,9 +681,14 @@ def ppo_update(
         ratio = mx.exp(new_lp - old_lp_mb)
         surr1 = ratio * adv_mb
         surr2 = mx.clip(ratio, 1 - clip_eps, 1 + clip_eps) * adv_mb
-        policy_loss = -mx.minimum(surr1, surr2).mean()
+        per_seat_pol = -mx.minimum(surr1, surr2)                        # (B, S)
+        # Mask out opponent seats from policy and value loss.
+        m = seat_mask_mx.reshape(1, S)
+        denom = mx.maximum(m.sum() * per_seat_pol.shape[0], 1.0)
+        policy_loss = (per_seat_pol * m).sum() / denom
 
-        value_loss = ((value - ret_mb) ** 2).mean()
+        per_seat_val = (value - ret_mb) ** 2                            # (B, S)
+        value_loss = (per_seat_val * m).sum() / denom
 
         probs = mx.softmax(logits, axis=-1)
         entropy_per_cell = -(probs * log_softmax).sum(axis=-1)
@@ -1044,7 +1092,7 @@ def collect_solver_pretrain_data(
     """
     from flux_v2.state import State as PyState
     P = config.num_players
-    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists = (
+    owner, strength, outflow, edge_pressure, alive, neighbors, dead_lists, _ = (
         make_batched_initial_state(config, rng_np)
     )
     G = config.games_per_rollout
@@ -1216,6 +1264,14 @@ def main() -> None:
     ap.add_argument("--pretrain-games", type=int, default=0,
                     help="Number of games_per_rollout for the warmstart data "
                          "collection pass. 0 = use --games-per-rollout.")
+    ap.add_argument("--opponent-seats", type=str, default="",
+                    help="Comma-separated seat IDs (e.g. '0,2,4') that act via "
+                         "a fixed solver instead of the model. The PPO loss "
+                         "masks these seats — model trains against a "
+                         "stationary opponent rather than itself.")
+    ap.add_argument("--opponent-solver", choices=tuple(PRETRAIN_SOLVERS),
+                    default="lightning_sum",
+                    help="Solver controlling the opponent seats.")
     args = ap.parse_args()
 
     if args.checkpoint is None:
@@ -1237,7 +1293,18 @@ def main() -> None:
         kill_pressure_coef=args.kill_pressure_coef,
         num_dead_cells=args.num_dead_cells,
         record_stride=args.record_stride,
+        opponent_seats=tuple(int(s) for s in args.opponent_seats.split(",") if s.strip()),
+        opponent_solver_name=args.opponent_solver,
     )
+    if config.opponent_seats:
+        if not set(config.opponent_seats).issubset(range(config.num_players)):
+            raise SystemExit(
+                f"--opponent-seats {config.opponent_seats} out of range for "
+                f"P={config.num_players}"
+            )
+        print(f"  mixed-seat: opponent seats {list(config.opponent_seats)} "
+              f"use {config.opponent_solver_name}; "
+              f"model trains on {config.num_players - len(config.opponent_seats)} seats")
 
     base = make_board(args.radius, args.num_players)
     N = base.N
