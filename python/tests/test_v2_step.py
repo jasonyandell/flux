@@ -17,7 +17,7 @@ from flux_v2 import (
     ACTION_CLEAR_BASE,
     ACTION_NOOP,
     ACTION_SET_BASE,
-    CAPTURE_STRENGTH,
+    REGEN_BASE_PER_TICK,
     DEAD,
     K,
     MAX_EDGE,
@@ -238,25 +238,24 @@ def test_loop_persists():
 
 
 def test_capture_strength():
-    """When an enemy captures a cell it starts at CAPTURE_STRENGTH=50."""
+    """Big-bag rule: captured cell keeps the surplus pressure that broke the
+    defender, i.e. (incoming_pressure - defender_strength - defender_regen)."""
     s = make_board(radius=3, num_players=2)
-    # Find player 0's seat. Force a neutral neighbor to be a low-strength
-    # enemy that has a pre-armed outflow with strong pressure pointing at it.
-    # Simpler: use two adjacent seats. Find seat0 and a neighbor; mark
-    # neighbor as player 1 with strength 1; arm seat0's outflow at it; pump
-    # edge_pressure from seat0 → neighbor by hand.
     seat0 = int(np.where(s.owner == 0)[0][0])
     k = 0
     while int(s.neighbors[seat0, k]) < 0:
         k += 1
     target = int(s.neighbors[seat0, k])
     s.owner[target] = 1
-    s.strength[target] = 1.0
+    target_strength = 1.0
+    s.strength[target] = target_strength
     s.outflow[seat0, k] = True
-    s.edge_pressure[seat0, k] = 80.0    # heavy enemy attack incoming
+    incoming = 80.0
+    s.edge_pressure[seat0, k] = incoming     # heavy enemy attack incoming
     s2 = tick(s)
     assert int(s2.owner[target]) == 0
-    assert abs(float(s2.strength[target]) - CAPTURE_STRENGTH) < 1e-3
+    expected_surplus = incoming - target_strength - REGEN_BASE_PER_TICK
+    assert abs(float(s2.strength[target]) - expected_surplus) < 1e-3
     # Capture clears the captured cell's outflows.
     assert not s2.outflow[target].any()
 
@@ -272,12 +271,16 @@ def test_neutral_capture():
         k += 1
     target = int(s.neighbors[seat0, k])
     assert int(s.owner[target]) == NEUTRAL
-    s.strength[target] = 1.0
+    target_strength = 1.0
+    s.strength[target] = target_strength
     s.outflow[seat0, k] = True
-    s.edge_pressure[seat0, k] = 80.0
+    incoming = 80.0
+    s.edge_pressure[seat0, k] = incoming
     s2 = tick(s)
     assert int(s2.owner[target]) == 0
-    assert abs(float(s2.strength[target]) - CAPTURE_STRENGTH) < 1e-3
+    # Neutrals don't regen, so surplus = pressure - defender_strength.
+    expected_surplus = incoming - target_strength
+    assert abs(float(s2.strength[target]) - expected_surplus) < 1e-3
 
 
 def test_dead_cells_block_flow():
@@ -474,6 +477,7 @@ def test_stale_target_stays_set():
     # seat0's outflow should still be set.
     assert s.outflow[seat0, k] == True
     # Run a tick with a pre-set edge_pressure → target takes damage.
-    s.edge_pressure[seat0, k] = 5.0
+    # Pressure must exceed regen (REGEN_BASE_PER_TICK) to produce net damage.
+    s.edge_pressure[seat0, k] = 2 * REGEN_BASE_PER_TICK + 5.0
     s_after = tick(s)
     assert s_after.strength[target] < 20.0

@@ -92,11 +92,11 @@ def test_edge_feature_shapes_and_one_hot_targets():
 def test_mine_edge_categories_and_continuous_channels():
     s, center, nbrs = _center_board()
     s.owner[center] = 0
-    s.strength[center] = 70.0
+    s.strength[center] = 0.7 * MAX_STRENGTH
 
     enemy, neutral, relay, sink, fill, dead = map(int, nbrs)
     s.owner[enemy] = 1
-    s.strength[enemy] = 40.0
+    s.strength[enemy] = 0.4 * MAX_STRENGTH
     s.owner[neutral] = NEUTRAL
     s.strength[neutral] = 15.0
     s.owner[relay] = 0

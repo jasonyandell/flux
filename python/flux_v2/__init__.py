@@ -3,6 +3,7 @@ from .state import (
     MAX_STRENGTH,
     MAX_EDGE,
     CAPTURE_STRENGTH,
+    REGEN_BASE_PER_TICK,
     NUM_ACTIONS,
     ACTION_SET_BASE,
     ACTION_CLEAR_BASE,
@@ -32,7 +33,7 @@ from .step import (
 __all__ = [
     "K", "MAX_STRENGTH", "MAX_EDGE", "CAPTURE_STRENGTH",
     "NUM_ACTIONS", "ACTION_SET_BASE", "ACTION_CLEAR_BASE", "ACTION_NOOP",
-    "NEUTRAL", "DEAD",
+    "NEUTRAL", "DEAD", "REGEN_BASE_PER_TICK",
     "HEX_DIRECTIONS", "OPPOSITE_SLOT", "TRANSIT_CREDIT_STRICT",
     "State", "copy_state", "regen",
     "axial_to_pixel", "hex_distance", "make_board", "random_seat_and_dead",
