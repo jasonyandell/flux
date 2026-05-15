@@ -41,6 +41,10 @@ was tried, what happened, what I concluded, what came next.
    (slot-equivariant pair heads, transit-credit shaping) work,
    but the structural prior (attack + loop heads) underperforms
    simpler aggregation under big-bag.
+7. **Synchronized board-wide pulse is fatal.** `lightning_pulse`
+   (whole board charges/fires in unison) loses 0-19 vs sum. In a
+   continuous-action game, the opponent doesn't pause when you do.
+   Per-cell gating (wave) works; global gating (pulse) doesn't.
 
 **Things to watch (replays in `public/v2/replays/`)**:
 
@@ -67,7 +71,8 @@ was tried, what happened, what I concluded, what came next.
 - `lightning_sum_wide` (γ=0.94, expand=1.0)
 - `lightning_sum_wave` (sum + 60% MAX gate, "pulse mode" — modest winner)
 - `lightning_max_wave` (max + 60% MAX gate — at 50 games, tied with max; exp 12 8-2 was variance)
-- **`lightning_wave_long`** (sum_wave + γ=0.94 long-field — **best at 100 games, 59% vs default wave**)
+- **`lightning_wave_long`** (sum_wave + γ=0.94 long-field — **best at 100 games, 59% vs default wave; consistent across R=15/20/25**)
+- `lightning_pulse` (globally-synchronized charge/fire — **catastrophic 0-19 vs sum**; lesson: never go offline against a continuous-fire opponent)
 - `lightning_attn_release` (attn with 0.7 LOOP gate — lost everything)
 - `lightning_attn_slam` (attn with 0.95 LOOP gate — also lost)
 
@@ -667,4 +672,50 @@ side of 50%.
 
 This is now a robust signal. **`lightning_wave_long` is the best
 single solver for big-bag rules across the R=15-25 range tested.**
+
+---
+
+## Exp 15 — `lightning_pulse` (negative result: synchronized charge is fatal)
+
+Added a structurally novel solver: `lightning_pulse`. Instead of
+gating per cell on strength (like wave), it reads `state.tick` and
+makes ALL owned cells charge for 100 ticks (clear outflows) and
+then fire sum-mode for 100 ticks (period=200, duty=0.5). Whole-board
+synchronized pulse.
+
+Results were catastrophic:
+
+| matchup                       | pulse wins | opp wins | stale |
+|-------------------------------|-----------:|---------:|------:|
+| pulse vs sum 3v3 (20 games)   | **0**      | 19       | 1     |
+| pulse vs wave_long 3v3 (20)   | **0**      | 20       | 0     |
+| 6-way zoo with pulse (1 game) | 0          | sum_wave 1 | — |
+
+**Pulse loses every single decisive game.** The lesson:
+
+Per-cell strength gating (wave) works because frontier cells stay
+firing while interior cells charge. Synchronized board-wide gating
+(pulse) loses because the opponent fires *continuously* and tears
+through your territory during your 100-tick dark phase. By the time
+pulse fires, sum has captured the cells that were going to fire.
+
+In a continuous-action game, **you can never "go offline" — the
+opponent doesn't.**
+
+A future variant could:
+- Try smaller duty cycles (e.g. only 20-tick dark phase).
+- Stagger phases by cell-row instead of synchronizing globally (so
+  half the board is always firing).
+- Sync charge with damage absorption (charge only when not under
+  attack — basically a higher-level wave).
+
+But the underlying lesson — wave > pulse — is solid.
+
+Replays (the visual is genuinely striking, even if the strategy
+loses):
+- `solver_v2_lightning_pulse_20260515T074602.flxr` — all-pulse R=20
+- `solver_v2_lightning_pulse_20260515T074608.flxr` — all-pulse R=25
+- `solver_v2_lightning_pulse+lightning_sum_20260515T074657.flxr` — pulse vs sum (pulse loses 0-19)
+- `solver_v2_lightning_pulse+lightning_wave_long_20260515T074741.flxr` — pulse vs wave_long (0-20)
+- `solver_v2_bfs+lightning_attn+lightning_pulse+lightning_sum+lightning_sum_wave+lightning_wave_long_20260515T074743.flxr` — final zoo with all 6 wave-family solvers
 
