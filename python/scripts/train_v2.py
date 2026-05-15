@@ -678,17 +678,24 @@ def ppo_update(
         ).squeeze(-1)
         new_lp = new_lp_per_cell.sum(axis=-1)
 
-        ratio = mx.exp(new_lp - old_lp_mb)
+        # Bound the exponent before exp() to prevent overflow when opp-seat
+        # log-probs drift wildly between iters (those entries are masked out
+        # but their gradients still need to be finite).
+        ratio = mx.exp(mx.clip(new_lp - old_lp_mb, -10.0, 10.0))
         surr1 = ratio * adv_mb
         surr2 = mx.clip(ratio, 1 - clip_eps, 1 + clip_eps) * adv_mb
         per_seat_pol = -mx.minimum(surr1, surr2)                        # (B, S)
-        # Mask out opponent seats from policy and value loss.
+        # Mask out opponent seats from policy and value loss. Normalize by
+        # the FULL (B*S) — matching the original .mean() magnitude — rather
+        # than the masked count, so the effective loss/gradient magnitude is
+        # the same as pure self-play and we don't blow up the policy update.
         m = seat_mask_mx.reshape(1, S)
-        denom = mx.maximum(m.sum() * per_seat_pol.shape[0], 1.0)
-        policy_loss = (per_seat_pol * m).sum() / denom
+        per_seat_pol_safe = mx.where(m > 0, per_seat_pol, mx.zeros_like(per_seat_pol))
+        policy_loss = per_seat_pol_safe.mean()
 
         per_seat_val = (value - ret_mb) ** 2                            # (B, S)
-        value_loss = (per_seat_val * m).sum() / denom
+        per_seat_val_safe = mx.where(m > 0, per_seat_val, mx.zeros_like(per_seat_val))
+        value_loss = per_seat_val_safe.mean()
 
         probs = mx.softmax(logits, axis=-1)
         entropy_per_cell = -(probs * log_softmax).sum(axis=-1)
