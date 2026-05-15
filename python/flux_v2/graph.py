@@ -154,6 +154,15 @@ def carve_seat_connectors(
         if is_dead[start] or comp[start] >= 0:
             continue
         comp[start] = next_comp
+        comp_repr.append(start)
+        size = 1
+        stack = [start]
+        while stack:
+            c = stack.pop()
+            for k in range(K_local):
+                d = int(neighbors[c, k])
+                if d >= 0 and not is_dead[d] and comp[d] < 0:
+                    comp[d] = next_comp
                     size += 1
                     stack.append(d)
         comp_size.append(size)
