@@ -1245,6 +1245,48 @@ rate increases.
 
 ---
 
+## Exp 27 — Does γ=0.94 generalize to max-mode? (NO — opposite effect)
+
+If γ=0.94 is the universal "longer field is better" mechanism, it
+should help all aggregators. Matched-pair test on max-mode:
+
+| matchup                    | board-coherent | result |
+|----------------------------|---:|--------|
+| max(γ=0.94) vs max(γ=0.85) | 7  | max(0.85) wins 7/0 (γ=0.94 LOSES) |
+| max(γ=0.94) vs sum(γ=0.94) | 16 | sum wins 16/0 (sum dominates by far) |
+
+**γ=0.94 actively hurts max-mode.** 0/7 wins for max(γ=0.94) means
+the longer field consistently makes max worse on board-coherent
+decisions. p ≈ 0.008.
+
+And the second matchup is the cleanest signal of the whole night:
+**sum(γ=0.94) wins 16/16 board-coherent decisions against
+max(γ=0.94)** — p ≈ 1/65536 ≈ 0.000015.
+
+**Why does γ=0.94 hurt max but help sum?**
+
+- Sum-mode aggregates discounted contributions from ALL enemies.
+  Higher γ adds richer information to the potential field.
+- Max-mode is dominated by the single strongest enemy term. Higher γ
+  doesn't add signal (only one term used) but DOES add distracting
+  noise from less-relevant distant enemies pretending to matter.
+
+**The aggregator type matters more than γ tuning.** sum's integration
+benefits from longer reach; max's selection doesn't, and arguably
+suffers from it.
+
+This is the cleanest mechanistic finding of the night. It explains
+WHY sum dominates max under big-bag rules: not because of aggregator
+differences in isolation, but because the field-discount-factor sweet
+spot lives in a regime that ONLY sum can exploit. Max is stuck at
+γ=0.85 (or lower) regardless.
+
+**Final final ranking (with γ tuning):**
+
+> **`lightning_sum(γ=0.94)`** ≈ **`lightning_wave_long`** > `lightning_sum(γ=0.85, default)` > `lightning_bfs` > `lightning(max, default γ=0.85)` >> `lightning(max, γ=0.94)` >> `lightning_attn` >> `lightning_pulse` ≈ `lightning_pulse_stagger`
+
+---
+
 ## Replays from exp 15 (pulse showcase, the visual is striking even though it loses)
 - `solver_v2_lightning_pulse_20260515T074602.flxr` — all-pulse R=20
 - `solver_v2_lightning_pulse_20260515T074608.flxr` — all-pulse R=25
