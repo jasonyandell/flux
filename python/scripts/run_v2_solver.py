@@ -519,7 +519,13 @@ def main() -> None:
     game_seeds = [int(s.generate_state(1)[0]) for s in seed_seq.spawn(args.games)]
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    tag = "+".join(sorted(set(seat_solvers)))
+    unique_solvers = sorted(set(seat_solvers))
+    joined_tag = "+".join(unique_solvers)
+    # macOS / HFS+ caps filenames at 255 bytes. With timestamp + suffix +
+    # extension the tag itself has ~200 bytes of headroom; bigger zoos blow
+    # past that. Fall back to a compact identifier when the join is too long.
+    # The full seat list is preserved in the replay metadata regardless.
+    tag = joined_tag if len(joined_tag) <= 120 else f"multi{len(unique_solvers)}"
 
     payloads = [
         {
