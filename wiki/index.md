@@ -21,6 +21,7 @@ Topics:
 - [[topics/showcase-demo|showcase-demo]] — `?demo=1` evolution-arc demo: five 5s scenes, canned champions in `public/champions/`, hot-area intro + "AI WARS" title card.
 - [[topics/v2-training-runs|v2-training-runs]] — record of v2 PPO training runs worth keeping. Cross-run lessons (iter cadence, EV timing, dead-cell connectivity) plus per-run config + observations. Current frontier: `v2-overnight` (40 dead cells, 9-channel pressure-aware policy, 2000-AI-tick games).
 - [[topics/v2-edge-loop-emergence|v2-edge-loop-emergence]] — four new lightning modes culminating in `lightning_attn`, a 2-head (ATTACK + LOOP) attention solver with per-cell frontier-distance mixing. Ranking: `sum` > `attn` ≈ `sum` > `max` > `loop` > `sum_pw`. Hand-designed attention pulls **12-12 tie with `sum`** on first attempt — the architectural shape works; next step is learned Q/K via PPO.
+- [[topics/v2-overnight-research|v2-overnight-research]] — autonomous overnight log (2026-05-15). Dead-density sweep, build-and-release variants, attn hyperparams, sum hyperparams, crazy variants tournament. Headline: under big-bag rules, sum dominates 3v3 at R=20 10%-dead; BFS dominates 1-seat-each. Most "wins" from hyperparameter tweaks were ≤8-game variance.
 
 Decisions:
 

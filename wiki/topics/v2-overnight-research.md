@@ -293,3 +293,48 @@ five matchup replays + replay for the bfs-dominated zoo:
 Next: launch the visual showcase at R=25 (the 6-way zoo will be
 beautiful at 1951 cells).
 
+---
+
+## Exp 8 — BFS vs sum across board sizes (10 games)
+
+Was the BFS dominance in exp 7's zoo a real effect or seed-noise?
+Ran 3v3 alternating bfs/sum at three sizes:
+
+| size           | format | bfs | sum | stale | share |
+|----------------|--------|----:|----:|------:|------:|
+| R=15  10% dead | 3v3    | 4 | 5 | 1 | 40% |
+| R=15  10% dead | (dup)  | 4 | 6 | 0 | 40% |
+| R=20  10% dead | 3v3    | 7 | 3 | 0 | 70% |
+| R=20  10% dead | (dup)  | 3 | 5 | 2 | 30% |
+| R=25  10% dead | 3v3    | 3 | 7 | 0 | 30% |
+| R=25  10% dead | (dup)  | 5 | 5 | 0 | 50% |
+
+(Script bug: "alt-1" config was identical to the 3v3 config — they're
+the same alternating seat layout, just different rng states.)
+
+**BFS share swings 30%→70% on the same R=20 config** with just 10
+games each. Mean across 60 games: 0.43. Indistinguishable from 50%
+at this sample size. **The "BFS dominates" finding from exp 7 is
+unreliable.**
+
+The honest answer to "is BFS better than sum": no significant
+difference with current samples. Need ≥30 games per cell to detect
+a sub-10-point shift.
+
+## Showcase replays (R=25, 1951 cells, 195 dead)
+
+Visual showcases written to `public/v2/replays/`:
+
+- `solver_v2_lightning_attn_20260515T061804.flxr` — all-attn,
+  seat 1 wins at tick 7600 (slow build, late breakthrough).
+- `solver_v2_lightning_loop_20260515T061808.flxr` — all-loop,
+  seat 5 wins at tick 3849 (curl patterns, no actual attack).
+- `solver_v2_lightning_sum_20260515T061812.flxr` — all-sum,
+  seat 3 wins at tick 2456 (fastest decisive — the gradient is
+  strong on the empty board).
+- `solver_v2_bfs+lightning+...+vortex_20260515T061831.flxr` —
+  6-way zoo (1 of each), stalemate at 15000 ticks. Two solvers
+  surviving in opposite corners.
+- `solver_v2_lightning_chase+lightning_flood+lightning_random+lightning_sum_20260515T061834.flxr`
+  — chaos baselines vs sum at R=20, sum seat 3 wins at tick 2412.
+
