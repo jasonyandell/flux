@@ -6,6 +6,22 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-14 | workspace | v2 displayer gets media-style transport controls]
+
+**Touched pages:** [[v2-trainer-displayer]] [[log]]
+
+The v2 trainer-displayer is a player, so it gets player UI. Added a
+bottom-fixed bar with prev / step-back / play-pause / step-forward / next
+buttons, a frame scrubber, frame counter, and a 0.25–4× speed cycle, plus
+keyboard bindings (Space toggles, ←/→ jog by frame, Shift+←/→ swap
+replay). Layered the transport API onto the existing cadence-estimating
+player rather than replacing it: scrubbing auto-pauses; auto-cycle to the
+next replay is gated on `!paused` so paused state survives the index
+poll; user-driven prev/next sets a `forceLoad` flag that bypasses the
+gate. New file `src_v2/render/playback.ts`. Speed cycle is a runtime
+multiplier on top of the configured `PLAYBACK_SPEED` (does not replace
+the auto-cadence logic).
+
 ## [2026-05-13 | workspace | v2-bigger-hidden64 run kicked off]
 
 **Touched pages:** [[v2-training-runs]] [[log]]

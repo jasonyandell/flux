@@ -9,6 +9,8 @@ export type PlaybackHandlers = {
   onTogglePlay(): void;
   onPrev(): void;
   onNext(): void;
+  onStepBack(): void;
+  onStepForward(): void;
   // fraction in [0,1]; called on each scrub event while user drags
   onSeek(fraction: number): void;
   // user picked a new speed from the cycle
@@ -63,8 +65,14 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
   const prev = makeButton('⏮', 'Previous replay (Shift+←)');
   prev.addEventListener('click', () => handlers.onPrev());
 
+  const stepBack = makeButton('⏪', 'Step back one frame (←)');
+  stepBack.addEventListener('click', () => handlers.onStepBack());
+
   const play = makeButton('▶', 'Play / Pause (Space)');
   play.addEventListener('click', () => handlers.onTogglePlay());
+
+  const stepFwd = makeButton('⏩', 'Step forward one frame (→)');
+  stepFwd.addEventListener('click', () => handlers.onStepForward());
 
   const next = makeButton('⏭', 'Next replay (Shift+→)');
   next.addEventListener('click', () => handlers.onNext());
@@ -106,7 +114,9 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
   });
 
   root.appendChild(prev);
+  root.appendChild(stepBack);
   root.appendChild(play);
+  root.appendChild(stepFwd);
   root.appendChild(next);
   root.appendChild(scrubber);
   root.appendChild(counter);
@@ -137,7 +147,7 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
     },
     setEnabled(enabled: boolean) {
       const o = enabled ? '' : '0.5';
-      [prev, play, next, speedBtn].forEach(b => { b.disabled = !enabled; });
+      [prev, stepBack, play, stepFwd, next, speedBtn].forEach(b => { b.disabled = !enabled; });
       scrubber.disabled = !enabled;
       if (o) root.style.filter = `opacity(${o})`;
       else root.style.filter = '';

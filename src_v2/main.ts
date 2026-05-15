@@ -36,10 +36,18 @@ const player = createPlayer({
 });
 player.start();
 
+function stepFrame(delta: number) {
+  // Stepping a single frame implies the user wants the new frame held still.
+  if (!player.isPaused()) player.setPaused(true);
+  player.stepFrames(delta);
+}
+
 const playbackBar = createPlaybackBar({
   onTogglePlay: () => player.togglePaused(),
   onPrev: () => player.prevReplay(),
   onNext: () => player.nextReplay(),
+  onStepBack: () => stepFrame(-1),
+  onStepForward: () => stepFrame(1),
   onSeek: (t) => {
     // Scrubbing implies user wants the frame frozen; pause if not already.
     if (!player.isPaused()) player.setPaused(true);
@@ -59,11 +67,11 @@ window.addEventListener('keydown', (e) => {
   } else if (e.key === 'ArrowLeft') {
     e.preventDefault();
     if (e.shiftKey) player.prevReplay();
-    else { if (!player.isPaused()) player.setPaused(true); player.stepFrames(-1); }
+    else stepFrame(-1);
   } else if (e.key === 'ArrowRight') {
     e.preventDefault();
     if (e.shiftKey) player.nextReplay();
-    else { if (!player.isPaused()) player.setPaused(true); player.stepFrames(1); }
+    else stepFrame(1);
   }
 });
 
