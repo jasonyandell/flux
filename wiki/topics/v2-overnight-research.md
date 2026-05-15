@@ -13,6 +13,41 @@ things, commit to wiki and git, keep trying. crazy things, sane
 things, whatever you think. autonomously research through the
 night." Constraint: no single run over 30 minutes wallclock.
 
+## Protocol for future overnight research (LEARNED THE HARD WAY)
+
+Exp 22 measured the noise floor: 6pp seat bias with identical solvers
+at R=20 10% dead. To detect a real algorithmic effect over this,
+experiments must do ONE OF:
+
+1. **Matched-pair design**: for each random board seed, run BOTH
+   `solver_A vs solver_B` and `solver_B vs solver_A` and compare
+   same-board outcomes. Differences within a pair eliminate seat
+   bias. (Exp 20 used this pooling — it's why we could see that
+   wave_long was within noise.)
+
+2. **Rotate seat positions**: instead of fixed alternating, randomly
+   permute which seats get solver_A vs solver_B each game. Across
+   many games the seat bias averages out.
+
+3. **Look for big effects (>>6pp)**: 50%/50% vs 47%/53% is
+   indistinguishable from baseline. 50%/50% vs 7%/93% (attn case)
+   is decisive. Don't trust 5-10pp gaps from any sample size — even
+   100 games can't reliably distinguish them from seat bias.
+
+4. **Run ≥100 games per cell, ideally ≥200**. Smaller samples are
+   useless. Multiple "wave_long wins 8/10 (80%)" or "13/20 (65%)"
+   results from tonight collapsed to 47-50% at 100+ games.
+
+Also:
+
+- **Don't trust the first matchup's number** — pool both seat
+  orderings before believing anything.
+- **A solver vs itself is the right baseline** — produces the noise
+  floor, including any sampler asymmetries.
+- **Stalemates matter** — 20%+ dead density at R=20 produces 70%
+  stalemate rate which kills any matchup. Stay at 5-15% dead for
+  decisive comparisons.
+
 This page is the running log. Each experiment gets a section: what
 was tried, what happened, what I concluded, what came next.
 
