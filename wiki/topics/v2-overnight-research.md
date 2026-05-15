@@ -73,6 +73,7 @@ was tried, what happened, what I concluded, what came next.
 - `lightning_max_wave` (max + 60% MAX gate — at 50 games, tied with max; exp 12 8-2 was variance)
 - **`lightning_wave_long`** (sum_wave + γ=0.94 long-field — **best at 100 games, 59% vs default wave; consistent across R=15/20/25**)
 - `lightning_pulse` (globally-synchronized charge/fire — **catastrophic 0-19 vs sum**; lesson: never go offline against a continuous-fire opponent)
+- `lightning_pulse_stagger` (even/odd cells out-of-phase — **even worse: 0-20 to plain pulse**; lesson: gating must respect field topology)
 - `lightning_attn_release` (attn with 0.7 LOOP gate — lost everything)
 - `lightning_attn_slam` (attn with 0.95 LOOP gate — also lost)
 
@@ -709,10 +710,59 @@ A future variant could:
 - Sync charge with damage absorption (charge only when not under
   attack — basically a higher-level wave).
 
-But the underlying lesson — wave > pulse — is solid.
+But the underlying lesson — wave > pulse — is solid. See exp 16
+where staggering was tested and turned out *worse*.
 
-Replays (the visual is genuinely striking, even if the strategy
-loses):
+---
+
+## Exp 16 — `lightning_pulse_stagger` (worse than plain pulse!)
+
+Tested whether the failure of pulse was about the global charge
+phase or about something more subtle by adding `lightning_pulse_stagger`:
+even-indexed owned cells fire when global_fire=True, odd-indexed
+cells fire when global_fire=False. Half the territory always firing.
+
+| matchup                          | stagger wins | opp wins | stale |
+|----------------------------------|-------------:|---------:|------:|
+| pulse_stagger vs sum (20 games)  | **0**        | 19       | 1     |
+| pulse_stagger vs **pulse** (20)  | **0**        | 20       | 0     |
+| pulse_stagger vs wave_long (20)  | **0**        | 18       | 2     |
+
+**pulse_stagger is the worst solver tested all night** — it loses
+0-20 to plain pulse itself.
+
+The diagnosis is illuminating. Pulse's failure was *not* primarily
+about the global offline period. The deeper issue is that when half
+your cells are clearing outflows, you're tearing apart the **relay
+chain** that carries pressure from interior to frontier. The fire-phase
+cells become isolated; they have only their own local strength to
+push outward.
+
+Plain pulse, in its fire phase, has every cell relaying together;
+the gradient flows from interior all the way to the front line.
+Staggered pulse breaks that chain mid-operation: cell A wants to
+relay to cell B, but B is in clear-outflows mode and rejects the
+inbound.
+
+So the order of effectiveness is:
+
+> wave (per-cell, locally coherent) > sum (always firing) > pulse
+> (sync, intact relay during fire) > pulse_stagger (broken relay)
+
+Wave wins because it preserves the relay chain by gating on strength
+(weak interior cells charge, strong frontier cells fire). Pulse_stagger
+breaks the relay chain by gating on cell-index, which has nothing to
+do with the relay topology.
+
+**Takeaway**: gating strategies must respect the field topology.
+Index-parity is not a topological signal.
+
+Replay: `solver_v2_lightning_pulse+lightning_pulse_stagger_20260515T084052.flxr`
+— plain pulse winning 20-0 against staggered version.
+
+---
+
+## Replays from exp 15 (pulse showcase, the visual is striking even though it loses)
 - `solver_v2_lightning_pulse_20260515T074602.flxr` — all-pulse R=20
 - `solver_v2_lightning_pulse_20260515T074608.flxr` — all-pulse R=25
 - `solver_v2_lightning_pulse+lightning_sum_20260515T074657.flxr` — pulse vs sum (pulse loses 0-19)
