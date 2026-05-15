@@ -385,3 +385,38 @@ likely loses to default sum's continuous discharge. The point is
 spectacle: pressure builds visibly before releasing. Showcase
 replays at R=20 and R=25 generating now.
 
+### Exp 10 results — wave is *strong*
+
+Wave didn't just look interesting, it won everything:
+
+| matchup                         | result |
+|---------------------------------|--------|
+| **wave vs sum 3v3 (10 games)**  | **wave 9, sum 1** |
+| wave vs zoo (1 of each, 1 game) | wave wins at tick 2377 |
+| all-wave R=20 (visual)          | seat 2 wins at tick 2271 |
+| all-wave R=25 (visual)          | seat 2 wins at tick 4211 |
+
+The 90% rate over 10 games (p ≈ 0.011 under H0=50%) suggests a real
+effect — the user's original "build-and-release backline" intuition
+was correct, applied to the right base. Sum's continuous discharge
+under-saturates its cells; throttling sum-mode firing to >60% MAX
+lets each cell deliver maximum strength on contact instead of dribbling
+pressure outward.
+
+This is the inverse of exp 3's finding for `attn_release` /
+`attn_slam` (build-release applied to attn lost 0/12 in zoo). Attn's
+discharge schedule was already efficient; adding a gate hurt. Sum's
+naive "always emit max outflows" wastes pressure; adding a gate
+helps.
+
+Running exp 11 with 50 games per matchup, both seat orderings, and a
+`wave_frac` sweep (0.3/0.45/0.6/0.75/0.9) to confirm the effect size
+and find the optimal threshold.
+
+Replays:
+- `solver_v2_lightning_sum+lightning_sum_wave_20260515T062838.flxr` — wave vs sum 3v3 (10 games)
+- `solver_v2_lightning_sum_wave_20260515T062825.flxr` — all-wave R=20
+- `solver_v2_lightning_sum_wave_20260515T062846.flxr` — all-wave R=25
+- `solver_v2_bfs+lightning+lightning_attn+lightning_loop+lightning_sum+lightning_sum_wave_20260515T062849.flxr`
+  — 6-way zoo, wave seat 0 wins at 2377
+
