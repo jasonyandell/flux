@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+from numba import njit
 
 from .state import (
     ACTION_CLEAR_BASE,
@@ -173,6 +174,136 @@ def compute_potential_live(
     return pot
 
 
+_OPPOSITE_SLOT_ARR_VEC = np.asarray(OPPOSITE_SLOT, dtype=np.int32)
+
+
+@njit(cache=True, fastmath=True)
+def _compute_potential_core(
+    owner: np.ndarray,
+    intrinsic: np.ndarray,
+    neighbors: np.ndarray,
+    edge_pressure: np.ndarray,
+    opposite_slot: np.ndarray,
+    gamma: float,
+    max_iter: int,
+    tol: float,
+    mode_id: int,
+    dead_id: int,
+) -> np.ndarray:
+    """JIT'd value iteration for compute_potential.
+
+    mode_id: 0=max, 1=sum, 2=sum_pw.
+    Returns (N,) float32 pot field. Same algorithm as the numpy version,
+    just per-cell explicit loops so Numba can vectorize/optimize.
+    """
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    pot = intrinsic.copy()
+    new_pot = np.empty_like(pot)
+
+    # Precompute per-cell degree (count of non-DEAD non-off-grid neighbors).
+    deg = np.zeros(N, dtype=np.int32)
+    for c in range(N):
+        n = 0
+        for k in range(K):
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            if owner[d] == dead_id:
+                continue
+            n += 1
+        deg[c] = n
+
+    for _ in range(max_iter):
+        max_diff = 0.0
+        if mode_id == 0:  # max
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                max_nbr = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    if pot[d] > max_nbr:
+                        max_nbr = pot[d]
+                v = intrinsic[c]
+                gm = gamma * max_nbr
+                if gm > v:
+                    v = gm
+                d_abs = v - pot[c]
+                if d_abs < 0.0:
+                    d_abs = -d_abs
+                if d_abs > max_diff:
+                    max_diff = d_abs
+                new_pot[c] = v
+        elif mode_id == 1:  # sum (uniform)
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                contrib = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    dd = deg[d]
+                    if dd == 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    contrib += pot[d] / dd
+                v = intrinsic[c] + gamma * contrib
+                d_abs = v - pot[c]
+                if d_abs < 0.0:
+                    d_abs = -d_abs
+                if d_abs > max_diff:
+                    max_diff = d_abs
+                new_pot[c] = v
+        else:  # 2: sum_pw (pressure-weighted)
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                contrib = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    # weight = ep[d, opp(k)] / sum_k' ep[d, k']  (or 1/deg(d) fallback)
+                    opp_k = opposite_slot[k]
+                    ep_dc = edge_pressure[d, opp_k]
+                    total = 0.0
+                    for kk in range(K):
+                        total += edge_pressure[d, kk]
+                    if total > 1e-9:
+                        w = ep_dc / total
+                    else:
+                        dd = deg[d]
+                        w = 1.0 / dd if dd > 0 else 0.0
+                    contrib += pot[d] * w
+                v = intrinsic[c] + gamma * contrib
+                d_abs = v - pot[c]
+                if d_abs < 0.0:
+                    d_abs = -d_abs
+                if d_abs > max_diff:
+                    max_diff = d_abs
+                new_pot[c] = v
+
+        # swap pot ↔ new_pot
+        tmp = pot
+        pot = new_pot
+        new_pot = tmp
+        if max_diff < tol:
+            break
+    return pot
+
+
 def compute_potential(
     state: State,
     seat: int,
@@ -192,7 +323,6 @@ def compute_potential(
     N = state.N
     owner = state.owner
     strength = state.strength
-    nb_safe, nb_valid, _ = _neighbor_owner_grid(state)
 
     is_enemy = (owner >= 0) & (owner != seat)
     is_neutral = owner == NEUTRAL
@@ -211,57 +341,75 @@ def compute_potential(
         intrinsic[is_mine] = defense_bonus * threat[is_mine]
     intrinsic[is_dead] = 0.0
 
-    pot = intrinsic.copy()
-    nbr_dead = (owner[nb_safe] == DEAD) & nb_valid
-    nbr_ok = nb_valid & ~nbr_dead
-    nbr_ok_f = nbr_ok.astype(np.float32)
-
-    if mode == "max":
-        for _ in range(max_iter):
-            nbr_pot = pot[nb_safe] * nbr_ok_f
-            max_nbr = nbr_pot.max(axis=1)
-            new_pot = np.maximum(intrinsic, gamma * max_nbr)
-            new_pot[is_dead] = 0.0
-            diff = np.abs(new_pot - pot).max()
-            pot = new_pot
-            if diff < tol:
-                break
-        return pot
-
-    if mode not in ("sum", "sum_pw"):
+    mode_id = {"max": 0, "sum": 1, "sum_pw": 2}.get(mode, -1)
+    if mode_id < 0:
         raise ValueError(f"unknown mode {mode!r}")
 
-    deg_self = nbr_ok_f.sum(axis=1)
-    safe_deg = np.where(deg_self > 0, deg_self, 1.0)
-    uniform_per_edge_d = np.where(deg_self > 0, 1.0 / safe_deg, 0.0)
-    uniform_w = uniform_per_edge_d[nb_safe] * nbr_ok_f
+    pot = _compute_potential_core(
+        np.ascontiguousarray(owner, dtype=np.int32),
+        np.ascontiguousarray(intrinsic, dtype=np.float32),
+        np.ascontiguousarray(state.neighbors, dtype=np.int32),
+        np.ascontiguousarray(state.edge_pressure, dtype=np.float32),
+        _OPPOSITE_SLOT_ARR_VEC,
+        float(gamma),
+        int(max_iter),
+        float(tol),
+        int(mode_id),
+        int(DEAD),
+    )
+    return pot.astype(np.float32, copy=False)
 
-    if mode == "sum":
-        weights = uniform_w
-    else:
-        ep = state.edge_pressure
-        opp = OPPOSITE_SLOT[None, :]
-        ep_dc = ep[nb_safe, opp]
-        out_total_d = ep.sum(axis=1)
-        denom_dc = np.maximum(out_total_d[nb_safe], 1e-9)
-        pw = ep_dc / denom_dc
-        has_flow = out_total_d[nb_safe] > 1e-9
-        weights = np.where(has_flow, pw, uniform_w) * nbr_ok_f
 
-    for _ in range(max_iter):
-        contrib = (pot[nb_safe] * weights).sum(axis=1)
-        new_pot = intrinsic + gamma * contrib
-        new_pot[is_dead] = 0.0
-        diff = np.abs(new_pot - pot).max()
-        pot = new_pot
-        if diff < tol:
-            break
-    return pot
 
 
 # ---------------------------------------------------------------------------
 # Action picker — the heart of the vectorization.
 # ---------------------------------------------------------------------------
+
+
+@njit(cache=True)
+def _picker_core(
+    is_mine: np.ndarray,
+    desired: np.ndarray,
+    cur: np.ndarray,
+    offsets: np.ndarray,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+) -> np.ndarray:
+    """Explicit-loop picker. For each owned cell c, walk slots starting at
+    `offsets[c]` (mod K) and emit the first SET-missing slot (preferred) or
+    CLEAR-stale slot (fallback). NOOP if neither exists.
+    """
+    N = is_mine.shape[0]
+    Kn = desired.shape[1]
+    actions = np.full(N, action_noop, dtype=np.int32)
+    for c in range(N):
+        if not is_mine[c]:
+            continue
+        offset = offsets[c]
+        # First pass: any SET-missing slot? Walk in rotated order.
+        chosen = -1
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if desired[c, k] and not cur[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_set_base + chosen
+            continue
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if cur[c, k] and not desired[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_clear_base + chosen
+    return actions
 
 
 def _actions_from_desired(
@@ -281,32 +429,19 @@ def _actions_from_desired(
     so we don't always pick the lowest slot index.
     """
     N = is_mine.shape[0]
-    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
-
-    needs_set = desired & ~cur
-    needs_clear = cur & ~desired
-    has_set = needs_set.any(axis=1)
-    has_clear = needs_clear.any(axis=1)
-
     if rng is not None:
         offsets = rng.integers(0, K, size=N).astype(np.int32)
     else:
         offsets = np.zeros(N, dtype=np.int32)
-
-    slot_idx = np.arange(K, dtype=np.int32)
-    rot_slots = (slot_idx[None, :] + offsets[:, None]) % K          # (N, K)
-    set_rot = np.take_along_axis(needs_set, rot_slots, axis=1)
-    clear_rot = np.take_along_axis(needs_clear, rot_slots, axis=1)
-    set_first = set_rot.argmax(axis=1)
-    clear_first = clear_rot.argmax(axis=1)
-    set_slot = (set_first + offsets) % K
-    clear_slot = (clear_first + offsets) % K
-
-    set_now = is_mine & has_set
-    clear_now = is_mine & ~has_set & has_clear
-
-    actions = np.where(set_now, ACTION_SET_BASE + set_slot.astype(np.int32), actions)
-    actions = np.where(clear_now, ACTION_CLEAR_BASE + clear_slot.astype(np.int32), actions)
+    actions = _picker_core(
+        np.ascontiguousarray(is_mine, dtype=np.bool_),
+        np.ascontiguousarray(desired, dtype=np.bool_),
+        np.ascontiguousarray(cur, dtype=np.bool_),
+        offsets,
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+    )
     return actions
 
 
@@ -459,30 +594,64 @@ def _picker_two_pass(
     rng: Optional[np.random.Generator],
 ) -> np.ndarray:
     """Same as _actions_from_desired but accepts the two phase masks
-    directly (caller has already imposed any priority ordering)."""
+    directly (caller has already imposed any priority ordering).
+    Delegates to the JIT'd _picker_core; set_mask and clear_mask are
+    the pre-computed desired-vs-cur masks."""
     N = is_mine.shape[0]
-    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
-    has_set = set_mask.any(axis=1)
-    has_clear = clear_mask.any(axis=1)
-
     if rng is not None:
         offsets = rng.integers(0, K, size=N).astype(np.int32)
     else:
         offsets = np.zeros(N, dtype=np.int32)
+    return _picker_core_split(
+        np.ascontiguousarray(is_mine, dtype=np.bool_),
+        np.ascontiguousarray(set_mask, dtype=np.bool_),
+        np.ascontiguousarray(clear_mask, dtype=np.bool_),
+        offsets,
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+    )
 
-    slot_idx = np.arange(K, dtype=np.int32)
-    rot_slots = (slot_idx[None, :] + offsets[:, None]) % K
-    set_rot = np.take_along_axis(set_mask, rot_slots, axis=1)
-    clear_rot = np.take_along_axis(clear_mask, rot_slots, axis=1)
-    set_first = set_rot.argmax(axis=1)
-    clear_first = clear_rot.argmax(axis=1)
-    set_slot = (set_first + offsets) % K
-    clear_slot = (clear_first + offsets) % K
 
-    set_now = is_mine & has_set
-    clear_now = is_mine & ~has_set & has_clear
-    actions = np.where(set_now, ACTION_SET_BASE + set_slot.astype(np.int32), actions)
-    actions = np.where(clear_now, ACTION_CLEAR_BASE + clear_slot.astype(np.int32), actions)
+@njit(cache=True)
+def _picker_core_split(
+    is_mine: np.ndarray,
+    set_mask: np.ndarray,
+    clear_mask: np.ndarray,
+    offsets: np.ndarray,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+) -> np.ndarray:
+    """Like _picker_core but takes the two phase masks directly (BFS
+    solver uses this because it has its own SET priority logic)."""
+    N = is_mine.shape[0]
+    Kn = set_mask.shape[1]
+    actions = np.full(N, action_noop, dtype=np.int32)
+    for c in range(N):
+        if not is_mine[c]:
+            continue
+        offset = offsets[c]
+        chosen = -1
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if set_mask[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_set_base + chosen
+            continue
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if clear_mask[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_clear_base + chosen
     return actions
 
 
