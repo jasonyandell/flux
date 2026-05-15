@@ -112,6 +112,14 @@ def _lightning_wave_long(state, seat, rng=None):
                                     wave_frac=0.6, gamma=0.94)
 
 
+def _lightning_pulse(state, seat, rng=None):
+    # Globally synchronized pulse: 200-tick cycle, 50% duty.
+    # All owned cells charge for 100 ticks, then fire sum-mode for 100 ticks.
+    # Visual: whole-board pulse in unison.
+    return lightning_solver_actions(state, seat, rng=rng, mode="pulse",
+                                    period=200, duty=0.5)
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -130,6 +138,7 @@ SOLVERS = {
     "lightning_sum_wave": _lightning_sum_wave,   # pulse: fires when strength ≥ 60% MAX
     "lightning_max_wave": _lightning_max_wave,   # max-mode + pulse gate
     "lightning_wave_long": _lightning_wave_long, # sum_wave + γ=0.94 (exp13 winner)
+    "lightning_pulse": _lightning_pulse,         # globally-synchronized pulse (whole board in unison)
 }
 
 

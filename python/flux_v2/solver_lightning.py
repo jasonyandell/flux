@@ -550,6 +550,80 @@ def _sum_wave_actions(
                           expand_bonus=expand_bonus, wave_frac=wave_frac, pot_mode="sum")
 
 
+def _pulse_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator],
+    gamma: float, weak_bonus: float, expand_bonus: float,
+    period: int, duty: float,
+) -> np.ndarray:
+    """Globally synchronized pulse: read state.tick, switch all owned cells
+    between CHARGE (clear outflows, accumulate strength) and FIRE (sum-mode)
+    phases together. Period=200 default, duty=0.5 means 100 ticks charge then
+    100 ticks fire. Visual: the whole board's territory pulses in unison.
+    """
+    N = state.N
+    owner = state.owner
+    nb = state.neighbors
+    outflow = state.outflow
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    is_mine = owner == seat
+    if not is_mine.any():
+        return actions
+
+    cycle_pos = int(state.tick) % period
+    is_fire_phase = cycle_pos >= int(period * (1.0 - duty))
+
+    if not is_fire_phase:
+        # Charge: clear any outflows on owned cells.
+        owned = np.where(is_mine)[0]
+        for c in owned:
+            c = int(c)
+            cur = outflow[c]
+            stale = np.where(cur)[0]
+            if stale.size:
+                actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+        return actions
+
+    # Fire phase: identical to sum-mode actions.
+    pot = compute_potential(state, seat, gamma=gamma, weak_bonus=weak_bonus,
+                            expand_bonus=expand_bonus, mode="sum")
+    owned = np.where(is_mine)[0]
+    for c in owned:
+        c = int(c)
+        attack = np.zeros(K, dtype=np.bool_)
+        relay = np.zeros(K, dtype=np.bool_)
+        my_pot = pot[c]
+        best_friendly_pot = my_pot
+        best_friendly_slots: list[int] = []
+        for k in range(K):
+            d = int(nb[c, k])
+            if d < 0:
+                continue
+            od = int(owner[d])
+            if od == DEAD:
+                continue
+            if od != seat:
+                attack[k] = True
+                continue
+            pd = pot[d]
+            if pd > best_friendly_pot + 0.05:
+                best_friendly_pot = pd
+                best_friendly_slots = [k]
+            elif abs(pd - best_friendly_pot) <= 0.05 and pd > my_pot:
+                best_friendly_slots.append(k)
+        for k in best_friendly_slots:
+            relay[k] = True
+        desired = attack | relay
+        cur = outflow[c]
+        missing = np.where(desired & ~cur)[0]
+        if missing.size:
+            actions[c] = ACTION_SET_BASE + _pick(missing, rng)
+            continue
+        stale = np.where(cur & ~desired)[0]
+        if stale.size:
+            actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+    return actions
+
+
 def _wave_actions(
     state: State, seat: int, rng: Optional[np.random.Generator],
     gamma: float, weak_bonus: float, expand_bonus: float,
@@ -684,6 +758,13 @@ def lightning_solver_actions(
             state, seat, rng,
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
             wave_frac=mode_kwargs.pop("wave_frac", 0.6), pot_mode="max",
+        )
+    if mode == "pulse":
+        return _pulse_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            period=mode_kwargs.pop("period", 200),
+            duty=mode_kwargs.pop("duty", 0.5),
         )
 
     N = state.N
