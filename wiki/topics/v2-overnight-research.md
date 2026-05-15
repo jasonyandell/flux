@@ -803,6 +803,35 @@ Replay: `solver_v2_lightning_wave_keep_attack_long+lightning_wave_long_20260515T
 
 ---
 
+## Exp 18 — wave_long across dead densities (R=20, 20 games each)
+
+How does wave_long's edge change with obstacle density?
+
+| dead % | wave_long wins | sum wins | stalemates | wave_long share (decisive) |
+|-------:|---------------:|---------:|-----------:|---------------------------:|
+| 5%     | 13             | 7        | 0          | **65%**                    |
+| 10%    | (from exp 14)  | -        | -          | ~58%                       |
+| 20%    | 2              | 4        | **14**     | 33% (tiny sample)          |
+
+**At 5% dead, wave_long's edge is biggest** (65% — tighter CI now,
+still significant). **At 20% dead, the board is too dense — most
+games stalemate**, and among the few decisive games, sum slightly
+edges out wave_long.
+
+This refines exp 1's "10% dead is the sweet spot" finding: it's
+also where wave_long has its cleanest measurable advantage. Below
+that (5%), wave_long still wins. Above that (20%+), the
+stalemate-dominated regime makes algorithm choice mostly irrelevant.
+
+Replays (visual showcase):
+- `solver_v2_lightning_wave_long_20260515T085136.flxr` — R=20, 5% dead all-wave_long
+- `solver_v2_lightning_wave_long_20260515T085145.flxr` — R=20, 20% dead all-wave_long
+- `solver_v2_lightning_sum+lightning_wave_long_20260515T085246.flxr` — 5% dead head-to-head
+- `solver_v2_lightning_sum+lightning_wave_long_20260515T085525.flxr` — 20% dead head-to-head
+- `solver_v2_lightning_sum+lightning_wave_long_20260515T085529.flxr` — R=25 sparse 3v3 (wave_long wins)
+
+---
+
 ## Replays from exp 15 (pulse showcase, the visual is striking even though it loses)
 - `solver_v2_lightning_pulse_20260515T074602.flxr` — all-pulse R=20
 - `solver_v2_lightning_pulse_20260515T074608.flxr` — all-pulse R=25
