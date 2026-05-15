@@ -223,7 +223,10 @@ def tick_batched(
     new_strength = mx.where(
         is_owned, new_strength_owned, mx.where(is_neutral, new_strength_neutral, strength)
     )
-    new_strength = mx.where(capture_mask, mx.array(CAPTURE_STRENGTH, dtype=mx.float32), new_strength)
+    # New big-bag-of-pressure rule: captured cell takes |pre_strength| as
+    # starting strength — the surplus pressure that broke the defender.
+    surplus = mx.minimum(mx.maximum(-pre_strength, 0.0), MAX_STRENGTH)
+    new_strength = mx.where(capture_mask, surplus, new_strength)
     new_strength = mx.where(is_dead, mx.array(0.0, dtype=mx.float32), new_strength)
 
     # --- Spill ---

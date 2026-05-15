@@ -37,7 +37,7 @@ from flux_v2 import (
 from flux_v2.replay import ReplayHeader, ReplayWriter, append_index, state_to_frame
 from flux_v2.solver import solver_actions
 from flux_v2.solver_lightning import lightning_solver_actions
-from flux_v2.state import copy_state
+from flux_v2.state import MAX_STRENGTH, copy_state
 
 
 def _lightning_sum(state, seat, rng=None):
@@ -65,6 +65,64 @@ SOLVERS = {
     "lightning_attn": _lightning_attn,           # 2-head: attack + loop with frontier-tilt
 }
 
+
+def _make_trained_solver(ckpt_path: str, model_kind: str = "attn"):
+    """Load a PPO checkpoint and wrap it as a solver(state, seat, rng) → (N,) action array."""
+    import mlx.core as mx
+    from flux_v2.ppo import AttnActorCritic, GNNActorCritic
+
+    cls = {"attn": AttnActorCritic, "gnn": GNNActorCritic}[model_kind]
+    model = cls()
+    # Walk the model's nested parameter tree and substitute weights from the
+    # checkpoint, skipping non-parameter entries like __generation__.
+    data = np.load(ckpt_path, allow_pickle=False)
+    params = model.parameters()
+    def walk(prefix: str, container):
+        if isinstance(container, dict):
+            for k, v in container.items():
+                key = f"{prefix}.{k}" if prefix else k
+                if isinstance(v, mx.array):
+                    if key in data.files:
+                        container[k] = mx.array(data[key])
+                elif isinstance(v, (dict, list)):
+                    walk(key, v)
+        elif isinstance(container, list):
+            for i, v in enumerate(container):
+                key = f"{prefix}.{i}"
+                if isinstance(v, mx.array):
+                    if key in data.files:
+                        container[i] = mx.array(data[key])
+                elif isinstance(v, (dict, list)):
+                    walk(key, v)
+    walk("", params)
+    model.update(params)
+    mx.eval(model.parameters())
+
+    # Track an RNG key across calls so categorical sampling has fresh entropy.
+    rng_key_state = [mx.random.key(0xCAFEBABE)]
+
+    def trained_solver(state, seat: int, rng=None):
+        N = state.N
+        owner_mx = mx.array(state.owner.reshape(1, N))
+        strength_mx = mx.array(state.strength.reshape(1, N))
+        outflow_mx = mx.array(state.outflow.reshape(1, N, K))
+        edge_pressure_mx = mx.array(state.edge_pressure.reshape(1, N, K))
+        neighbors_mx = mx.array(state.neighbors)
+        P = state.num_players
+        logits, _ = model(owner_mx, strength_mx, outflow_mx, edge_pressure_mx, neighbors_mx, P)
+        seat_logits = logits[0, seat]                          # (N, A)
+        # Categorical sample (matches training-time action selection) rather
+        # than argmax — the trained policy is intentionally stochastic.
+        rng_key, sub = mx.random.split(rng_key_state[0])
+        rng_key_state[0] = rng_key
+        gumbel = -mx.log(-mx.log(mx.random.uniform(shape=seat_logits.shape, key=sub) + 1e-9) + 1e-9)
+        actions_mx = (seat_logits + gumbel).argmax(axis=-1).astype(mx.int32)
+        actions = np.array(actions_mx, copy=False).astype(np.int32)
+        actions = np.where(state.owner == seat, actions, ACTION_NOOP)
+        return actions
+
+    return trained_solver
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT_DIR = REPO_ROOT / "public" / "v2" / "replays"
 
@@ -83,14 +141,17 @@ def _build_initial_state(
     )
     s = copy_state(base)
     s.owner = np.full(base.N, NEUTRAL, dtype=np.int32)
-    s.strength = np.full(base.N, 10.0, dtype=np.float32)
+    # Starting strengths scaled with MAX_STRENGTH (big-bag-of-pressure rules).
+    neutral_init = 0.1 * MAX_STRENGTH
+    seat_init = 0.3 * MAX_STRENGTH
+    s.strength = np.full(base.N, neutral_init, dtype=np.float32)
     if len(dead) > 0:
         s.owner[dead] = DEAD
         s.strength[dead] = 0.0
     for p, cell in enumerate(seats):
         c = int(cell)
         s.owner[c] = p
-        s.strength[c] = 30.0
+        s.strength[c] = seat_init
     return s, dead
 
 
@@ -188,7 +249,12 @@ def main() -> None:
                     help="write one .flxr to public/v2/replays/ for game 0")
     ap.add_argument("--seats", type=str, default=None,
                     help=f"comma-separated solver names per seat ({'/'.join(sorted(SOLVERS))}). "
-                         f"Default: all 'bfs'. Example: bfs,lightning,bfs,lightning,bfs,lightning")
+                         f"Use 'trained' for a PPO checkpoint specified via --trained-ckpt. "
+                         f"Default: all 'bfs'. Example: trained,lightning_sum,trained,lightning_sum,trained,lightning_sum")
+    ap.add_argument("--trained-ckpt", type=str, default=None,
+                    help="Path to a PPO checkpoint (.npz). Required if 'trained' appears in --seats.")
+    ap.add_argument("--trained-model-kind", choices=("attn", "gnn"), default="attn",
+                    help="Architecture of the trained checkpoint.")
     args = ap.parse_args()
 
     if args.seats:
@@ -198,8 +264,12 @@ def main() -> None:
                 f"--seats has {len(seat_solvers)} entries, expected {args.num_players}"
             )
         for s in seat_solvers:
-            if s not in SOLVERS:
-                raise SystemExit(f"unknown solver '{s}'. Choose from: {sorted(SOLVERS)}")
+            if s != "trained" and s not in SOLVERS:
+                raise SystemExit(f"unknown solver '{s}'. Choose from: {sorted(SOLVERS) + ['trained']}")
+        if "trained" in seat_solvers:
+            if not args.trained_ckpt:
+                raise SystemExit("--trained-ckpt is required when 'trained' appears in --seats")
+            SOLVERS["trained"] = _make_trained_solver(args.trained_ckpt, args.trained_model_kind)
     else:
         seat_solvers = ["bfs"] * args.num_players
 
