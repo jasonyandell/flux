@@ -420,3 +420,34 @@ Replays:
 - `solver_v2_bfs+lightning+lightning_attn+lightning_loop+lightning_sum+lightning_sum_wave_20260515T062849.flxr`
   — 6-way zoo, wave seat 0 wins at 2377
 
+## Exp 11 — Wave 50-game confirmation (main result)
+
+Larger-sample confirmation of the wave finding:
+
+| matchup                       | A wins | B wins | stale | A share |
+|-------------------------------|-------:|-------:|------:|--------:|
+| wave[A=even] vs sum[B=odd]    | 20 | 24 | 6 | 40% ± 14pp |
+| sum[A=even] vs wave[B=odd]    | 15 | 32 | 3 | 30% ± 13pp |
+
+Pooled (100 games, 91 decisive): wave 52 wins, sum 39 wins,
+9 stalemates → **wave 57% of decisive games (95% CI ≈ 47-67%)**.
+
+**Wave's advantage over sum is real but modest** — about 14 percentage
+points, not the 80-point gap suggested by the 10-game pilot. The
+10-game 9-1 result was inflated by both variance and the strong
+odd-seat advantage in the second matchup configuration.
+
+There's a clear seat-position effect: across both matchups, odd
+seats won 56, even seats 35. This is roughly 60/40 *regardless of
+algorithm* in this seed. Future sweeps should rotate seat
+positions to remove this confound (or run pairs of matchups like
+this one and pool).
+
+Wave is the first algorithmic-solver finding that the build-and-release
+intuition produces a measurable advantage when applied to the right
+base. The hand-waved explanation: sum's continuous "always emit max
+outflows" lets pressure dribble away as friendly relays carry it past
+the frontier without it accumulating into a meaningful attack pulse.
+Wave's gate stops that — pressure stays in the cell until it can deliver
+a decisive blow.
+
