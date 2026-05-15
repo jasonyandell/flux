@@ -546,10 +546,19 @@ def _sum_wave_actions(
     gamma: float, weak_bonus: float, expand_bonus: float,
     wave_frac: float,
 ) -> np.ndarray:
-    """Sum-mode but each cell only fires when strength ≥ wave_frac * MAX.
+    return _wave_actions(state, seat, rng, gamma=gamma, weak_bonus=weak_bonus,
+                          expand_bonus=expand_bonus, wave_frac=wave_frac, pot_mode="sum")
+
+
+def _wave_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator],
+    gamma: float, weak_bonus: float, expand_bonus: float,
+    wave_frac: float, pot_mode: str = "sum",
+) -> np.ndarray:
+    """`pot_mode`-mode but each cell only fires when strength ≥ wave_frac * MAX.
     Sub-threshold cells clear all outflows so they charge up before
     discharging. Visual: territory pulses — pressure builds up, then
-    each cell snaps to its sum-mode action when full.
+    each cell snaps to its `pot_mode`-mode action when full.
     """
     from .state import MAX_STRENGTH
     N = state.N
@@ -562,7 +571,7 @@ def _sum_wave_actions(
         return actions
 
     pot = compute_potential(state, seat, gamma=gamma, weak_bonus=weak_bonus,
-                            expand_bonus=expand_bonus, mode="sum")
+                            expand_bonus=expand_bonus, mode=pot_mode)
     thresh = wave_frac * MAX_STRENGTH
 
     owned = np.where(is_mine)[0]
@@ -669,6 +678,12 @@ def lightning_solver_actions(
             state, seat, rng,
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
             wave_frac=mode_kwargs.pop("wave_frac", 0.6),
+        )
+    if mode == "max_wave":
+        return _wave_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            wave_frac=mode_kwargs.pop("wave_frac", 0.6), pot_mode="max",
         )
 
     N = state.N

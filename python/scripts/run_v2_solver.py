@@ -99,6 +99,12 @@ def _lightning_sum_wave(state, seat, rng=None):
                                     wave_frac=0.6)
 
 
+def _lightning_max_wave(state, seat, rng=None):
+    # Max-mode + pulse gate. Single-target firing, throttled.
+    return lightning_solver_actions(state, seat, rng=rng, mode="max_wave",
+                                    wave_frac=0.6)
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -115,6 +121,7 @@ SOLVERS = {
     "lightning_random": _lightning_random,       # random action baseline
     "lightning_chase": _lightning_chase,         # counter-attack on inbound threat
     "lightning_sum_wave": _lightning_sum_wave,   # pulse: fires when strength ≥ 60% MAX
+    "lightning_max_wave": _lightning_max_wave,   # max-mode + pulse gate
 }
 
 
