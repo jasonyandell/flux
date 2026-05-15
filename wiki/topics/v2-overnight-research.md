@@ -74,6 +74,8 @@ was tried, what happened, what I concluded, what came next.
 - **`lightning_wave_long`** (sum_wave + γ=0.94 long-field — **best at 100 games, 59% vs default wave; consistent across R=15/20/25**)
 - `lightning_pulse` (globally-synchronized charge/fire — **catastrophic 0-19 vs sum**; lesson: never go offline against a continuous-fire opponent)
 - `lightning_pulse_stagger` (even/odd cells out-of-phase — **even worse: 0-20 to plain pulse**; lesson: gating must respect field topology)
+- `lightning_wave_keep_attack` (wave but frontier never throttles — only helps with long-field; alone it's worse than wave_long)
+- `lightning_wave_keep_attack_long` (topology-aware wave + γ=0.94 — marginal 53% vs wave_long, within noise)
 - `lightning_attn_release` (attn with 0.7 LOOP gate — lost everything)
 - `lightning_attn_slam` (attn with 0.95 LOOP gate — also lost)
 
@@ -759,6 +761,45 @@ Index-parity is not a topological signal.
 
 Replay: `solver_v2_lightning_pulse+lightning_pulse_stagger_20260515T084052.flxr`
 — plain pulse winning 20-0 against staggered version.
+
+---
+
+## Exp 17 — `lightning_wave_keep_attack` (topology-aware gate)
+
+Direct follow-up to exp 16: a gate that respects field topology. Even
+below 60% MAX, frontier (attack) outflows stay set. Only relays (LOOP)
+charge. Tested both with default γ=0.85 (`wave_keep_attack`) and with
+γ=0.94 (`wave_keep_attack_long`), vs `lightning_wave_long`.
+
+Pooled (40 games per cell, both seat orderings):
+
+| matchup                                 | A wins | B wins | stale | A share |
+|-----------------------------------------|-------:|-------:|------:|--------:|
+| wave_keep_attack vs wave_long           | 16     | **22** | 2     | 42%     |
+| **wave_keep_attack_long** vs wave_long  | **19** | 17     | 4     | **53%** |
+
+**The keep-attack feature only helps when combined with long-field**:
+
+- Default γ + keep_attack → 42% (worse than wave_long).
+- γ=0.94 + keep_attack → 53% (marginally better than wave_long).
+
+Both effects are within 95% CI (~16pp at 40 games), so neither is
+strongly significant. But the qualitative pattern is interesting:
+firing attack outflows early (before reaching 60% MAX) only pays off
+when the field is reaching further (γ=0.94), because then those
+weak early shots can still hit meaningful targets in the long-range
+gradient.
+
+Final ranking under big-bag R=20:
+
+> wave_long ≈ wave_keep_attack_long > sum ≈ wave_keep_attack ≈ sum_wave > max ≈ max_wave ≈ bfs > attn > pulse > pulse_stagger
+
+`lightning_wave_long` and `lightning_wave_keep_attack_long` are
+within statistical noise; either is a reasonable choice for the
+"best overnight solver" label. The simpler wave_long is preferred
+unless larger-sample testing shows a clearer separation.
+
+Replay: `solver_v2_lightning_wave_keep_attack_long+lightning_wave_long_20260515T084817.flxr`
 
 ---
 
