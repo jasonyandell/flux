@@ -636,11 +636,16 @@ def _wave_actions(
     state: State, seat: int, rng: Optional[np.random.Generator],
     gamma: float, weak_bonus: float, expand_bonus: float,
     wave_frac: float, pot_mode: str = "sum",
+    gate_attack: bool = True,
 ) -> np.ndarray:
     """`pot_mode`-mode but each cell only fires when strength ≥ wave_frac * MAX.
     Sub-threshold cells clear all outflows so they charge up before
     discharging. Visual: territory pulses — pressure builds up, then
     each cell snaps to its `pot_mode`-mode action when full.
+
+    If gate_attack=False, frontier (attack) outflows are kept even when
+    below threshold — only relays are gated. The frontier never goes
+    offline; only interior charging is throttled.
     """
     from .state import MAX_STRENGTH
     N = state.N
@@ -661,13 +666,7 @@ def _wave_actions(
         c = int(c)
         s_c = float(state.strength[c])
         cur = outflow[c]
-        if s_c < thresh:
-            # Charging: clear any existing outflow so pressure accumulates.
-            stale = np.where(cur)[0]
-            if stale.size:
-                actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
-            continue
-        # Above threshold: pick sum-mode action.
+        # Always compute attack/relay first so the gate logic can pick subsets.
         attack = np.zeros(K, dtype=np.bool_)
         relay = np.zeros(K, dtype=np.bool_)
         my_pot = pot[c]
@@ -691,7 +690,17 @@ def _wave_actions(
                 best_friendly_slots.append(k)
         for k in best_friendly_slots:
             relay[k] = True
-        desired = attack | relay
+
+        if s_c < thresh:
+            if gate_attack:
+                # Below threshold and gating everything: clear all outflows.
+                desired = np.zeros(K, dtype=np.bool_)
+            else:
+                # Below threshold but keep frontier (attack) outflows. Drop relays only.
+                desired = attack
+        else:
+            desired = attack | relay
+
         missing = np.where(desired & ~cur)[0]
         if missing.size:
             actions[c] = ACTION_SET_BASE + _pick(missing, rng)
@@ -766,6 +775,14 @@ def lightning_solver_actions(
             state, seat, rng,
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
             wave_frac=mode_kwargs.pop("wave_frac", 0.6), pot_mode="max",
+        )
+    if mode == "wave_keep_attack":
+        # Wave gate but frontier (attack) outflows are kept even when charging.
+        return _wave_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            wave_frac=mode_kwargs.pop("wave_frac", 0.6), pot_mode="sum",
+            gate_attack=False,
         )
     if mode == "pulse":
         return _pulse_actions(

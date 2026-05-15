@@ -127,6 +127,21 @@ def _lightning_pulse_stagger(state, seat, rng=None):
                                     period=200, duty=0.5)
 
 
+def _lightning_wave_keep_attack(state, seat, rng=None):
+    # Wave gate, but frontier (attack) outflows are NEVER throttled — even
+    # below 60% MAX, attack slots stay set. Only relays charge. The
+    # topology-respecting wave: never go offline at the frontier.
+    return lightning_solver_actions(state, seat, rng=rng, mode="wave_keep_attack",
+                                    wave_frac=0.6)
+
+
+def _lightning_wave_keep_attack_long(state, seat, rng=None):
+    # wave_keep_attack + γ=0.94 long-field. Logical combination of the
+    # overnight winners: long-field reach + topology-aware gating.
+    return lightning_solver_actions(state, seat, rng=rng, mode="wave_keep_attack",
+                                    wave_frac=0.6, gamma=0.94)
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -147,6 +162,8 @@ SOLVERS = {
     "lightning_wave_long": _lightning_wave_long, # sum_wave + γ=0.94 (exp13 winner)
     "lightning_pulse": _lightning_pulse,         # globally-synchronized pulse (whole board in unison)
     "lightning_pulse_stagger": _lightning_pulse_stagger,  # even/odd cells out of phase
+    "lightning_wave_keep_attack": _lightning_wave_keep_attack,  # wave but frontier never throttles
+    "lightning_wave_keep_attack_long": _lightning_wave_keep_attack_long,  # +γ=0.94
 }
 
 
