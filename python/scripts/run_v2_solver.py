@@ -56,6 +56,14 @@ def _lightning_attn(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="attn")
 
 
+def _lightning_attn_release(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="attn_release")
+
+
+def _lightning_attn_slam(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="attn_slam")
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -63,6 +71,8 @@ SOLVERS = {
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
     "lightning_loop": _lightning_loop,           # structural CCW 3-loop curl
     "lightning_attn": _lightning_attn,           # 2-head: attack + loop with frontier-tilt
+    "lightning_attn_release": _lightning_attn_release,  # +build-release (frac=0.7)
+    "lightning_attn_slam": _lightning_attn_slam,        # +build-release (frac=0.95, big shots)
 }
 
 

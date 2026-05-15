@@ -191,6 +191,7 @@ def _attn_actions(
     weak_bonus: float = 1.0,
     expand_bonus: float = 0.6,
     relay_thresh: float = 0.5,
+    build_release_frac: float = 0.0,
 ) -> np.ndarray:
     """Two-head attention solver. Each owned cell c blends two heads:
 
@@ -290,7 +291,17 @@ def _attn_actions(
         combined = (1.0 - a) * attack_score + a * loop_score
         desired = force_attack.copy()
         cmax = combined.max() if is_friendly_slot.any() else 0.0
-        if cmax > 0:
+        # Build-and-release gate: when the cell's strength is below
+        # `build_release_frac * MAX_STRENGTH`, suppress friendly relays so the
+        # cell can fill its reservoir. Attack slots (toward non-friendlies)
+        # always fire — frontier never stops shooting. Above the threshold,
+        # the cell behaves like full lightning_attn. Setting frac=0 disables
+        # the gate (standard attn behavior).
+        below_release = (
+            build_release_frac > 0.0
+            and float(state.strength[c]) < build_release_frac * MAX_STRENGTH
+        )
+        if cmax > 0 and not below_release:
             thresh = max(relay_thresh * cmax, 0.15)
             desired |= (combined >= thresh) & is_friendly_slot
         cur = outflow[c]
@@ -406,6 +417,18 @@ def lightning_solver_actions(
         return _attn_actions(
             state, seat, rng,
             gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+        )
+    if mode == "attn_release":
+        return _attn_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            build_release_frac=0.7,
+        )
+    if mode == "attn_slam":
+        return _attn_actions(
+            state, seat, rng,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            build_release_frac=0.95,
         )
 
     N = state.N
