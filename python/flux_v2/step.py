@@ -38,75 +38,77 @@ from .state import (
 # ---------------------------------------------------------------------------
 
 def apply_actions(state: State, actions: np.ndarray) -> State:
-    """Apply one action per cell (per the policy's output).
+    """Apply one action per cell. Fully vectorized over (N, K).
 
-    `actions` is (N,) int. Action 0..K-1 = set slot k; K..2K-1 = clear slot
-    k-K; 2K = no-op. Actions on cells the policy doesn't own are still
-    accepted at the reducer level — the trainer should only feed actions for
-    owned cells, but unowned cells are no-op'd here so the reducer stays
-    pure even if a stale action sneaks through.
+    Action 0..K-1 = set slot k; K..2K-1 = clear slot k-K; 2K = no-op.
+    Actions on unowned cells are masked out.
 
-    Mutation invariants resolved here:
-      1. No friendly bidirectional flow.
-      2. Higher cell-index wins simultaneous mutual mutation.
-      3. (Capture clears) — handled in `tick`, not here.
-      4. Stale targets stay on — handled implicitly: only actions on the
-         current owner's cells take effect.
+    Invariants:
+      1. No friendly bidirectional flow — for each freshly-set c→d with d
+         friendly, if the back-edge d→c is also set, the lower cell-index
+         side is cleared. Higher cell-index wins ties.
+      2. Capture-clears handled in `tick`, not here.
+      3. Stale targets stay on (only owned-cell actions apply).
     """
     s = copy_state(state)
     N = s.N
     owner = s.owner
     nb = s.neighbors
-
     if actions.shape != (N,):
         raise ValueError(f"actions shape mismatch: {actions.shape} vs ({N},)")
 
-    # First pass: per-cell, apply the mutation (no cross-cell coupling yet).
-    # We track which cells turned ON a slot toward a *friendly* neighbor; those
-    # need invariant resolution before commit.
+    is_owned = owner >= 0
+    nb_safe = np.maximum(nb, 0)
+    nb_valid = nb >= 0
+    nb_owner = np.where(nb_valid, owner[nb_safe], NEUTRAL)
+    nb_is_dead = nb_valid & (nb_owner == DEAD)
+
+    slot_idx = np.arange(K, dtype=np.int32)
+    set_mask_cell = (actions >= ACTION_SET_BASE) & (actions < ACTION_CLEAR_BASE)
+    clear_mask_cell = (actions >= ACTION_CLEAR_BASE) & (actions < ACTION_NOOP)
+    set_slot = np.where(set_mask_cell, actions, 0)
+    clear_slot = np.where(clear_mask_cell, actions - ACTION_CLEAR_BASE, 0)
+    set_per_slot = (
+        set_mask_cell[:, None]
+        & (set_slot[:, None] == slot_idx[None, :])
+        & is_owned[:, None]
+        & nb_valid
+        & ~nb_is_dead
+    )
+    clear_per_slot = (
+        clear_mask_cell[:, None]
+        & (clear_slot[:, None] == slot_idx[None, :])
+        & is_owned[:, None]
+        & nb_valid
+    )
+
     new_outflow = s.outflow.copy()
-    # (cell, slot) pairs that flipped on this tick targeting a friendly neighbor.
-    pending_on: list[tuple[int, int]] = []
+    fresh_set = set_per_slot & ~new_outflow          # only newly-on triggers invariant
+    new_outflow = new_outflow | fresh_set
+    new_outflow = new_outflow & ~clear_per_slot
 
-    for c in range(N):
-        a = int(actions[c])
-        if a == ACTION_NOOP:
-            continue
-        if owner[c] < 0:                # neutral or dead — can't act
-            continue
-        if ACTION_SET_BASE <= a < ACTION_CLEAR_BASE:
-            k = a - ACTION_SET_BASE
-            if nb[c, k] < 0:           # off-grid; no-op
-                continue
-            d = int(nb[c, k])
-            if owner[d] == DEAD:       # connections to dead cells are forbidden
-                continue
-            if new_outflow[c, k]:
-                continue               # idempotent
-            new_outflow[c, k] = True
-            if owner[d] == owner[c]:
-                pending_on.append((c, k))
-        elif ACTION_CLEAR_BASE <= a < ACTION_NOOP:
-            k = a - ACTION_CLEAR_BASE
-            if nb[c, k] < 0:
-                continue
-            new_outflow[c, k] = False
-
-    # Invariant resolution:
-    #  - For each freshly-set c→d with d friendly:
-    #     if d→c is set, clear the lower-cell-index side.
-    for (c, k) in pending_on:
-        d = int(nb[c, k])
-        if owner[d] != owner[c]:
-            continue                   # ownership might have changed (not really, but safe)
-        opp = int(OPPOSITE_SLOT[k])
-        if not new_outflow[d, opp]:
-            continue                   # no back-edge — fine
-        # Back-edge is set. Higher-cell-index wins; clear the loser.
-        if c > d:
-            new_outflow[d, opp] = False
-        else:
-            new_outflow[c, k] = False
+    # Bidirectional friendly: check back-edge on fresh friendly SETs.
+    fresh_friendly = fresh_set & (nb_owner == owner[:, None]) & is_owned[:, None]
+    if fresh_friendly.any():
+        opp = OPPOSITE_SLOT
+        slot_grid = np.broadcast_to(opp[None, :], (N, K))
+        back_set = new_outflow[nb_safe, slot_grid]    # outflow[d, opp(k)]
+        conflict = fresh_friendly & back_set
+        if conflict.any():
+            cell_idx_grid = np.broadcast_to(
+                np.arange(N, dtype=np.int32)[:, None], (N, K),
+            )
+            higher_wins_c = cell_idx_grid > nb_safe   # c > d → c wins (clear d)
+            clear_back = conflict & higher_wins_c
+            clear_self = conflict & ~higher_wins_c
+            if clear_back.any():
+                cs, ks = np.where(clear_back)
+                ds = nb_safe[cs, ks]
+                opps = opp[ks]
+                new_outflow[ds, opps] = False
+            if clear_self.any():
+                cs, ks = np.where(clear_self)
+                new_outflow[cs, ks] = False
 
     s.outflow = new_outflow
     return s

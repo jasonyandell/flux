@@ -7,7 +7,6 @@
  */
 import * as THREE from 'three';
 import type { Board } from '../board';
-import { MAX_STRENGTH } from '../replay/format';
 
 export const PLAYER_COLORS_HEX = [
   0x4a90e2, 0xe24a4a, 0x4ae28a, 0xe2c44a,
@@ -131,11 +130,12 @@ export type FrameRender = {
 };
 
 export function updateScene(s: Scene, board: Board, frame: FrameRender): void {
-  const strengthScale = MAX_STRENGTH / 255;
   for (let i = 0; i < board.N; i++) {
     const owner = frame.owners[i];
-    const strength = frame.strengths[i] * strengthScale;
-    const scale = 0.45 + (strength / MAX_STRENGTH) * 1.0;
+    // `strengths` is the writer's uint8 quantization of [0, max_strength];
+    // we only need the 0..1 ratio for sizing, so divide by 255 directly.
+    const ratio = frame.strengths[i] / 255;
+    const scale = 0.45 + ratio * 1.0;
     tmpPos.set(board.pos[i * 2], board.pos[i * 2 + 1], 0.1);
     tmpScale.setScalar(scale);
     tmpMatrix.compose(tmpPos, tmpQuat, tmpScale);

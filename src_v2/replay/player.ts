@@ -194,7 +194,7 @@ export function createPlayer(opts: Opts): Player {
       const res = await fetch(`${opts.replayBaseUrl}${file}?t=${Date.now()}`, { cache: 'no-cache' });
       if (!res.ok) { setStatus(`replay http ${res.status}`); loading = false; return; }
       const buf = await res.arrayBuffer();
-      const r = parseReplay(buf);
+      const r = await parseReplay(buf);
       if (r.frames.length < 2) {
         // No-frames stub (header-only file from a crashed/aborted writer).
         // Mark it skipped so future polls walk past it to the next candidate.
