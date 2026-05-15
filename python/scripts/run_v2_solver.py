@@ -49,6 +49,19 @@ def _lightning_sum(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum")
 
 
+def _lightning_sum_throttled(state, seat, rng=None):
+    # Throttle-1 variant: at most one outflow slot per cell. Tests whether
+    # bfs's structural advantage is "one parent per cell" (commitment by
+    # construction) on top of sum-mode's loop-aware potential field.
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", throttle=1)
+
+
+def _lightning_max_throttled(state, seat, rng=None):
+    # Same throttle-1 cap on the max-mode (tree) potential. Ablation: is the
+    # throttle gain dependent on sum's loop awareness or independent?
+    return lightning_solver_actions(state, seat, rng=rng, mode="max", throttle=1)
+
+
 def _lightning_sum_pw(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum_pw")
 
@@ -151,6 +164,8 @@ SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
     "lightning_sum": _lightning_sum,             # value-iteration sum
+    "lightning_sum_throttled": _lightning_sum_throttled,  # sum field, ≤1 outflow slot per cell
+    "lightning_max_throttled": _lightning_max_throttled,  # max field, ≤1 outflow slot per cell
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
     "lightning_sum_long": _lightning_sum_long,   # exp5 winner: γ=0.92 sum
     "lightning_sum_wide": _lightning_sum_wide,   # γ=0.92 + expand_bonus=1.0

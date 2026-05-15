@@ -731,6 +731,7 @@ def lightning_solver_actions(
     fanout_eps: float = 0.05,
     mode: str = "max",
     curl_dir: int = 1,
+    throttle: Optional[int] = None,
     **mode_kwargs,
 ) -> np.ndarray:
     """Return (N,) int32 actions for `seat`. Cells not owned by `seat` get NOOP.
@@ -859,6 +860,27 @@ def lightning_solver_actions(
         for k in best_friendly_slots:
             relay[k] = True
         desired = attack | relay
+
+        if throttle is not None and int(desired.sum()) > throttle:
+            # Cap desired to top-`throttle` slots. Attack slots get priority
+            # over relay (a frontier cell always fires before relaying);
+            # within each tier, rank by pot[d]. This implements the
+            # one-slot-per-cell structural throttle (cf. bfs) on top of
+            # sum-mode's loop-aware potential field.
+            ranked: list[tuple[int, int, float]] = []
+            for k in range(K):
+                if not desired[k]:
+                    continue
+                d = int(nb[c, k])
+                tier = 0 if attack[k] else 1
+                score = float(pot[d]) if d >= 0 else -np.inf
+                ranked.append((tier, k, score))
+            ranked.sort(key=lambda t: (t[0], -t[2]))
+            keep = {t[1] for t in ranked[:throttle]}
+            new_desired = np.zeros(K, dtype=np.bool_)
+            for k in keep:
+                new_desired[k] = True
+            desired = new_desired
 
         cur = outflow[c]
         missing = np.where(desired & ~cur)[0]

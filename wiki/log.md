@@ -2,9 +2,110 @@
 title: flux Wiki Log
 kind: log
 first_seen: bootstrap
-last_updated: workspace
+last_updated: 2026-05-15
 status: active
 ---
+
+## [2026-05-15 | workspace | throttle hypothesis validated — lightning_sum_throttled dominates both bfs and sum]
+
+**Touched pages:** [[topics/v2-temporal-strategy]] [[log]]
+
+Direct test of the throttle hypothesis from the morning synthesis.
+Built three pieces: `python/scripts/eval_solvers.py` (matched-pair
+tournament + Wilson CI + sign test), `python/scripts/switch_rate.py`
+(modal-target switch-rate diagnostic), and a `throttle` kwarg on
+`lightning_solver_actions` that caps desired outflow slots to top-N by
+`pot[d]` (attack tier > relay tier). New solvers wired in:
+`lightning_sum_throttled` and `lightning_max_throttled`
+(throttle=1 on sum and max potentials respectively).
+
+**Matched-pair results at R=25 P=12 dead=200 max_ticks=12000, 20 pairs each:**
+
+- `lightning_sum_throttled` vs `lightning_sum`: 9/9 coherent
+  pairs, p ≈ 0.0039, +100pp coherent advantage. Raw 29-11 (72.5%).
+- `lightning_sum_throttled` vs `bfs`: 7/7 coherent, p ≈ 0.0156,
+  +100pp. Raw 27-13 (67.5%).
+- `lightning_sum` vs `bfs`: 5/5 coherent, p ≈ 0.0625, +100pp
+  (borderline). Raw 25-15 (62.5%).
+
+**Headline:** throttled-sum dominates both alternatives. The
+"commitment by construction" prior from bfs *combined with*
+sum-mode's loop-aware potential is a real improvement over either
+component alone.
+
+**Caveat / inversions from prior memory:** at this config (40% dead,
+6-vs-6 head-to-head) lightning_sum beats bfs — the *opposite* of the
+multi-strategy FFA finding. So bfs's "only solver that converts" was
+a 21-strat-FFA property, not a head-to-head property; in 2-strategy
+6v6 splits each side has clear directional targets and lightning_sum's
+loop-friendly field wins. This narrows the regime where bfs is
+distinctively good (multi-target asymmetric cleanup) and broadens the
+regime where throttle adds value (apparently everywhere tested).
+
+**Updated:** [[topics/v2-temporal-strategy]] now has a "Validation
+experiments (2026-05-15)" section recording these results. Three
+follow-up directions flagged: multi-strategy FFA test (does throttle
+become the new big-zoo converter?), throttle sweep (1/2/3/6, sharp
+cliff or smooth gradient?), waste-attribution diagnostic (separate
+the throttle effect into its components).
+
+**Switch-rate diagnostic was null at self-play.** At R=20 P=8 and
+R=25 P=12, bfs and lightning_sum both show ~0.55-0.66
+switches/100t — no gap. Throttled is *higher* (0.88-0.93), not
+lower. Re-interpretation: the user-observed dithering plays out at
+500-1000-tick strategic timescale (kill, switch, regen, return), not
+AI-tick scale. The right diagnostic is "target-spell-completion
+ratio" not switch rate. Also, symmetric self-play cannot reproduce
+the asymmetric "one dominant seat vs many fragments" condition where
+the pathology was actually seen.
+
+**Revised recommendation:** BC target should be
+`lightning_sum_throttled`, not bfs. (Updated in
+[[topics/v2-temporal-strategy]].)
+
+## [2026-05-15 | workspace | ML-scientist synthesis — throttle + targeting + temporal as one options problem]
+
+**Touched pages:** [[topics/v2-temporal-strategy]] [[topics/v2-edge-voting-policy]] [[index]] [[log]]
+
+Discussion-driven synthesis. Three v2 pathologies — pressure/waste
+cliff (too little pressure stalls, too much wastes — bfs converts
+where lightning variants stall in multi-strategy FFAs), multi-target
+dithering observed
+live in an R=30 P=21 game (dominant orange seat cycling across 5+
+fragmented enemies and finishing none), and the user's strategic
+vocabulary (migrate / spread / flank / chase / corner) — are the same
+problem in three costumes: the policy reacts to instantaneous state
+when it should commit to a multi-tick plan.
+
+**Added:** [[topics/v2-temporal-strategy]] frames this as the options
+framework (Sutton-Precup 1999) / goal-conditioned RL (UVFA, HER) /
+FeUdal Networks shape that AlphaStar and OpenAI Five solved. Maps each
+strategic concept to a measurable graph quantity (centroid shift,
+edge-activation variance, attack-vector angle, pressure-on-enemy
+tracking, neutral-frontier perimeter delta) usable simultaneously as
+auxiliary task, intrinsic reward, and diagnostic. Names the
+multi-target failure as bandit-with-switching-costs (Banks-Sundaram)
+where the optimal policy is piecewise constant and greedy is provably
+suboptimal at K≥3. Architectural prescription: slow recurrent manager
+emits `(target, throttle, intent_vector)` with KL-regularized
+self-hysteresis; fast worker is goal-parameterized `lightning_sum` or
+a learned edge-voting head. Concrete first moves in cheapness order:
+log modal-target switch rate (zero-model diagnostic), hard-cap
+`lightning_sum` to one open slot per cell (tests whether bfs's edge
+is throttling not targeting), behavior-clone *bfs* (not
+`lightning_sum`) since bfs has commitment + throttle by construction,
+then KL-regularized PPO from that warm start.
+
+**Updated:** [[topics/v2-edge-voting-policy]] now scoped explicitly to
+the spatial layer with a pointer up to [[v2-temporal-strategy]] for
+the temporal layer they share. [[index]] adds the new topic.
+
+**Retired:** none.
+
+**Questions opened:** none new; the multi-enemy dithering pathology
+gets a named diagnosis (bandit-with-switching-costs) and an
+architectural answer (manager/worker with hysteresis), pending
+implementation.
 
 ## [2026-05-14 | workspace | lightning_attn — 2-head attention solver with frontier-tilt mixing]
 
