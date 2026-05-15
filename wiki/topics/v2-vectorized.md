@@ -189,6 +189,59 @@ Browser decode: `DecompressionStream('gzip')` is standard in modern
 browsers (Safari ≥ 16.4, all evergreen). No third-party gunzip
 needed. `parseReplay` is now `async`.
 
+## Fluid-mode pilot (EDGE_ALPHA, commit `b9b5b6b`)
+
+A separate one-line physics knob layered on top: edge pressure is no
+longer recomputed-from-scratch each tick, it relaxes toward its
+source-overflow target.
+
+```python
+edge_pressure_next = (1 - alpha) * edge_pressure + alpha * target
+```
+
+`EDGE_ALPHA=1.0` (default) is bit-exact original v2 — 141 tests pass
+unchanged. `EDGE_ALPHA<1` turns pressure into a state variable with
+momentum: ~1/alpha ticks to build up after a valve opens, same to
+bleed off. The "fluid" framing — pressure as a slow-moving inertial
+field rather than an instantaneous snapshot of the source's spill
+this tick. CLI: `--edge-alpha 0.05` on `run_v2_solver.py`. Replay
+metadata's `ruleset` becomes `"v2-fluid-0.05"` so future matched-pair
+runs can group by rules.
+
+Pilot smoke result, `lightning_sum_long` all seats, seed 42,
+parallel-4 / 2:
+
+| | alpha=1.0 (snap, original) | alpha=0.05 (fluid) |
+| --- | --- | --- |
+| R=20 6000-tick × 4 stalemates | 2/4 | 1/4 |
+| R=20 decisive-game length | 1916 – 3133 ticks | 3499 – 3754 ticks |
+| R=30 6000-tick × 2 stalemates | 2/2 | 1/2 (other at 0.98 dom) |
+| Per-tick compute cost | baseline | unchanged |
+
+The stalemate rate roughly halves on both board sizes; decisive
+games take longer but bunch up tighter in length. The intuition: at
+alpha=1.0 the policy can twitch a valve off to instantly cut
+incoming pressure, so a clever defender disrupts attackers without
+building any counter-flow. At alpha=0.05 pressure persists for ~20
+ticks regardless of valve state, so disrupting an attacker requires
+*sustained* counter-pressure, not a quick toggle. Flow becomes
+load-bearing infrastructure instead of an output-of-the-moment.
+
+**This is still a pilot** — no matched-pair tournament under fluid
+rules has been run. Two things to validate before promoting:
+
+1. **Do the wave/long modes still dominate?** `wave_long` and
+   `sum_long` were tuned for a world without momentum. Their
+   advantage might shrink if the physics already integrates time.
+   Could also widen if their long-field view aligns better with
+   true equilibrium pressure.
+2. **Does the bigger perf win materialize?** With pressure as a
+   meaningful inertial state, `compute_potential`'s 32-iter Bellman
+   solve has redundancy: the live `edge_pressure` field already
+   *is* a noisy estimate of the steady-state potential. Solvers
+   that read the live field directly should be 5-10× faster and
+   roughly as strategically informed. Untested.
+
 ## Related
 
 - [[v2-overnight-research|v2-overnight-research]] — the matched-pair
