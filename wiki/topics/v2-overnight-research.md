@@ -44,6 +44,7 @@ was tried, what happened, what I concluded, what came next.
 **Things to watch (replays in `public/v2/replays/`)**:
 
 - **R=25 all-`lightning_wave_long` (the BEST solver, big-board pulse pattern)**: `solver_v2_lightning_wave_long_20260515T071432.flxr`
+- **R=25 wave_long vs sum 3v3 (champion fight, wave_long wins seat 4 at tick 2395)**: `solver_v2_lightning_sum+lightning_wave_long_20260515T071546.flxr`
 - **R=20 final 6-way zoo (wave_long, sum_wave, sum_long, sum, bfs, attn)**: `solver_v2_bfs+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave+lightning_wave_long_20260515T071445.flxr`
 - R=25 ultimate 6-way zoo: `solver_v2_bfs+lightning+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave_20260515T065255.flxr` — 1951 cells, all six leading solvers, R=25
 - R=20 ultimate 6-way (wave wins 4/12): `solver_v2_bfs+lightning+lightning_attn+lightning_sum+lightning_sum_long+lightning_sum_wave_20260515T065252.flxr`
