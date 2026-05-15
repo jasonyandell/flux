@@ -20,6 +20,16 @@ Action priority per cell (one action per AI tick):
   2. SET a missing relay slot
   3. CLEAR a stale slot (currently on but not in ideal set)
   4. NOOP
+
+Board precondition (see `wiki/decisions/v2-board-connectivity.md`): every
+non-DEAD cell must be reachable from every other through non-DEAD neighbors,
+and every seat must be reachable from every other seat. The
+distance-to-frontier BFS only traverses owned cells, but the algorithm
+implicitly assumes the live subgraph is one connected component — an
+isolated live pocket sits at the `BIG` sentinel distance forever and only
+emits attack actions on its own boundary, never relays. The solver runner
+enforces this via `seats_mutually_reachable` + max-pair-distance retry, or
+the `carve` mode that revives dead cells along bridges.
 """
 from __future__ import annotations
 

@@ -47,6 +47,7 @@ Decisions:
 - [[decisions/v2-set-clear-actions|v2-set-clear-actions]] — v2's 13-action space: Set k=0..5, Clear k=0..5, No-op. Idempotent, state-independent — the network doesn't need to invert "what does toggle do here?"
 - [[decisions/v2-three-term-reward|v2-three-term-reward]] — action-conditioned v2 reward stack: power/damage/capture, attributed waste, optional strict transit credit, kill pressure, time, and terminal bonus. Engagement / output-boost coefs from v1 are gone — persistence makes activity measures meaningless.
 - [[decisions/v2-trainer-displayer|v2-trainer-displayer]] — v2 web UI is a stripped trainer-displayer at `/index-v2.html` (Vite). Plays back `.flxr` v2 replays from `/v2/replays/`. No in-browser game logic; v1 page unchanged.
+- [[decisions/v2-board-connectivity|v2-board-connectivity]] — every non-DEAD cell must reach every other non-DEAD cell; every seat must reach every other seat; max seat-pair distance ≤ 4·R. Lots of dead is fine; isolated live pockets are not. Enforced via `random_seat_and_dead` (sampler), `seats_mutually_reachable` retry, and `carve_seat_connectors` bridge mode.
 
 Questions:
 

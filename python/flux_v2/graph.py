@@ -117,19 +117,26 @@ def make_board(
 def carve_seat_connectors(
     seats: np.ndarray, dead: np.ndarray, neighbors: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Connect all seats by reviving dead cells along shortest-cost paths.
+    """Bridge every live component into one connected live subgraph by
+    reviving dead cells along shortest-cost paths.
 
-    Approach: identify the live-subgraph components, find the one containing
-    the most seats (the "main island"), and for every other component with
-    seats, find a path to the main island that crosses the minimum number of
-    dead cells (0-1 BFS: cost 0 through live cells, cost 1 through dead).
-    Revive (un-dead) the dead cells along that path.
+    Approach: label all live-cell components, pick the component containing
+    the most seats as the "main island" (tie-broken to the largest component
+    if no seat sits in any component), and for every other live component
+    revive the dead cells along a min-cost path back to the main island
+    (0-1 BFS: cost 0 through live cells, cost 1 through dead).
 
-    Returns (new_dead_array, carved_cells). The carved cells are the ones
-    revived to bridge components. Useful when you want the spatial character
-    of a uniform-random dead-cell sample but a guaranteed connected board —
-    typically only a handful of cells get carved, much less perturbation
-    than rejecting the entire board and retrying.
+    The function bridges *every* live component, not just seat-bearing ones,
+    so the result satisfies the v2 board invariant: all non-dead cells are
+    reachable from every other non-dead cell. Isolated live pockets — even
+    those containing no seats — would otherwise sit dormant, immune to
+    capture and useless to the solvers.
+
+    Returns (new_dead_array, carved_cells). The carved cells are the
+    previously-dead cells revived to bridge components. Useful when you want
+    the spatial character of a uniform-random dead-cell sample but a
+    guaranteed connected board — typically only a handful of cells get
+    carved, much less perturbation than rejecting the entire board.
     """
     from collections import deque
     N = neighbors.shape[0]
@@ -138,45 +145,50 @@ def carve_seat_connectors(
     if len(dead) > 0:
         is_dead[dead] = True
 
-    # Label live-cell components.
+    # Label live-cell components and remember a representative cell per comp.
     comp = np.full(N, -1, dtype=np.int32)
+    comp_repr: list[int] = []
+    comp_size: list[int] = []
     next_comp = 0
     for start in range(N):
         if is_dead[start] or comp[start] >= 0:
             continue
         comp[start] = next_comp
-        stack = [start]
-        while stack:
-            c = stack.pop()
-            for k in range(K_local):
-                d = int(neighbors[c, k])
-                if d >= 0 and not is_dead[d] and comp[d] < 0:
-                    comp[d] = next_comp
+                    size += 1
                     stack.append(d)
+        comp_size.append(size)
         next_comp += 1
 
-    # Group seats by component.
+    if next_comp <= 1:
+        return dead, np.array([], dtype=np.int32)
+
+    # Seats per component (for tie-breaking which component is the main island).
     seats_in_comp: dict[int, list[int]] = {}
     for s in seats:
         s = int(s)
         if is_dead[s]:
-            # Seat sitting on a dead cell — shouldn't happen but defensive.
             continue
         seats_in_comp.setdefault(int(comp[s]), []).append(s)
 
-    if len(seats_in_comp) <= 1:
-        return dead, np.array([], dtype=np.int32)
+    # Main island: most seats, then largest component as the tiebreaker so a
+    # seat-free uniform-random board still picks the biggest blob.
+    def _rank(cid: int) -> tuple[int, int]:
+        return (len(seats_in_comp.get(cid, [])), comp_size[cid])
 
-    # Main island = component with the most seats. Connect every other
-    # seat-bearing component to it via the cheapest path.
-    main_comp_id = max(seats_in_comp.keys(), key=lambda c: len(seats_in_comp[c]))
-    main_target = seats_in_comp[main_comp_id][0]
+    main_comp_id = max(range(next_comp), key=_rank)
+    main_target = (
+        seats_in_comp.get(main_comp_id, [comp_repr[main_comp_id]])[0]
+    )
     carved: list[int] = []
 
-    for cid, seat_cells in seats_in_comp.items():
+    for cid in range(next_comp):
         if cid == main_comp_id:
             continue
-        src = seat_cells[0]
+        # Prefer a seat in this component as the source if one exists; the
+        # carved path then runs seat-to-seat, which usually carves fewer
+        # cells than starting from an arbitrary representative.
+        src_candidates = seats_in_comp.get(cid, [comp_repr[cid]])
+        src = src_candidates[0]
         # 0-1 BFS: cost 0 through live cells, cost 1 through dead.
         dist = np.full(N, 10 ** 9, dtype=np.int32)
         prev = np.full(N, -1, dtype=np.int32)
