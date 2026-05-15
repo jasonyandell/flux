@@ -6,6 +6,30 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-15 | workspace | v2 viewer — per-node fade trail keyed to replay iters]
+
+**Touched pages:** [[topics/v2-viewer]] [[log]]
+
+Added a brightness pulse-and-fade to v2's node rendering. A node snaps
+to full brightness whenever its owner or flow-membership signature
+changes, then decays by `1/20` per replay frame-index advance —
+fully dim ~20 iters after its last config change. Floor is
+`MIN_BRIGHTNESS = 0.25` of the owner's base color. Pressure changes
+deliberately don't pulse (continuous → every frame would flash).
+
+Keyed to iters, not wall-clock: pause holds the glow, scrubbing back
+doesn't silently fade, fast-forward burns through trails at the
+forward-stepping rate. Frame-index delta handles all three.
+
+User-facing toggle (`✦`/`✧` on the transport bar, default on,
+persisted in `localStorage` under `flux-v2-fade-enabled`) flips a
+`fadeEnabled` flag on `Scene`; when off every node renders full
+brightness regardless of freshness. Knobs: `FADE_PER_ITER` and
+`MIN_BRIGHTNESS` in `src_v2/render/scene.ts`.
+
+Updated: [[v2-viewer]] gained a "Node fade trail" section and a
+fade-button entry in the transport-bar list.
+
 ## [2026-05-14 | workspace | lightning_attn — 2-head attention solver with frontier-tilt mixing]
 
 **Touched pages:** [[topics/v2-edge-loop-emergence]] [[log]]

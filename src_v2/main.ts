@@ -6,7 +6,7 @@
  */
 import { buildBoard } from './board';
 import { createPlayer } from './replay/player';
-import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer } from './render/scene';
+import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer, setFadeEnabled } from './render/scene';
 import { createTopBar } from './render/topbar';
 import { createPlaybackBar } from './render/playback';
 
@@ -48,6 +48,17 @@ function stepFrame(delta: number) {
   player.stepFrames(delta);
 }
 
+const FADE_STORAGE_KEY = 'flux-v2-fade-enabled';
+function loadFadeEnabled(): boolean {
+  try {
+    const v = localStorage.getItem(FADE_STORAGE_KEY);
+    return v === null ? true : v === '1';
+  } catch { return true; }
+}
+function saveFadeEnabled(enabled: boolean): void {
+  try { localStorage.setItem(FADE_STORAGE_KEY, enabled ? '1' : '0'); } catch { /* ignore */ }
+}
+
 const playbackBar = createPlaybackBar({
   onTogglePlay: () => player.togglePaused(),
   onPrev: () => player.prevReplay(),
@@ -60,7 +71,18 @@ const playbackBar = createPlaybackBar({
     player.seekFraction(t);
   },
   onSpeedChange: (m) => player.setSpeedMultiplier(m),
+  onToggleFade: (enabled) => {
+    setFadeEnabled(scene, enabled);
+    saveFadeEnabled(enabled);
+  },
 });
+
+// Restore the user's fade-toggle preference (default on).
+{
+  const initialFade = loadFadeEnabled();
+  setFadeEnabled(scene, initialFade);
+  playbackBar.setFadeEnabled(initialFade);
+}
 
 // Standard media-player keys: Space toggles, arrows jog by frame,
 // Shift+arrows swap to the prev/next replay.
@@ -118,7 +140,7 @@ function frame(now: number) {
     const idx = player.currentFrame();
     const f = r.frames[idx];
     if (f) {
-      updateScene(scene, board, f);
+      updateScene(scene, board, f, idx);
       const meta = r.header.metadata as Record<string, unknown>;
       const it = typeof meta.iteration === 'number' ? meta.iteration : 0;
       const fit = typeof meta.best_fitness === 'number' ? meta.best_fitness : 0;

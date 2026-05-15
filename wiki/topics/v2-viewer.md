@@ -2,7 +2,7 @@
 title: v2 viewer (trainer-displayer)
 kind: topic
 first_seen: 2026-05-14
-last_updated: 2026-05-14
+last_updated: 2026-05-15
 status: active
 ---
 
@@ -56,8 +56,8 @@ replay and unpauses.
 ## Transport bar (bottom)
 
 ```
-[⏮]  [⏪]  [⏯]  [⏩]  [⏭]   ━━━●━━━━━   12 / 240   1×
- prev  step  play  step  next   scrubber    counter   speed
+[⏮]  [⏪]  [⏯]  [⏩]  [⏭]   ━━━●━━━━━   12 / 240   1×   ✦
+ prev  step  play  step  next   scrubber    counter   speed  fade
 ```
 
 - **Prev / Next replay** walk the index round-robin
@@ -76,6 +76,10 @@ replay and unpauses.
   *runtime multiplier* on top of `PLAYBACK_SPEED` and the cadence-aware
   `framesPerSec` the player computes per replay. 1× means "whatever the
   player picked"; the multiplier never replaces the auto-cadence logic.
+- **Fade trail** (`✦` on / `✧` off) toggles the per-node brightness
+  pulse-and-fade effect. On by default; preference persists in
+  `localStorage` under `flux-v2-fade-enabled`. See
+  [[#node fade trail]] below.
 
 The bar sits at z-index 9, 0.55 opacity, fading to 1.0 on hover, so it
 stays out of the way during passive viewing.
@@ -100,6 +104,31 @@ cadence from the median delta between neighboring `saved_at` values and
 speeds playback up so the current replay finishes slightly before the
 next one is expected — never below the configured baseline tick rate.
 This is what keeps a backlog from accumulating during live monitoring.
+
+## Node fade trail
+
+Each node carries a `freshness ∈ [0, 1]` in the renderer that snaps to
+`1` whenever its **owner** or **flow-membership signature** changes,
+then decays by `FADE_PER_ITER = 1/20` per replay-frame advance (so a
+node fully dims about 20 iters after its last config change). Rendered
+brightness is `0.25 + 0.75 · freshness`, multiplied into the owner's
+base color. Pressure changes do not pulse — it's continuous, every
+frame would flash.
+
+Why iter-based, not wall-clock: pause should hold the glow, scrubbing
+back should not silently fade, and fast-forward should burn through
+the trail at the same rate as forward stepping. Frame-index delta
+delivers all three. Forward jump → decay by `delta · FADE_PER_ITER`;
+non-positive delta → no decay.
+
+Toggle: the `✦` button on the transport bar flips a `fadeEnabled` flag
+on `Scene`; when off, every node renders at full brightness regardless
+of `freshness`. The state persists in `localStorage` under
+`flux-v2-fade-enabled` (default on). Implementation:
+[`src_v2/render/scene.ts`](../../src_v2/render/scene.ts) for
+`FADE_PER_ITER` / `MIN_BRIGHTNESS` knobs;
+[`src_v2/render/playback.ts`](../../src_v2/render/playback.ts) and
+[`src_v2/main.ts`](../../src_v2/main.ts) for the toggle wiring.
 
 ## Mixed-experiment safety
 
