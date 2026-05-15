@@ -132,13 +132,42 @@ def _build_initial_state(
     num_players: int,
     num_dead_cells: int,
     rng: np.random.Generator,
+    max_seat_path: int | None = None,
 ):
-    """Build a single random board (random seats, connected dead-cell set)."""
+    """Build a single random board (random seats, connected dead-cell set).
+
+    `max_seat_path` (default 4·radius = 2× empty-hex diameter): rejects
+    boards where the worst seat-to-seat BFS distance exceeds this. Without
+    the check, 50%-dead-density boards routinely produce "islands" — seats
+    that are graph-reachable but separated by 2-3× the empty diameter, so
+    pressure can't traverse seat-to-seat in game-tick budget. The check
+    prevents stalemates-by-isolation.
+    """
+    from flux_v2.graph import max_seat_pair_distance, seats_mutually_reachable
     base = make_board(radius, num_players)
-    seats, dead = random_seat_and_dead(
-        base.N, num_players, num_dead_cells, rng,
-        neighbors=base.neighbors, min_seat_dist=2, coord=base.coord,
-    )
+    if max_seat_path is None:
+        max_seat_path = max(4 * radius, 6)
+    seats = dead = None
+    for attempt in range(200):
+        seats, dead = random_seat_and_dead(
+            base.N, num_players, num_dead_cells, rng,
+            neighbors=base.neighbors, min_seat_dist=2, coord=base.coord,
+        )
+        if not seats_mutually_reachable(seats, dead, base.neighbors):
+            continue
+        worst = max_seat_pair_distance(seats, dead, base.neighbors)
+        if worst < 0 or worst > max_seat_path:
+            continue
+        if attempt > 0:
+            print(f"  (board accepted on attempt {attempt + 1}, "
+                  f"max seat-pair dist={worst} ≤ {max_seat_path})")
+        break
+    else:
+        raise RuntimeError(
+            f"could not produce a board with max seat-pair distance ≤ "
+            f"{max_seat_path} after 200 attempts "
+            f"(R={radius}, dead={num_dead_cells})"
+        )
     s = copy_state(base)
     s.owner = np.full(base.N, NEUTRAL, dtype=np.int32)
     # Starting strengths scaled with MAX_STRENGTH (big-bag-of-pressure rules).
