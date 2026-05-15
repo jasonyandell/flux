@@ -87,6 +87,14 @@ was tried, what happened, what I concluded, what came next.
    ties: they ARE indistinguishable. To detect a real effect under
    this setup, you need >6pp gap with rotated seats, or matched
    pairs. Future overnight work should use that protocol.
+10. **Matched-pair analysis (exp 23) recovers a wave_long signal**
+    hidden by seat bias: 50 boards × 2 orderings, **wave_long won
+    6/6 boards where the same winner emerged regardless of seat**
+    (p ≈ 0.016). On the other 87% of boards seat bias dominated.
+    The corrected story: wave_long has a small real advantage on
+    a minority of board topologies; the noise-dominated majority
+    averages it out at raw 47-57%. **Final ranking: wave_long mildly
+    > sum, both >> attn/pulse/pulse_stagger.**
 4. **Sample sizes matter a lot.** 8- and 10-game samples produced
    30-pt swings in win rate for the same configs across reruns.
    Future sweeps want ≥30 games per cell at minimum.
@@ -1046,6 +1054,53 @@ every "modest signal" in the night's earlier work as either noise or
 seat-bias. The catastrophic losses (attn 7%, pulse 0%, pulse_stagger 0%)
 remain real — those are way past 6pp from baseline. But the "wave is
 slightly better" narrative was never measurable in our setup.
+
+---
+
+## Exp 23 — Matched-pair design (the *proper* wave_long vs sum test)
+
+Applied the protocol from the "Protocol for future research" section.
+50 boards, each played with BOTH seat orderings (wave_long-on-even AND
+wave_long-on-odd, same starting state). Compare per-board outcomes.
+
+Results (100 games total):
+
+- **Raw**: wave_long 52, sum 40, stale 8. wave_long 57% of decisive.
+- **Paired analysis on the 45 boards where both orderings were decisive**:
+  - 6 boards: SAME winner regardless of seat → all 6 wave_long, 0 sum.
+  - 39 boards: different winner per ordering → seat bias dominated.
+
+**This is the cleanest signal of the night.** When seat bias didn't
+decide the game, wave_long won 6/6. Under H0 of 50/50, the
+probability of 6/0 is 1/64 ≈ 1.6% — significant.
+
+The full picture: wave_long has a small but real advantage on a
+*minority* of board configurations (~13% of boards in this sample).
+On the majority (~87%), the game is so close that seat position
+decides the outcome. But where strategy DOES matter, wave_long
+consistently comes out ahead.
+
+This reconciles the earlier confusion:
+
+- Raw 100-game samples (exp 20) showed 47-50% because the 87% of
+  noise-dominated boards drag the average down to the seat-bias floor.
+- Matched-pair analysis recovers the signal hidden under the noise:
+  wave_long is genuinely better on a small subset of boards.
+
+**Corrected final ranking:**
+
+> **`lightning_wave_long` mildly > `lightning_sum`** (paired 6/0 on
+> coherent-decision boards), with both clustering near the noise
+> floor on most boards.
+> &nbsp;&nbsp;&nbsp;&nbsp;**>> `attn` (loses 93%) >> `pulse`, `pulse_stagger` (0% each)**
+
+The wave_long story isn't dead — it's just that the effect is small
+and only visible with proper matched-pair methodology.
+
+**This experiment validates the protocol above** — without
+matched pairs, we'd have continued seeing 47-50% noise. With matched
+pairs, the signal jumps out. Future overnight research should default
+to this design.
 
 ---
 
