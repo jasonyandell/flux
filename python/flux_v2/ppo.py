@@ -134,22 +134,24 @@ def build_features(
 
 
 class AttnActorCritic(nn.Module):
-    """Attention-structured PPO policy. Same 3-layer GCN backbone as
-    GNNActorCritic but the SET-action logits are produced by a 2-head
-    soft-attention block mirroring the hand-designed `lightning_attn`
-    solver:
+    """Slot-equivariant attention-structured PPO policy.
 
-        SET_k logit = (1 - α) · attack_q[k] + α · loop_q[k]
+    SET_k logit = (1 - α(c)) · attack_q(c, k) + α(c) · loop_q(c, k)
 
-    where `attack_q[k]`, `loop_q[k]` are learned per-slot scores and α is a
-    learned per-cell sigmoid scalar. CLEAR_k and NOOP keep generic linear
-    heads so PPO can freely learn when to retract or stand pat.
+    where attack_q, loop_q, clear_q are each a SHARED scalar function
+    f(cell_emb, neighbor_at_slot_k_emb) — the slot index never appears as
+    a learned parameter, only via which neighbor it points at. Result:
+    rotating the board's slot assignments permutes the policy's
+    per-slot logits in the corresponding way. PPO cannot develop a
+    "slot 0 is special" bias because slot 0 has no special parameter.
 
-    The attack/loop split is a *structural prior*, not a hard constraint:
-    PPO can degenerate attack_q ≈ loop_q if the split isn't useful, in
-    which case the policy reduces to a single SET-score head. The
-    interesting question is whether the gradient finds a meaningful
-    separation — that's the architectural test.
+    α and NOOP remain per-cell scalars (no slot dependence anyway).
+
+    This replaces an earlier non-equivariant version that produced
+    Linear(HIDDEN, K) per head — those K outputs had independent
+    parameters per slot, and random initialization plus 40 PPO iters
+    locked in a strong east-southeast directional bias (visible as
+    "policy ignores neutrals not in its preferred slot direction").
     """
 
     def __init__(self) -> None:
@@ -160,13 +162,14 @@ class AttnActorCritic(nn.Module):
         self.w2_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
         self.w3_self = nn.Linear(HIDDEN, HIDDEN, bias=False)
         self.w3_neigh = nn.Linear(HIDDEN, HIDDEN, bias=True)
-        # Per-slot attack and loop scores.
-        self.attack_q_head = nn.Linear(HIDDEN, K)
-        self.loop_q_head = nn.Linear(HIDDEN, K)
-        # Per-cell mixing weight (sigmoid).
+        # Slot-equivariant pair heads: take (cell_emb, nbr_emb) → scalar.
+        # Shared across all slots. The slot index is implicit in *which*
+        # neighbor embedding we pair with the cell embedding.
+        self.attack_pair = nn.Linear(2 * HIDDEN, 1)
+        self.loop_pair = nn.Linear(2 * HIDDEN, 1)
+        self.clear_pair = nn.Linear(2 * HIDDEN, 1)
+        # Per-cell scalars.
         self.alpha_head = nn.Linear(HIDDEN, 1)
-        # Generic CLEAR and NOOP heads.
-        self.clear_head = nn.Linear(HIDDEN, K)
         self.noop_head = nn.Linear(HIDDEN, 1)
         # Value head identical to GNNActorCritic.
         self.value_hidden = nn.Linear(HIDDEN, VALUE_HIDDEN)
@@ -190,22 +193,38 @@ class AttnActorCritic(nn.Module):
         H2 = mx.maximum(self.w2_self(H1) + self.w2_neigh(H1_agg), 0)
         H2_agg = _aggregate_neighbors(H2, neighbors)
         H3 = mx.maximum(self.w3_self(H2) + self.w3_neigh(H2_agg), 0)
+        # H3: (G, S, N, HIDDEN)
 
-        attack_q = self.attack_q_head(H3)            # (G, S, N, K)
-        loop_q = self.loop_q_head(H3)                # (G, S, N, K)
-        alpha = mx.sigmoid(self.alpha_head(H3))      # (G, S, N, 1)
-        set_logits = (1.0 - alpha) * attack_q + alpha * loop_q  # (G, S, N, K)
-        clear_logits = self.clear_head(H3)           # (G, S, N, K)
-        noop_logit = self.noop_head(H3)              # (G, S, N, 1)
+        G, N = owner.shape
+        S = num_players
+
+        # Gather per-slot neighbor embeddings.
+        nb_safe = mx.maximum(neighbors, 0)                          # (N, K)
+        nb_valid_mask = (neighbors >= 0).astype(mx.float32).reshape(1, 1, N, K, 1)
+        flat_idx = nb_safe.reshape(-1)                              # (N*K,)
+        H3_nbr = mx.take(H3, flat_idx, axis=-2)                     # (G, S, N*K, HIDDEN)
+        H3_nbr = H3_nbr.reshape(G, S, N, K, HIDDEN) * nb_valid_mask
+
+        # Broadcast cell embedding to per-slot then concat.
+        H3_self = mx.broadcast_to(
+            H3.reshape(G, S, N, 1, HIDDEN),
+            (G, S, N, K, HIDDEN),
+        )
+        pair = mx.concatenate([H3_self, H3_nbr], axis=-1)           # (G, S, N, K, 2H)
+
+        attack_q = self.attack_pair(pair).squeeze(-1)               # (G, S, N, K)
+        loop_q = self.loop_pair(pair).squeeze(-1)
+        clear_logits = self.clear_pair(pair).squeeze(-1)
+        alpha = mx.sigmoid(self.alpha_head(H3))                     # (G, S, N, 1)
+        set_logits = (1.0 - alpha) * attack_q + alpha * loop_q      # (G, S, N, K)
+        noop_logit = self.noop_head(H3)                             # (G, S, N, 1)
         policy_logits = mx.concatenate(
             [set_logits, clear_logits, noop_logit], axis=-1,
-        )                                            # (G, S, N, 2K+1)
+        )                                                           # (G, S, N, 2K+1)
 
         v_per_cell = self.value_out(
             mx.maximum(self.value_hidden(H3), 0)
         ).squeeze(-1)
-        G, N = owner.shape
-        S = num_players
         seat_idx = mx.arange(S).reshape(1, S, 1)
         is_mine = (owner.reshape(G, 1, N) == seat_idx).astype(mx.float32)
         denom = mx.maximum(is_mine.sum(axis=-1), 1.0)
