@@ -76,6 +76,10 @@ def _lightning_random(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="random")
 
 
+def _lightning_chase(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="chase")
+
+
 SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
@@ -88,6 +92,7 @@ SOLVERS = {
     "lightning_vortex": _lightning_vortex,       # CW loop (vs default CCW)
     "lightning_flood": _lightning_flood,         # set all 6 outflows always
     "lightning_random": _lightning_random,       # random action baseline
+    "lightning_chase": _lightning_chase,         # counter-attack on inbound threat
 }
 
 

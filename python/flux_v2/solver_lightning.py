@@ -319,6 +319,75 @@ def _attn_actions(
     return actions
 
 
+def _chase_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator],
+    panic_threshold: float = 0.3,
+) -> np.ndarray:
+    """Counter-attack solver. Each owned cell:
+      1. Frontier rule (always attack non-friendly).
+      2. Inspect inbound edge_pressure from non-friendly neighbors. If
+         the strongest incoming threat exceeds `panic_threshold * MAX_EDGE`,
+         add a counter-attack outflow toward THAT direction (already covered
+         by the frontier rule, but emphasizes the choice).
+      3. For each friendly slot, if the friendly target has incoming threat
+         > panic_threshold, set outflow toward that friend (reinforce).
+    """
+    N = state.N
+    owner = state.owner
+    nb = state.neighbors
+    outflow = state.outflow
+    edge_pressure = state.edge_pressure
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    is_mine = owner == seat
+    if not is_mine.any():
+        return actions
+
+    # Precompute inbound non-friendly pressure per cell.
+    inbound_enemy = np.zeros(N, dtype=np.float32)
+    for k in range(K):
+        d_ids = nb[:, k]
+        valid = d_ids >= 0
+        if not valid.any():
+            continue
+        opp = int(OPPOSITE_SLOT[k])
+        valid_d = d_ids[valid]
+        press = np.zeros(N, dtype=np.float32)
+        press[valid] = edge_pressure[valid_d, opp]
+        d_owner = np.full(N, NEUTRAL, dtype=np.int32)
+        d_owner[valid] = owner[valid_d]
+        is_threat_src = valid & (d_owner != seat) & (d_owner >= 0)
+        inbound_enemy += press * is_threat_src.astype(np.float32)
+
+    threat_thresh = panic_threshold * MAX_EDGE
+    owned = np.where(is_mine)[0]
+    for c in owned:
+        c = int(c)
+        desired = np.zeros(K, dtype=np.bool_)
+        for k in range(K):
+            d = int(nb[c, k])
+            if d < 0:
+                continue
+            od = int(owner[d])
+            if od == DEAD:
+                continue
+            if od != seat:
+                # Frontier: always set toward non-friendly.
+                desired[k] = True
+            else:
+                # Friendly relay: reinforce if friend is under threat.
+                if inbound_enemy[d] > threat_thresh:
+                    desired[k] = True
+        cur = outflow[c]
+        missing = np.where(desired & ~cur)[0]
+        if missing.size:
+            actions[c] = ACTION_SET_BASE + _pick(missing, rng)
+            continue
+        stale = np.where(cur & ~desired)[0]
+        if stale.size:
+            actions[c] = ACTION_CLEAR_BASE + _pick(stale, rng)
+    return actions
+
+
 def _flood_actions(
     state: State, seat: int, rng: Optional[np.random.Generator],
 ) -> np.ndarray:
@@ -523,6 +592,8 @@ def lightning_solver_actions(
         return _flood_actions(state, seat, rng)
     if mode == "random":
         return _random_actions(state, seat, rng)
+    if mode == "chase":
+        return _chase_actions(state, seat, rng)
 
     N = state.N
     owner = state.owner
