@@ -24,6 +24,7 @@ Topics:
 - [[topics/v2-edge-voting-policy|v2-edge-voting-policy]] — spec for an edge-centric local-flow representation: derived edge types, distributed edge votes, multi-signal flow channels, and pulse-preserving hold/release learning.
 - [[topics/v2-edge-loop-emergence|v2-edge-loop-emergence]] — four new lightning modes culminating in `lightning_attn`, a 2-head (ATTACK + LOOP) attention solver with per-cell frontier-distance mixing. Ranking: `sum` > `attn` ≈ `sum` > `max` > `loop` > `sum_pw`. Hand-designed attention pulls **12-12 tie with `sum`** on first attempt — the architectural shape works; next step is learned Q/K via PPO.
 - [[topics/v2-overnight-research|v2-overnight-research]] — autonomous overnight log (2026-05-15). Dead-density sweep, build-and-release variants, attn hyperparams, sum hyperparams, crazy variants tournament. Headline: under big-bag rules, sum dominates 3v3 at R=20 10%-dead; BFS dominates 1-seat-each. Most "wins" from hyperparameter tweaks were ≤8-game variance.
+- [[topics/v2-viewer|v2-viewer]] — feature catalog for `/index-v2.html`: clickable newest-first recent-runs strip (all 50 indexed runs), transport bar, auto-cadence, mixed-radius rebuild, FLXR v2 format.
 
 Decisions:
 
