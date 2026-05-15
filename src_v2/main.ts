@@ -140,7 +140,7 @@ function frame(now: number) {
     const idx = player.currentFrame();
     const f = r.frames[idx];
     if (f) {
-      updateScene(scene, board, f, idx);
+      updateScene(scene, board, f, idx, dt);
       const meta = r.header.metadata as Record<string, unknown>;
       const it = typeof meta.iteration === 'number' ? meta.iteration : 0;
       const fit = typeof meta.best_fitness === 'number' ? meta.best_fitness : 0;
