@@ -6,6 +6,58 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-14 | workspace | lightning sum / sum_pw modes — diffusion that admits loops]
+
+**Touched pages:** [[topics/v2-edge-loop-emergence]] [[topics/v2-algorithmic-solvers]] [[index]] [[log]]
+
+Hypothesis (user-raised): BFS and lightning never make a→b→c→a cycles, and
+cycles are a stronger pressure generator than single-cell outflow. Cause is
+literally in the operator — original lightning uses `max(intrinsic, γ·max_nbr)`,
+which is tree-only by construction (single steepest parent). Fixed by adding
+two new modes to `compute_potential`:
+
+- `sum`: `pot[c] = intrinsic + γ·Σ_d (1/deg(d))·pot[d]` (uniform Bellman)
+- `sum_pw`: weights neighbor contributions by current `edge_pressure[d→c]`
+  (rich-get-richer), uniform fallback when no flow yet.
+
+Both are fixed-point iterations on a discounted Markov chain — the
+closed-form "future residual" of pressure circulating, no rollout needed.
+Wired through `lightning_solver_actions(mode=...)` and registered
+`lightning_sum` / `lightning_sum_pw` seat names in
+`scripts/run_v2_solver.py`.
+
+Four head-to-head runs (R=6 P=6 4000 ticks, in
+`public/v2/replays/solver_v2_*`):
+
+- **All-`sum` self-play (8 games)** — 8/8 decisive at mean 1501 ticks. Sum
+  breaks symmetry fast enough to resolve.
+- **All-`sum_pw` self-play (8 games)** — **8/8 stalemates at the 4000-tick
+  cap.** Loops do emerge — and they're so defensive nobody can crack
+  anyone else's interior. Replay: `solver_v2_lightning_sum_pw_*.flxr`.
+- **3-way mix (24 games)** — `sum` 15 wins, `lightning` 9, `sum_pw` 0.
+  Sum-mode is the new best solver.
+- **`max` vs `sum_pw` 3v3 (24 games)** — `lightning` 23, `sum_pw` 0,
+  1 stalemate. Pressure-weighted gets steamrolled head-to-head.
+
+Headline: hypothesis confirmed mechanically (loops form), but the
+strategic implication inverted — cycle pressure is *defensive
+infrastructure*, not offensive throughput. The genuine win was the
+non-edge-weighted `sum` mode, which beats original `max` by ~6/24 games
+despite using the same action rule. Worth considering `lightning_sum`
+as the new default baseline.
+
+Replays land in the v2 displayer index automatically.
+
+**Added:** `python/flux_v2/solver_lightning.py` modes,
+`python/scripts/run_v2_solver.py` solver registrations, four `.flxr`
+replays in `public/v2/replays/`, [[topics/v2-edge-loop-emergence]].
+**Updated:** [[topics/v2-algorithmic-solvers]] cross-link section,
+[[index]] entry.
+**Retired:** none.
+**Questions opened:** hybrid (`max` frontier + `sum_pw` interior) untested;
+whether longer-tick runs (12000+) eventually break `sum_pw` deadlocks;
+whether `lightning_sum` should replace `lightning` as the default baseline.
+
 ## [2026-05-14 | workspace | v2 displayer gets media-style transport controls]
 
 **Touched pages:** [[v2-trainer-displayer]] [[log]]

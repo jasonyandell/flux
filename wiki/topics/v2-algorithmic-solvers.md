@@ -101,5 +101,23 @@ experiments:
   rollout (replace some seats' policy actions with `solver_actions`) and
   measure win rate. That's the real baseline.
 
-Related: [[v2-training-runs]] (PPO track), [[decisions/v2-edge-pressure-state]],
+## Loop-permitting diffusion variants
+
+The original lightning rule uses `max`-aggregation: by construction it
+produces tree-shaped flow networks (each cell has a single steepest
+parent). Loops like a→b→c→a are mathematically forbidden by the
+operator.
+
+[[v2-edge-loop-emergence]] documents two new diffusion modes that admit
+loops without requiring rollout simulation, plus head-to-head results.
+TL;DR: the uniform-Bellman `sum` mode is the new best solver (62.5%
+vs 37.5% in mixed play against original max-mode); the
+edge-pressure-weighted `sum_pw` mode forms beautiful self-defending
+loops that deadlock pure self-play and get steamrolled in adversarial
+play. The lesson is that cycle pressure is defensive infrastructure,
+not offensive throughput — and loops therefore aren't worth the slot
+budget unless the action rule explicitly favors them.
+
+Related: [[v2-training-runs]] (PPO track), [[v2-edge-loop-emergence]],
+[[decisions/v2-edge-pressure-state]],
 [[decisions/v2-three-term-reward]].
