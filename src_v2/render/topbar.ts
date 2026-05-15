@@ -8,11 +8,25 @@
 export type RecentEntry = {
   file: string;
   iteration?: number;
+  generation?: number;
   saved_at?: string;
   kind?: string;
   radius?: number;
   num_players?: number;
 };
+
+function entryLabel(e: RecentEntry): string {
+  if (typeof e.iteration === 'number' && e.iteration > 0) {
+    return `i${e.iteration}`;
+  }
+  const hasBoard = typeof e.radius === 'number' && typeof e.num_players === 'number';
+  if (hasBoard) {
+    const gen = typeof e.generation === 'number' && e.generation > 0
+      ? `·g${e.generation}` : '';
+    return `r${e.radius}p${e.num_players}${gen}`;
+  }
+  return e.file;
+}
 
 export type TopBar = {
   root: HTMLDivElement;
@@ -136,8 +150,7 @@ export function createTopBar(): TopBar {
         'border-radius:4px;opacity:' + (isCurrent ? '1' : '0.78') + ';' +
         'white-space:nowrap;transition:opacity 0.12s ease, background 0.12s ease;' +
         'font-variant-numeric:tabular-nums;flex:0 0 auto;';
-      const iter = typeof e.iteration === 'number' ? `i${e.iteration}` : e.file;
-      btn.textContent = iter;
+      btn.textContent = entryLabel(e);
       btn.title = `${e.file}${entryDigest(e, now) ? ' — ' + entryDigest(e, now) : ''}`;
       btn.addEventListener('mouseenter', () => {
         btn.style.background = 'rgba(255,255,255,0.08)';
@@ -150,6 +163,7 @@ export function createTopBar(): TopBar {
       btn.addEventListener('click', () => onSelect(e.file));
       recent.appendChild(btn);
     }
+    recent.scrollLeft = 0;
   }
 
   return {
