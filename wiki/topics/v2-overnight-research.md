@@ -1210,6 +1210,41 @@ contributes nothing measurable on its own.
 
 ---
 
+## Exp 26 — γ sweep with matched pairs (final tuning)
+
+Now that we know γ matters and we have a proper methodology, sweep
+γ ∈ {0.92, 0.96, 0.98} vs the current candidate γ=0.94.
+
+| matchup           | board-coherent | result | stalemates |
+|-------------------|---:|--------|---:|
+| γ=0.92 vs γ=0.94  | 1  | 0/1 (γ=0.94 took it) | 10 |
+| γ=0.96 vs γ=0.94  | 2  | 1/1 split | 15 |
+| γ=0.98 vs γ=0.94  | 2  | 1/1 split | 7 |
+
+**γ=0.94 sits on a broad plateau.** Neighboring values (0.92, 0.96,
+0.98) are indistinguishable from it. Most board pairs at this γ
+spacing produce only 1-2 coherent decisions out of 40 boards —
+the changes are too small to break the seat-bias barrier.
+
+Compare with exp 25's γ=0.94 vs γ=0.85 (default): 5/6 coherent
+in favor of γ=0.94. So the big jump is from 0.85 to ~0.92+; within
+the plateau (0.92-0.98) refinement doesn't help.
+
+Observation: higher γ produces more stalemates (15 at γ=0.96,
+trending up). This is intuitive — longer-range field means cells
+attack distant targets and don't always finish nearby threats.
+The default γ=0.94 is a reasonable balance between expanding reach
+and avoiding stalemate-prone behavior.
+
+**Final tuning recommendation: γ ∈ [0.92, 0.96] are all good. γ=0.94
+is the safe middle.**
+
+This closes out the γ exploration. The wave gate adds nothing on
+top of `sum + γ=0.94`. Going much higher than γ=0.96 risks stalemate
+rate increases.
+
+---
+
 ## Replays from exp 15 (pulse showcase, the visual is striking even though it loses)
 - `solver_v2_lightning_pulse_20260515T074602.flxr` — all-pulse R=20
 - `solver_v2_lightning_pulse_20260515T074608.flxr` — all-pulse R=25
