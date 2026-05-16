@@ -10,10 +10,13 @@ import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer,
 import { createTopBar } from './render/topbar';
 import { createPlaybackBar } from './render/playback';
 import { createPlaylist } from './render/playlist';
+import { createEventsTailer } from './replay/events';
 
 const REPLAY_BASE = '/v2/replays/';
 const INDEX_URL = '/v2/replays/index.json';
+const EVENTS_URL = '/v2/replays/events.jsonl';
 const POLL_INTERVAL_MS = 3000;
+const NEW_COUNT_POLL_MS = 3000;
 const PLAY_TICKS_PER_SEC = 10; // 1x game time: dt_per_tick_ms is 100
 const PLAYBACK_SPEED = 2.0;     // multiplier applied to all playback rates
 
@@ -42,6 +45,50 @@ playlist.setOnSelect((file) => {
   if (player.isPaused()) player.setPaused(false);
   player.loadReplay(file);
 });
+
+// Arrival-badge state: the user's "last closed" cursor lives in localStorage
+// (per-origin / per-worktree by Vite port — net-convenient: each worktree's
+// UI tracks its own seen-state). The events tailer reads the JSONL log that
+// the writer (python/flux_v2/replay.py::append_index) appends to.
+const LAST_CLOSED_KEY = 'flux-v2-playlist-last-closed';
+function loadLastClosedMs(): number {
+  try {
+    const v = localStorage.getItem(LAST_CLOSED_KEY);
+    if (v === null) return Date.now(); // fresh visit: don't badge anything
+    const n = Number(v);
+    return Number.isFinite(n) ? n : Date.now();
+  } catch { return Date.now(); }
+}
+function saveLastClosedMs(ms: number): void {
+  try { localStorage.setItem(LAST_CLOSED_KEY, String(ms)); } catch { /* ignore */ }
+}
+let lastClosedMs = loadLastClosedMs();
+// Seed the cursor on first visit so an empty log doesn't surprise-flash.
+if (!localStorage.getItem(LAST_CLOSED_KEY)) saveLastClosedMs(lastClosedMs);
+
+playlist.setOnClose(() => {
+  lastClosedMs = Date.now();
+  saveLastClosedMs(lastClosedMs);
+  playlist.setNewCount(0);
+});
+
+const eventsTailer = createEventsTailer(EVENTS_URL);
+let lastEventsPoll = 0;
+let eventsInFlight = false;
+function pollNewCount(now: number): void {
+  if (eventsInFlight) return;
+  if (now - lastEventsPoll < NEW_COUNT_POLL_MS) return;
+  lastEventsPoll = now;
+  eventsInFlight = true;
+  eventsTailer.fetchNewer(lastClosedMs)
+    .then((evts) => {
+      if (playlist.isOpen()) return;        // open panel = already looking; no badge
+      playlist.setNewCount(evts.length);
+    })
+    .catch(() => { /* transient — try again next poll */ })
+    .finally(() => { eventsInFlight = false; });
+}
+
 player.start();
 
 function stepFrame(delta: number) {
@@ -118,6 +165,7 @@ function frame(now: number) {
   last = now;
 
   player.tick(dt);
+  pollNewCount(now);
 
   // Surface live player status even before the first replay loads, so the
   // top bar shows polling / loading state to the user.
