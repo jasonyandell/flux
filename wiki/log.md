@@ -6,6 +6,18 @@ last_updated: 2026-05-16
 status: active
 ---
 
+## [2026-05-16 | workspace | v2 replay streaming startup]
+
+**Touched pages:** [[topics/v2-viewer]] [[log]]
+
+Replay changes now preserve temporal state: loading another run keeps the
+current play/pause state and runtime speed multiplier, including `0×` pause
+and negative reverse playback. The v2 FLXR reader also streams large replay
+loads: it reads the header, starts gzip decompression over the response body,
+attaches the replay after the first two frames, and continues appending frames
+while playback/UI are already live. Browsers without streaming
+decompression fall back to whole-file parsing.
+
 ## [2026-05-16 | workspace | v2 viewer pinch zoom, pan, and wheel speed]
 
 **Touched pages:** [[topics/v2-viewer]] [[index]] [[log]]

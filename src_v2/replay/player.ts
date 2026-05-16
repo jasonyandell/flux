@@ -4,7 +4,7 @@
  *
  * Mirrors src/replay/player.ts but for v2 binary format and v2-only state.
  */
-import { parseReplay, type Replay } from './format';
+import { parseReplayResponse, type Replay } from './format';
 
 export type IndexEntry = {
   file: string;
@@ -129,7 +129,7 @@ export function createPlayer(opts: Opts): Player {
       // artifacts in the index); only ever use it to speed playback UP, never
       // to slow it below the configured baseline tick rate.
       const targetSec = Math.max(1.0, cadenceSec * 0.9) / speedMult;
-      const cadenceFps = Math.max(1, r.frames.length / targetSec);
+      const cadenceFps = Math.max(1, r.header.numFrames / targetSec);
       if (cadenceFps > baselineFps) {
         return { fps: cadenceFps, targetSec };
       }
@@ -210,8 +210,41 @@ export function createPlayer(opts: Opts): Player {
         loading = false;
         return;
       }
-      const buf = await res.arrayBuffer();
-      const r = await parseReplay(buf);
+      let activated = false;
+      const activate = (r: Replay) => {
+        if (activated || r.frames.length < 2) return;
+        replay = r;
+        replayName = file;
+        frameIdx = 0;
+        frameAccSec = 0;
+        clearPending();
+        activated = true;
+        // Recompute auto-speed from the recorded stride so playback follows
+        // the trainer's replay cadence once the index has timestamps.
+        if (manualSpeedOverride !== null) {
+          framesPerSec = manualSpeedOverride;
+          setStatus(
+            `streaming ${file} (${r.frames.length}/${r.header.numFrames} frames, manual ${framesPerSec.toFixed(1)} fps)`,
+          );
+        } else {
+          const auto = autoFramesPerSec(r, file);
+          framesPerSec = auto.fps;
+          const target = auto.targetSec === null
+            ? 'real time'
+            : `~${auto.targetSec.toFixed(1)}s`;
+          setStatus(
+            `streaming ${file} (${r.frames.length}/${r.header.numFrames} frames over ${target}, ${framesPerSec.toFixed(1)} fps)`,
+          );
+        }
+      };
+      const r = await parseReplayResponse(res, {
+        onReplayReady: activate,
+        onProgress: (loaded, total, streamed) => {
+          if (!activated) return;
+          setStatus(`streaming ${file} (${loaded}/${total} frames, ${effectiveFps().toFixed(1)} fps)`);
+          if (streamed !== replay) replay = streamed;
+        },
+      });
       if (r.frames.length < 2) {
         // No-frames stub (header-only file from a crashed/aborted writer).
         // Mark it skipped so future polls walk past it to the next candidate.
@@ -221,17 +254,11 @@ export function createPlayer(opts: Opts): Player {
         loading = false;
         return;
       }
-      replay = r;
-      replayName = file;
-      frameIdx = 0;
-      frameAccSec = 0;
-      clearPending();
-      // Recompute auto-speed from the recorded stride so playback follows
-      // the trainer's replay cadence once the index has timestamps.
+      activate(r);
       if (manualSpeedOverride !== null) {
         framesPerSec = manualSpeedOverride;
         setStatus(
-          `playing ${file} (${r.frames.length} frames, manual ${framesPerSec.toFixed(1)} fps)`,
+          `playing ${file} (${r.header.numFrames} frames, manual ${framesPerSec.toFixed(1)} fps)`,
         );
       } else {
         const auto = autoFramesPerSec(r, file);
@@ -240,7 +267,7 @@ export function createPlayer(opts: Opts): Player {
           ? 'real time'
           : `~${auto.targetSec.toFixed(1)}s`;
         setStatus(
-          `playing ${file} (${r.frames.length} frames over ${target}, ${framesPerSec.toFixed(1)} fps)`,
+          `playing ${file} (${r.header.numFrames} frames over ${target}, ${framesPerSec.toFixed(1)} fps)`,
         );
       }
     } catch (err) {
@@ -270,6 +297,10 @@ export function createPlayer(opts: Opts): Player {
         if (frameIdx + 1 < replay.frames.length) {
           frameIdx++;
         } else {
+          if (loading && replay.frames.length < replay.header.numFrames) {
+            frameAccSec = 0;
+            break;
+          }
           if (!pendingFile) {
             const next = pickNextReplay();
             if (next && next !== replayName) pendingFile = next;

@@ -41,7 +41,7 @@ v2 reference:
   searchable replay drawer, deep links (`?replay=<file.flxr>`), copy-link
   controls, arrival badges, current-run metadata, pinch zoom, two-finger pan,
   Shift-scroll speed control including zero-stop reverse playback, transport bar,
-  auto-cadence, mixed-radius rebuild, FLXR v3 format.
+  auto-cadence, mixed-radius rebuild, streaming FLXR v3 loads.
 
 v2 research (freshest first):
 

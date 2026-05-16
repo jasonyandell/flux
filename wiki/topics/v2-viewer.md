@@ -32,6 +32,9 @@ truth, the viewer is the lens. The list below stays accountable to
   `/index-v2.html?replay=<file.flxr>`. The viewer loads that exact file,
   keeps the URL in sync when the user selects another run, and exposes copy
   link controls in the current-run header and playlist rows.
+- Transport handoff — explicit replay changes preserve the current play/pause
+  state and speed multiplier. If the viewer is paused at `0×` or playing in
+  reverse, loading another replay keeps that same temporal mode.
 - Mixed-experiment streams — radius/seat changes are normal between
   runs; the viewer rebuilds geometry on board-signature changes and
   doesn't need a reload.
@@ -207,6 +210,13 @@ bitset, and pressure bytes for active outflows. Geometry is derived from
 `(radius, num_players)` by `buildBoard` on the client. Writer side:
 [`python/flux_v2/replay.py`](../../python/flux_v2/replay.py). Parser side:
 [`src_v2/replay/format.ts`](../../src_v2/replay/format.ts).
+
+The browser reader streams FLXR v3 responses: it reads the fixed header first,
+starts gzip decompression on the remaining body, attaches the replay after the
+first two frames, and keeps appending frames as they arrive. Large R40 replays
+therefore show a first frame before the full file has downloaded, inflated,
+and parsed. If browser streaming/decompression APIs are unavailable, it falls
+back to the older whole-file parse.
 
 ## Layout
 

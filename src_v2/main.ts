@@ -126,9 +126,6 @@ function replaceReplayUrl(file: string): void {
 }
 
 playlist.setOnSelect((file) => {
-  // Selecting from the playlist implies the user wants that specific run on
-  // screen — unpause if needed and load it.
-  if (player.isPaused()) player.setPaused(false);
   player.loadReplay(file);
   replaceReplayUrl(file);
 });
