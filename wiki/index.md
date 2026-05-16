@@ -59,6 +59,10 @@ v2 research (freshest first):
   1.3s (~24× pre-vec); R=100 in 13.9s (~36×). One open item: the
   matched-pair rankings need a rerun under the new code before the
   v2-overnight-research rankings get refreshed.
+- [[topics/v2-ml-gameplay-opportunities|v2-ml-gameplay-opportunities]] —
+  ML-scientist synthesis of where learning can most plausibly improve v2:
+  solver distillation, residual policies, edge-aware auxiliary learning, and
+  matched-pair preference data.
 - [[topics/v2-overnight-research|v2-overnight-research]] — autonomous
   overnight matched-pair tournaments (2026-05-15). **Current ranking:
   `wave_long` > `sum` > `bfs` ≈ `max` >> `attn` >> `pulse`/`pulse_stagger`.**

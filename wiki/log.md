@@ -6,6 +6,19 @@ last_updated: 2026-05-15
 status: active
 ---
 
+## [2026-05-16 | workspace | v2 ML gameplay opportunities synthesis]
+
+**Touched pages:** [[topics/v2-ml-gameplay-opportunities]] [[index]] [[log]]
+
+Added an ML-scientist synthesis page for the current v2 gameplay frontier.
+The read: the strongest near-term ML role is to exploit the mechanistic
+solver discoveries rather than replace them from scratch. Use
+`lightning_sum_long` / `wave_long` as teachers and baselines, learn residuals
+over long-field flow, make edge semantics the representation surface, and
+turn cheap matched-pair tournaments into preference data. The page also calls
+out risk areas: single-direction tournament noise, terminal reward visibility,
+activity rewards, capacity-first PPO changes, and stale todo framing.
+
 ## [2026-05-16 | workspace | v2 vectorized lands on main — ~24× at R=30, ~36× at R=100]
 
 **Touched pages:** [[topics/v2-vectorized]] [[index]] [[log]]
