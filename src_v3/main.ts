@@ -1,0 +1,147 @@
+/**
+ * flux v3 — sphere trainer-displayer entry.
+ *
+ * Reads sphere-format .flxr replays from /v3/replays/ (written by
+ * python/scripts/run_v3_solver.py), auto-reloads on new replays, and
+ * renders the geodesic-icosphere board with electric barbell edges and
+ * selective bloom. See wiki/topics/v3-viewer.md.
+ */
+import { buildBoard } from './board';
+import { createPlayer } from './replay/player';
+import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer } from './render/scene';
+import { createTopBar } from './render/topbar';
+import { createPlaybackBar } from './render/playback';
+
+const REPLAY_BASE = '/v3/replays/';
+const INDEX_URL = '/v3/replays/index.json';
+const POLL_INTERVAL_MS = 3000;
+const PLAY_TICKS_PER_SEC = 10; // 1x game time: dt_per_tick_ms is 100
+const PLAYBACK_SPEED = 2.0;     // multiplier applied to all playback rates
+
+const canvas = document.getElementById('app') as HTMLCanvasElement;
+
+// Initial placeholder board (until first replay loads).
+let board = buildBoard(5, 12);
+const scene = createScene(canvas, board);
+const topBar = createTopBar();
+topBar.setStatus('waiting for first replay…');
+
+window.addEventListener('resize', () => resizeRenderer(scene));
+resizeRenderer(scene);
+
+const player = createPlayer({
+  indexUrl: INDEX_URL,
+  replayBaseUrl: REPLAY_BASE,
+  pollIntervalMs: POLL_INTERVAL_MS,
+  playTicksPerSec: PLAY_TICKS_PER_SEC,
+  playbackSpeed: PLAYBACK_SPEED,
+});
+topBar.setOnSelect((file) => {
+  // Selecting from the recent-runs list implies the user wants that
+  // specific run on screen — unpause if needed and load it.
+  if (player.isPaused()) player.setPaused(false);
+  player.loadReplay(file);
+});
+player.start();
+
+function stepFrame(delta: number) {
+  // Stepping a single frame implies the user wants the new frame held still.
+  if (!player.isPaused()) player.setPaused(true);
+  player.stepFrames(delta);
+}
+
+const playbackBar = createPlaybackBar({
+  onTogglePlay: () => player.togglePaused(),
+  onPrev: () => player.prevReplay(),
+  onNext: () => player.nextReplay(),
+  onStepBack: () => stepFrame(-1),
+  onStepForward: () => stepFrame(1),
+  onSeek: (t) => {
+    // Scrubbing implies user wants the frame frozen; pause if not already.
+    if (!player.isPaused()) player.setPaused(true);
+    player.seekFraction(t);
+  },
+  onSpeedChange: (m) => player.setSpeedMultiplier(m),
+});
+
+// Standard media-player keys: Space toggles, arrows jog by frame,
+// Shift+arrows swap to the prev/next replay.
+window.addEventListener('keydown', (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+  if (e.key === ' ' || e.code === 'Space') {
+    e.preventDefault();
+    player.togglePaused();
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (e.shiftKey) player.prevReplay();
+    else stepFrame(-1);
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (e.shiftKey) player.nextReplay();
+    else stepFrame(1);
+  }
+});
+
+let last = performance.now();
+let currentName: string | null = null;
+let currentBoardKey = `${board.radius}:${board.numPlayers}:${board.N}`;
+
+function boardKey(b: typeof board): string {
+  return `${b.radius}:${b.numPlayers}:${b.N}`;
+}
+
+function frame(now: number) {
+  const dt = Math.min(0.25, (now - last) / 1000);
+  last = now;
+
+  player.tick(dt);
+
+  // Surface live player status even before the first replay loads, so the
+  // top bar shows polling / loading state to the user.
+  topBar.setStatus(player.status());
+  topBar.setRecent(player.recentEntries(), player.currentName());
+
+  const r = player.current();
+  if (r) {
+    const name = player.currentName();
+    if (name !== currentName) {
+      const nextBoardKey = boardKey(r.board);
+      // Replay swap: rebuild geometry if board shape differs from current.
+      // Mixed radius streams are normal while experiments pivot, so compare
+      // the full board signature instead of only the node count.
+      if (nextBoardKey !== currentBoardKey || r.board.N !== scene.nodeCount) {
+        rebuildSceneGeometry(scene, r.board);
+        currentBoardKey = nextBoardKey;
+      }
+      board = r.board;
+      currentName = name;
+    }
+    const idx = player.currentFrame();
+    const f = r.frames[idx];
+    if (f) {
+      updateScene(scene, board, f, idx);
+      const meta = r.header.metadata as Record<string, unknown>;
+      const it = typeof meta.iteration === 'number' ? meta.iteration : 0;
+      const fit = typeof meta.best_fitness === 'number' ? meta.best_fitness : 0;
+      const mdl = typeof meta.model === 'string' ? meta.model : null;
+      topBar.setStats(it, fit, mdl);
+      topBar.setBoard(
+        r.header.radius,
+        r.header.numPlayers,
+        r.header.numNodes,
+        r.header.tickStride,
+        r.header.dtPerTickMs,
+      );
+    }
+  }
+
+  playbackBar.setFrame(player.currentFrame(), player.frameCount());
+  playbackBar.setPaused(player.isPaused());
+  playbackBar.setSpeed(player.speedMultiplier());
+
+  render(scene);
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
