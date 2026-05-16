@@ -371,13 +371,29 @@ def run_game(
     )
     solver_fns = [SOLVERS[name] for name in seat_solvers]
 
+    # Fast path: when all seats run lightning_sum_long, dispatch one batched
+    # JIT call per AI tick instead of P separate solver calls. The savings
+    # are per-seat Python wrapper overhead + redundant deg precompute + the
+    # JIT-dispatch chain (compute_potential -> _gradient_relay -> picker).
+    sum_long_batched = all(s == "lightning_sum_long" for s in seat_solvers)
+    if sum_long_batched:
+        from flux_v2.solver_vec import lightning_sum_batched
+
     frames = [state_to_frame(state)]
     for t in range(1, max_ticks + 1):
         if t % ai_period == 0:
-            per_seat: list[np.ndarray] = []
-            for seat in range(num_players):
-                per_seat.append(solver_fns[seat](state, seat, rng=rng))
-            combined = _combine_actions(state, per_seat)
+            if sum_long_batched:
+                actions_grid = lightning_sum_batched(state, rng=rng, gamma=0.94)
+                combined = np.full(state.N, ACTION_NOOP, dtype=np.int32)
+                owner = state.owner
+                for seat in range(num_players):
+                    mask = owner == seat
+                    combined[mask] = actions_grid[seat][mask]
+            else:
+                per_seat: list[np.ndarray] = []
+                for seat in range(num_players):
+                    per_seat.append(solver_fns[seat](state, seat, rng=rng))
+                combined = _combine_actions(state, per_seat)
             state = apply_actions(state, combined)
         state = tick(state, edge_alpha=edge_alpha)
         if t % record_stride == 0:

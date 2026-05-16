@@ -508,8 +508,280 @@ _pot_warm_cache: dict = {}
 
 # Number of iterations to run on a warm start. With state changing only
 # ~5% per AI tick under fluid physics (and γ=0.94 contraction factor),
-# 6 iters from prev pot tracks the slowly-moving fixed point closely.
-_WARM_ITERS = 6
+# even 3-4 iters from prev pot tracks the slowly-moving fixed point. 4 is
+# the empirical sweet spot — 3 visibly degrades game quality, 6 is no
+# better than 4 at this state-change rate.
+_WARM_ITERS = 4
+
+
+# ---------------------------------------------------------------------------
+# Batched lightning_sum solver: one JIT call for ALL seats in an AI tick.
+# Eliminates per-seat dispatch overhead, intermediate np.ascontiguousarray /
+# astype, redundant deg precompute, and the chain of separate
+# compute_potential -> _gradient_relay_core -> _picker_core dispatches.
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True, fastmath=True)
+def _lightning_sum_batched_core(
+    owner: np.ndarray,             # (N,) int32
+    strength: np.ndarray,          # (N,) float32
+    outflow: np.ndarray,           # (N, K) bool
+    neighbors: np.ndarray,         # (N, K) int32
+    deg: np.ndarray,               # (N,) int32, precomputed per-game
+    prev_pots: np.ndarray,         # (P, N) float32 — warm init per seat
+    have_warm: np.ndarray,         # (P,) bool — per-seat: warm-start or cold
+    offsets: np.ndarray,           # (P, N) int32 — picker rotation offsets
+    num_players: int,
+    warm_iters: int,
+    cold_iters: int,
+    gamma: float,
+    weak_bonus: float,
+    expand_bonus: float,
+    fanout_eps: float,
+    max_strength: float,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+    dead_id: int,
+    neutral_id: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Batched sum-mode lightning. Returns (actions (P, N) int32,
+    new_pots (P, N) float32).
+
+    Each seat is independent — the function runs P near-identical
+    pipelines back-to-back without leaving JIT space.
+    """
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    P = num_players
+
+    actions = np.full((P, N), action_noop, dtype=np.int32)
+    new_pots = np.zeros((P, N), dtype=np.float32)
+
+    # Scratch reused across seats.
+    intrinsic = np.zeros(N, dtype=np.float32)
+    pot = np.zeros(N, dtype=np.float32)
+    new_pot = np.zeros(N, dtype=np.float32)
+    desired = np.zeros((N, K), dtype=np.bool_)  # attack | relay
+
+    for p in range(P):
+        # ---- intrinsic ----
+        for c in range(N):
+            oc = owner[c]
+            if oc == dead_id:
+                intrinsic[c] = 0.0
+            elif oc >= 0 and oc != p:
+                v = weak_bonus * (1.0 - strength[c] / max_strength)
+                if v < 0.0:
+                    v = 0.0
+                if v > weak_bonus:
+                    v = weak_bonus
+                intrinsic[c] = v
+            elif oc == neutral_id:
+                intrinsic[c] = expand_bonus
+            else:
+                intrinsic[c] = 0.0
+
+        # ---- Bellman iteration ----
+        if have_warm[p]:
+            for c in range(N):
+                pot[c] = prev_pots[p, c]
+            iters = warm_iters
+        else:
+            for c in range(N):
+                pot[c] = intrinsic[c]
+            iters = cold_iters
+
+        for _ in range(iters):
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                contrib = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    dd = deg[d]
+                    if dd == 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    contrib += pot[d] / dd
+                new_pot[c] = intrinsic[c] + gamma * contrib
+            # swap pot / new_pot
+            tmp = pot
+            pot = new_pot
+            new_pot = tmp
+
+        # Store pot for caller (caching). Copy because pot may alias scratch.
+        for c in range(N):
+            new_pots[p, c] = pot[c]
+
+        # ---- attack + relay mask (combined as "desired") ----
+        for c in range(N):
+            for k in range(K):
+                desired[c, k] = False
+            pot_c = pot[c]
+            # First pass: classify slots, find max friendly pot.
+            NEG_INF = np.float32(-1.0e30)
+            max_friendly = NEG_INF
+            any_friendly = False
+            for k in range(K):
+                d = neighbors[c, k]
+                if d < 0:
+                    continue
+                od = owner[d]
+                if od == dead_id:
+                    continue
+                if od == p:
+                    any_friendly = True
+                    pd = pot[d]
+                    if pd > max_friendly:
+                        max_friendly = pd
+                else:
+                    desired[c, k] = True  # attack
+            if any_friendly:
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    if owner[d] != p:
+                        continue
+                    pd = pot[d]
+                    if pd <= pot_c:
+                        continue
+                    if max_friendly - pd <= fanout_eps:
+                        desired[c, k] = True  # relay
+
+        # ---- picker (SET-missing > CLEAR-stale > NOOP) ----
+        for c in range(N):
+            if owner[c] != p:
+                continue
+            offset = offsets[p, c]
+            chosen = -1
+            for j in range(K):
+                k = offset + j
+                if k >= K:
+                    k -= K
+                if desired[c, k] and not outflow[c, k]:
+                    chosen = k
+                    break
+            if chosen >= 0:
+                actions[p, c] = action_set_base + chosen
+                continue
+            for j in range(K):
+                k = offset + j
+                if k >= K:
+                    k -= K
+                if outflow[c, k] and not desired[c, k]:
+                    chosen = k
+                    break
+            if chosen >= 0:
+                actions[p, c] = action_clear_base + chosen
+    return actions, new_pots
+
+
+# Cache: per-game "deg" precompute (int32 (N,)). Keyed by id(neighbors).
+_deg_cache: dict = {}
+
+
+def _get_deg(state: State) -> np.ndarray:
+    """Cached per-cell non-DEAD non-off-grid neighbor count.
+
+    deg depends only on (neighbors, DEAD set). DEAD cells don't change
+    during a game, so it's static per game and cheap to share.
+    """
+    key = id(state.neighbors)
+    cached = _deg_cache.get(key)
+    if cached is not None:
+        return cached
+    neighbors = state.neighbors
+    owner = state.owner
+    N, K = neighbors.shape
+    deg = np.zeros(N, dtype=np.int32)
+    nb_safe = np.maximum(neighbors, 0)
+    nb_valid = neighbors >= 0
+    nbr_owner = np.where(nb_valid, owner[nb_safe], NEUTRAL)
+    nbr_ok = nb_valid & (nbr_owner != DEAD)
+    deg[:] = nbr_ok.sum(axis=1).astype(np.int32)
+    if len(_deg_cache) > 16:
+        _deg_cache.clear()
+    _deg_cache[key] = deg
+    return deg
+
+
+def lightning_sum_batched(
+    state: State,
+    rng: Optional[np.random.Generator] = None,
+    gamma: float = 0.94,
+    weak_bonus: float = 1.0,
+    expand_bonus: float = 0.6,
+    fanout_eps: float = 0.05,
+) -> np.ndarray:
+    """Batched sum-mode lightning. Returns (P, N) int32 actions for all
+    seats in one JIT call. Wraps cache lookup and offset RNG, then hands
+    off to `_lightning_sum_batched_core`.
+
+    The runner combines per-seat actions by masking to each seat's owned
+    cells, so this returns the full (P, N) grid — caller picks rows.
+    """
+    N = state.N
+    P = state.num_players
+    K_ = state.neighbors.shape[1]
+
+    # Per-seat warm-start pot lookup. Cache key includes gamma so multiple
+    # gamma values don't pollute each other (e.g. sum vs sum_long).
+    prev_pots = np.zeros((P, N), dtype=np.float32)
+    have_warm = np.zeros(P, dtype=np.bool_)
+    nb_key = id(state.neighbors)
+    for seat in range(P):
+        key = (nb_key, int(seat), "sum", float(gamma))
+        prev = _pot_warm_cache.get(key)
+        if prev is not None and prev.shape == (N,):
+            prev_pots[seat] = prev
+            have_warm[seat] = True
+
+    # Random rotation offsets for tie-break in picker, one per (seat, cell).
+    if rng is not None:
+        offsets = rng.integers(0, K_, size=(P, N)).astype(np.int32)
+    else:
+        offsets = np.zeros((P, N), dtype=np.int32)
+
+    deg = _get_deg(state)
+
+    actions_grid, new_pots = _lightning_sum_batched_core(
+        np.ascontiguousarray(state.owner, dtype=np.int32),
+        np.ascontiguousarray(state.strength, dtype=np.float32),
+        np.ascontiguousarray(state.outflow, dtype=np.bool_),
+        np.ascontiguousarray(state.neighbors, dtype=np.int32),
+        deg,
+        prev_pots,
+        have_warm,
+        offsets,
+        P,
+        _WARM_ITERS,
+        32,                                      # cold_iters
+        float(gamma),
+        float(weak_bonus),
+        float(expand_bonus),
+        float(fanout_eps),
+        float(MAX_STRENGTH),
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+        int(DEAD),
+        int(NEUTRAL),
+    )
+
+    # Update warm-start cache for next AI tick.
+    if len(_pot_warm_cache) > 256:
+        _pot_warm_cache.clear()
+    for seat in range(P):
+        key = (nb_key, int(seat), "sum", float(gamma))
+        _pot_warm_cache[key] = new_pots[seat]
+    return actions_grid
 
 
 def reset_potential_cache() -> None:
