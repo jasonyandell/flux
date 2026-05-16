@@ -252,24 +252,37 @@ export function createPlayer(opts: Opts): Player {
   }
 
   function effectiveFps(): number {
-    return Math.max(0.1, framesPerSec * runtimeSpeedMult);
+    const signed = framesPerSec * runtimeSpeedMult;
+    if (signed === 0) return 0;
+    if (Math.abs(signed) < 0.1) return signed < 0 ? -0.1 : 0.1;
+    return signed;
   }
 
   function advance(dt: number): void {
     if (!replay || paused) return;
-    const wallSec = 1 / effectiveFps();
+    const fps = effectiveFps();
+    if (fps === 0) return;
+    const wallSec = 1 / Math.abs(fps);
     frameAccSec += dt;
     while (frameAccSec >= wallSec) {
       frameAccSec -= wallSec;
-      if (frameIdx + 1 < replay.frames.length) {
-        frameIdx++;
-      } else {
-        if (!pendingFile) {
-          const next = pickNextReplay();
-          if (next && next !== replayName) pendingFile = next;
+      if (fps >= 0) {
+        if (frameIdx + 1 < replay.frames.length) {
+          frameIdx++;
+        } else {
+          if (!pendingFile) {
+            const next = pickNextReplay();
+            if (next && next !== replayName) pendingFile = next;
+          }
+          frameAccSec = 0;
+          break;
         }
-        frameAccSec = 0;
-        break;
+      } else {
+        if (frameIdx > 0) frameIdx--;
+        else {
+          frameAccSec = 0;
+          break;
+        }
       }
     }
   }
@@ -309,7 +322,8 @@ export function createPlayer(opts: Opts): Player {
     },
     speedMultiplier() { return runtimeSpeedMult; },
     setSpeedMultiplier(m: number) {
-      runtimeSpeedMult = Math.max(0.05, m);
+      const clipped = Math.max(-8, Math.min(8, m));
+      runtimeSpeedMult = Object.is(clipped, -0) ? 0 : clipped;
       frameAccSec = 0;
     },
     nextReplay() {

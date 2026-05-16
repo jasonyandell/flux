@@ -6,6 +6,20 @@ last_updated: 2026-05-16
 status: active
 ---
 
+## [2026-05-16 | workspace | v2 viewer pinch zoom, pan, and wheel speed]
+
+**Touched pages:** [[topics/v2-viewer]] [[index]] [[log]]
+
+Added Mac-friendly replay inspection controls to `/index-v2.html`: trackpad
+pinch (`ctrl+wheel` in Chromium/Electron) zooms the orthographic camera around
+the cursor, smooth two-finger trackpad scroll pans the map with camera clamps,
+and Shift-scroll steps playback speed up or down through forward, slow, `0×`,
+and reverse multipliers. `0×` is a stop barrier: scrolling down from positive
+speed pauses at zero; a separate follow-up scroll crosses into reverse, and
+vice versa. Negative speed plays the current replay backward until frame 0.
+The replay drawer keeps normal scroll behavior because the wheel handler is
+canvas-scoped.
+
 ## [2026-05-16 | workspace | r40 smooth replay probes]
 
 **Touched pages:** [[topics/v2-viewer]] [[log]]

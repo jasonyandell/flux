@@ -95,10 +95,13 @@ smooth-recorded solver games: `radius=40`, `num_players=12`,
   (0..N−1). Dragging auto-pauses; programmatic updates are suppressed
   while the user has the slider grabbed so playback doesn't fight the
   drag.
-- **Speed cycle** picks `0.25 / 0.5 / 1 / 2 / 4×`, applied as a
+- **Speed cycle** picks `-8 / -4 / -2 / -1 / -0.5 / -0.25 / -0.1 /
+  -0.05 / 0 / 0.05 / 0.1 / 0.25 / 0.5 / 1 / 2 / 4 / 8×`, applied as a
   *runtime multiplier* on top of `PLAYBACK_SPEED` and the cadence-aware
   `framesPerSec` the player computes per replay. 1× means "whatever the
-  player picked"; the multiplier never replaces the auto-cadence logic.
+  player picked"; negative values play the current replay backwards, and
+  `0×` pauses on the current frame. The multiplier never replaces the
+  auto-cadence logic.
 - **Fade trail** (`✦` on / `✧` off) toggles the per-node brightness
   pulse-and-fade effect. On by default; preference persists in
   `localStorage` under `flux-v2-fade-enabled`. See
@@ -106,6 +109,25 @@ smooth-recorded solver games: `radius=40`, `num_players=12`,
 
 The bar sits at z-index 9, 0.55 opacity, fading to 1.0 on hover, so it
 stays out of the way during passive viewing.
+
+## Canvas gestures
+
+The canvas owns Mac-friendly inspection gestures:
+
+- **Trackpad pinch** (Chromium/Electron reports this as `ctrl+wheel`) zooms
+  the orthographic camera around the cursor. The camera clamps to `0.35..8×`.
+- **Two-finger trackpad scroll** pans the map. The camera clamps to the board
+  envelope plus a small margin so a zoomed-in view cannot drift completely
+  away from the action.
+- **Shift-scroll** adjusts playback speed. Small scrolls feather through the
+  fine `0.05 / 0.1 / 0.25×` stops around pause; faster scrolls advance through
+  the ladder faster. Crossing direction stops at `0×` and pauses. A separate
+  follow-up shift-scroll crosses from `0×` into reverse or forward playback.
+  Reverse playback walks the current replay backward and stops at frame 0.
+
+Wheel handling is attached only to the canvas, so the replay drawer can keep
+using normal scroll behavior. The canvas mental model is spatial by default:
+unmodified scroll pans; the Shift modifier opts into time control.
 
 ## Status row
 

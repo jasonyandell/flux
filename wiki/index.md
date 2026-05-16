@@ -39,7 +39,8 @@ v2 reference:
   capture semantics, delivery shape).
 - [[topics/v2-viewer|v2-viewer]] — feature catalog for `/index-v2.html`:
   searchable replay drawer, deep links (`?replay=<file.flxr>`), copy-link
-  controls, arrival badges, current-run metadata, transport bar,
+  controls, arrival badges, current-run metadata, pinch zoom, two-finger pan,
+  Shift-scroll speed control including zero-stop reverse playback, transport bar,
   auto-cadence, mixed-radius rebuild, FLXR v3 format.
 
 v2 research (freshest first):

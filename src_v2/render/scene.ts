@@ -49,6 +49,59 @@ export function setFadeEnabled(s: Scene, enabled: boolean): void {
   s.fadeEnabled = enabled;
 }
 
+function updateViewDataset(s: Scene): void {
+  s.domElement.dataset.zoom = s.camera.zoom.toFixed(3);
+  s.domElement.dataset.pan = `${s.camera.position.x.toFixed(3)},${s.camera.position.y.toFixed(3)}`;
+}
+
+function clampCamera(s: Scene): void {
+  const camera = s.camera;
+  const halfW = (camera.right - camera.left) / (2 * camera.zoom);
+  const halfH = (camera.top - camera.bottom) / (2 * camera.zoom);
+  const pad = s.viewSize * 0.25;
+  const maxX = Math.max(0, s.worldHalfWidth + pad - halfW);
+  const maxY = Math.max(0, s.worldHalfHeight + pad - halfH);
+  camera.position.x = Math.max(-maxX, Math.min(maxX, camera.position.x));
+  camera.position.y = Math.max(-maxY, Math.min(maxY, camera.position.y));
+  updateViewDataset(s);
+}
+
+export function zoomSceneAtClientPoint(
+  s: Scene,
+  clientX: number,
+  clientY: number,
+  factor: number,
+): number {
+  const camera = s.camera;
+  const rect = s.domElement.getBoundingClientRect();
+  const nx = ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+  const ny = -(((clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1);
+  const before = new THREE.Vector3(nx, ny, 0).unproject(camera);
+  camera.zoom = Math.max(0.35, Math.min(8, camera.zoom * factor));
+  camera.updateProjectionMatrix();
+  const after = new THREE.Vector3(nx, ny, 0).unproject(camera);
+  camera.position.x += before.x - after.x;
+  camera.position.y += before.y - after.y;
+  clampCamera(s);
+  return camera.zoom;
+}
+
+export function panSceneByScreenDelta(s: Scene, dxPx: number, dyPx: number): void {
+  const rect = s.domElement.getBoundingClientRect();
+  const worldW = (s.camera.right - s.camera.left) / s.camera.zoom;
+  const worldH = (s.camera.top - s.camera.bottom) / s.camera.zoom;
+  s.camera.position.x += dxPx * (worldW / Math.max(1, rect.width));
+  s.camera.position.y -= dyPx * (worldH / Math.max(1, rect.height));
+  clampCamera(s);
+}
+
+export function resetSceneZoom(s: Scene): void {
+  s.camera.zoom = 1;
+  s.camera.position.set(0, 0, 10);
+  s.camera.updateProjectionMatrix();
+  clampCamera(s);
+}
+
 // Pulse-on-change + fade-over-iters. Target decay is keyed off replay frame
 // advance — pause/scrub holds the glow, fast-forward fades fast.
 // FADE_PER_ITER = 1/N means ~N iters from full bright to fully faded.
@@ -64,6 +117,8 @@ export function createScene(canvas: HTMLCanvasElement, board: Board): Scene {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setClearColor(0x0a0a0a);
+  canvas.dataset.zoom = '1.000';
+  canvas.dataset.pan = '0.000,0.000';
 
   const scene = new THREE.Scene();
 
@@ -395,6 +450,7 @@ export function rebuildSceneGeometry(s: Scene, board: Board): void {
   s.camera.bottom = -s.viewSize;
   s.camera.position.set(0, 0, 10);
   s.camera.updateProjectionMatrix();
+  clampCamera(s);
 
   const edgePoints: number[] = [];
   for (let c = 0; c < board.N; c++) {
@@ -452,6 +508,7 @@ export function resizeRenderer(s: Scene): void {
   s.camera.top = s.viewSize;
   s.camera.bottom = -s.viewSize;
   s.camera.updateProjectionMatrix();
+  clampCamera(s);
 }
 
 export function render(s: Scene): void {

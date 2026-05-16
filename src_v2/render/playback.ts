@@ -28,11 +28,14 @@ export type PlaybackBar = {
   setFadeEnabled(enabled: boolean): void;
 };
 
-const SPEEDS = [0.25, 0.5, 1, 2, 4];
+const SPEEDS = [-8, -4, -2, -1, -0.5, -0.25, -0.1, -0.05, 0, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8];
 
 function fmtSpeed(m: number): string {
   // 1 → "1×", 0.5 → "0.5×", 2 → "2×"
-  const s = Number.isInteger(m) ? m.toFixed(0) : m.toString();
+  if (m === 0) return '0×';
+  const abs = Math.abs(m);
+  const s = Number.isInteger(abs) ? abs.toFixed(0) : abs.toString();
+  if (m < 0) return `-${s}×`;
   return `${s}×`;
 }
 
@@ -64,6 +67,7 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
     'box-shadow:0 4px 20px rgba(0,0,0,0.4);';
   root.addEventListener('mouseenter', () => { root.style.opacity = '1'; });
   root.addEventListener('mouseleave', () => { root.style.opacity = '0.55'; });
+  root.dataset.speed = '1';
 
   const prev = makeButton('⏮', 'Previous replay (Shift+←)');
   prev.addEventListener('click', () => handlers.onPrev());
@@ -164,6 +168,7 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
       const i = SPEEDS.indexOf(multiplier);
       if (i >= 0) speedIdx = i;
       speedBtn.textContent = fmtSpeed(multiplier);
+      root.dataset.speed = String(multiplier);
     },
     setEnabled(enabled: boolean) {
       const o = enabled ? '' : '0.5';
