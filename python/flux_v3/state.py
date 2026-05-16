@@ -29,16 +29,6 @@ CAPTURE_STRENGTH: float = 50.0         # legacy; new rule uses surplus pressure
 REGEN_BASE_PER_TICK: float = 5.0       # baseline cell regen per game tick
 REGEN_SLOPE: float = 0.0               # linear scaling; 0 = flat regen
 
-# Edge-pressure momentum. Each tick the edge relaxes from its previous value
-# toward its source-overflow target:
-#   edge_pressure_next[c, k] = (1 - EDGE_ALPHA) * old + EDGE_ALPHA * target
-# EDGE_ALPHA = 1.0 → snap to target (original v2 physics, no momentum).
-# EDGE_ALPHA < 1.0 → fluid-style buildup; pressure takes ~1/EDGE_ALPHA ticks
-#                    to reach ~63% of a held target, ~3/EDGE_ALPHA to ~95%.
-# Pilot value: 0.05 (≈20 ticks to ~63%, ≈60 ticks to ~95%). See
-# wiki/topics/v2-vectorized for the brainstorm framing.
-EDGE_ALPHA: float = 1.0
-
 # Waste = "any regen you didn't send." If a cell has outflows set, its regen
 # is "sent" (whether or not the per-edge cap clips some of it — the cap is a
 # system limit, not the policy's fault). No-spill is the base waste category:
@@ -107,11 +97,43 @@ class State:
     tick: int
     num_players: int
     waste_total: float = 0.0   # cumulative waste across the game (diagnostic)
+    # Per-cell back-edge slot table — back_slot[c, k] is the slot at
+    # neighbors[c, k] that points back to c. For hex grids this equals
+    # OPPOSITE_SLOT[k] at every cell; sphere/non-hex topologies need it
+    # per-cell because there's no globally-consistent (k+3)%6 convention.
+    # None ⇒ legacy hex-grid behavior, callers may treat as OPPOSITE_SLOT[k].
+    back_slot: "np.ndarray | None" = None
 
 
 def regen(strength: np.ndarray) -> np.ndarray:
     """Per-tick regen rate per cell. Linear knob is open in the PRD."""
     return REGEN_BASE_PER_TICK * (1.0 + REGEN_SLOPE * (strength - 1.0))
+
+
+def compute_back_slot(neighbors: np.ndarray) -> np.ndarray:
+    """Derive back_slot from a directed-neighbor table. For each (c, k) with
+    neighbors[c, k] = d ≥ 0, returns the unique slot kk where
+    neighbors[d, kk] = c. Off-grid slots get -1."""
+    N, Kn = neighbors.shape
+    back = np.full((N, Kn), -1, dtype=np.int32)
+    for c in range(N):
+        for k in range(Kn):
+            d = int(neighbors[c, k])
+            if d < 0:
+                continue
+            for kk in range(Kn):
+                if int(neighbors[d, kk]) == c:
+                    back[c, k] = kk
+                    break
+    return back
+
+
+def back_slot_or_default(state: State) -> np.ndarray:
+    """Return state.back_slot if set, else the hex default OPPOSITE_SLOT
+    broadcast to (N, K)."""
+    if state.back_slot is not None:
+        return state.back_slot
+    return np.broadcast_to(OPPOSITE_SLOT[None, :], (state.N, K)).copy()
 
 
 def copy_state(s: State) -> State:
@@ -127,4 +149,5 @@ def copy_state(s: State) -> State:
         tick=s.tick,
         num_players=s.num_players,
         waste_total=s.waste_total,
+        back_slot=s.back_slot,               # immutable topology, safe to share
     )

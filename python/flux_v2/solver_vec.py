@@ -1,0 +1,1534 @@
+"""Vectorized v2 solver families.
+
+One file, all modes, no per-cell Python loops. Replaces the per-cell loops
+that used to live in solver_lightning.py and solver.py.
+
+Public entry points:
+  bfs_actions(state, seat, rng) -> (N,) int32
+  lightning_actions(state, seat, rng, *, mode=..., **kwargs) -> (N,) int32
+
+Each mode reduces to: compute a (N, K) bool `desired` mask, hand off to
+`_actions_from_desired` for the SET-missing > CLEAR-stale > NOOP picker.
+
+Tie-break: when multiple slots qualify (e.g. several missing attack slots),
+the picker rotates the slot search order by a per-cell offset. With an RNG,
+that offset is random per cell; without one, it's zero (slot-0 bias).
+
+The behavioral differences from the per-cell-loop version are intentional
+and documented in the wiki; the relevant ones are:
+  * RNG draw schedule changes (replays from older runs don't bit-replay).
+  * The relay rule selects "all friendly slots whose pot is within
+    `fanout_eps` of the cell's max friendly pot AND strictly above
+    pot[c]". The old code was path-dependent through an incremental
+    running-best variable; the new behavior is cleaner.
+"""
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+import numpy as np
+from numba import njit, prange
+
+from .state import (
+    ACTION_CLEAR_BASE,
+    ACTION_NOOP,
+    ACTION_SET_BASE,
+    DEAD,
+    K,
+    MAX_EDGE,
+    MAX_STRENGTH,
+    NEUTRAL,
+    OPPOSITE_SLOT,
+    State,
+)
+
+# ---------------------------------------------------------------------------
+# Backend selection: Numba (default) vs MLX (opt-in, GPU on Apple Silicon).
+# ---------------------------------------------------------------------------
+# A standalone microbenchmark of compute_potential alone showed MLX ~1.79x
+# faster than Numba on M5 Max. Wired into the real solver it ran ~1.5x
+# *slower* — the per-call numpy↔MLX upload + per-seat mx.eval sync exceeds
+# the kernel savings when each seat consumes pot as numpy immediately.
+#
+# To actually win with MLX would require keeping the whole solver pipeline
+# in MLX (intrinsic, attack/relay masks, picker) and syncing once per AI
+# tick across all 6 seats. That's a sizable rewrite — left out of this
+# pass.
+#
+# Default is "numba". Set FLUX_V2_BACKEND=mlx to opt in (useful for future
+# pipeline-in-MLX work; current hot path is faster on numba).
+
+_BACKEND_ENV = os.environ.get("FLUX_V2_BACKEND", "numba").lower()
+_MLX_AVAILABLE = False
+if _BACKEND_ENV == "mlx":
+    try:
+        import mlx.core as mx  # type: ignore[import-not-found]
+        _MLX_AVAILABLE = True
+    except Exception:
+        _MLX_AVAILABLE = False
+
+
+# Compile once: 32-iter Bellman value iteration as one MLX graph.
+# Inputs all dynamic (no closure over arrays) so this is shape-polymorphic.
+if _MLX_AVAILABLE:
+    @mx.compile
+    def _mlx_bellman_sum_32(
+        intrinsic, gamma, nb_safe, nbr_ok, safe_deg, alive_mask,
+    ):
+        pot = intrinsic * 1.0
+        for _ in range(32):
+            gathered = mx.take(pot, nb_safe, axis=0)
+            deg_at = mx.take(safe_deg, nb_safe, axis=0)
+            weighted = (gathered / deg_at) * nbr_ok
+            contrib = weighted.sum(axis=1)
+            pot = (intrinsic + gamma * contrib) * alive_mask
+        return pot
+
+    @mx.compile
+    def _mlx_bellman_max_32(
+        intrinsic, gamma, nb_safe, nbr_ok, alive_mask,
+    ):
+        pot = intrinsic * 1.0
+        NEG = mx.array(np.float32(-1.0e30))
+        for _ in range(32):
+            gathered = mx.take(pot, nb_safe, axis=0)
+            # mask out invalid neighbors with -inf so they don't win max
+            masked = mx.where(nbr_ok > 0.5, gathered, NEG)
+            mx_n = masked.max(axis=1)
+            pot = mx.maximum(intrinsic, gamma * mx_n) * alive_mask
+        return pot
+
+
+# Per-board MLX cache, keyed by id(neighbors). The cached entry stores the
+# (static, this-game) MLX arrays so per-call cost is just intrinsic upload.
+_mlx_board_cache: dict = {}
+
+
+def _get_mlx_board(state: State):
+    """Return cached MLX board structures for this state's geometry.
+
+    Cache key is id(state.neighbors). copy_state preserves neighbors
+    identity so a whole game maps to one cache entry. The DEAD pattern
+    is read from state.owner once (immutable per game by construction).
+    """
+    if not _MLX_AVAILABLE:
+        return None
+    key = id(state.neighbors)
+    entry = _mlx_board_cache.get(key)
+    if entry is not None:
+        return entry
+    neighbors = state.neighbors
+    owner = state.owner
+    nb_safe = np.maximum(neighbors, 0).astype(np.int32)
+    nb_valid = neighbors >= 0
+    is_dead = (owner == DEAD)
+    nbr_ok = (nb_valid & ~is_dead[nb_safe]).astype(np.float32)
+    deg = nbr_ok.sum(axis=1).astype(np.float32)
+    safe_deg = np.where(deg > 0, deg, np.float32(1.0)).astype(np.float32)
+    alive_mask = (1.0 - is_dead.astype(np.float32)).astype(np.float32)
+    entry = {
+        "nb_safe": mx.array(nb_safe),
+        "nbr_ok": mx.array(nbr_ok),
+        "safe_deg": mx.array(safe_deg),
+        "alive_mask": mx.array(alive_mask),
+    }
+    # Cap the cache so long-running processes don't leak memory across many
+    # board shapes (e.g., tournaments at different radii).
+    if len(_mlx_board_cache) > 16:
+        _mlx_board_cache.clear()
+    _mlx_board_cache[key] = entry
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# Shared geometry helpers (vectorized).
+# ---------------------------------------------------------------------------
+
+
+def _neighbor_owner_grid(state: State) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (nb_safe, nb_valid, nb_owner): (N, K) shapes.
+    nb_owner[c, k] = owner[nb[c, k]] (or NEUTRAL where invalid)."""
+    nb = state.neighbors
+    nb_safe = np.maximum(nb, 0)
+    nb_valid = nb >= 0
+    nb_owner = np.where(nb_valid, state.owner[nb_safe], NEUTRAL)
+    return nb_safe, nb_valid, nb_owner
+
+
+def _inbound_enemy_pressure(state: State, seat: int) -> np.ndarray:
+    """Vectorized (N,) sum of inbound edge_pressure from enemy seats."""
+    N = state.N
+    nb_safe, nb_valid, nb_owner = _neighbor_owner_grid(state)
+    ep = state.edge_pressure                                # (N, K)
+    # ep[d, opp_k] for d = nb[c, k]
+    opp = OPPOSITE_SLOT                                     # (K,)
+    pressure_grid = ep[nb_safe, opp[None, :]]               # (N, K)
+    is_enemy_slot = nb_valid & (nb_owner != seat) & (nb_owner >= 0)
+    return (pressure_grid * is_enemy_slot.astype(np.float32)).sum(axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Potential-field computation (already vectorized — kept here so the new
+# solver doesn't import the old module).
+# ---------------------------------------------------------------------------
+
+
+def compute_potential_live(
+    state: State,
+    seat: int,
+    gamma: float = 0.85,
+    weak_bonus: float = 1.0,
+    expand_bonus: float = 0.6,
+    defense_bonus: float = 0.0,
+    flow_weight: float = 1.0,
+    strength_weight: float = 0.5,
+) -> np.ndarray:
+    """Live-field potential proxy. Skips iterated value-iteration.
+
+    Returns (N,) float32. Four additive parts:
+
+      * intrinsic — same source field as `compute_potential` (high on
+        weak enemies / neutrals).
+      * one-hop neighbor average of intrinsic, discounted by `gamma`.
+        Gives frontline-adjacent friendlies some pull.
+      * strength_signal — friendly cells get `strength_weight * (1 -
+        strength/MAX_STRENGTH)`. Sets the *rear → front* gradient
+        from cell state alone, no iteration needed. Full backline
+        cells have low pot, drained frontline cells have high pot,
+        so relay always points toward where pressure is needed.
+      * flow_signal — normalized total of inbound + outbound
+        edge_pressure at each cell. Encodes "this cell is on an
+        active pressure pathway." Under fluid physics
+        (`EDGE_ALPHA < 1`) this field has been propagating for many
+        ticks, so it captures multi-hop information without iter.
+
+    Strategically useful only when edge_pressure carries time-
+    integrated signal (i.e., when `EDGE_ALPHA < 1`) and the
+    strength gradient bootstraps the relay direction. Under
+    snap-to-target rules the live field is just this-tick's spill
+    share and the strength gradient may be misaligned (full backline
+    cells under snap still need to relay forward even though they
+    have low pot here) — pick `sum` / `sum_long` for the original
+    rules.
+    """
+    N = state.N
+    owner = state.owner
+    strength = state.strength
+    nb_safe, nb_valid, _ = _neighbor_owner_grid(state)
+
+    is_enemy = (owner >= 0) & (owner != seat)
+    is_neutral = owner == NEUTRAL
+    is_mine = owner == seat
+    is_dead = owner == DEAD
+
+    intrinsic = np.zeros(N, dtype=np.float32)
+    if is_enemy.any():
+        intrinsic[is_enemy] = (
+            weak_bonus * (1.0 - strength[is_enemy] / MAX_STRENGTH)
+        ).clip(0.0, weak_bonus)
+    intrinsic[is_neutral] = expand_bonus
+    if defense_bonus > 0.0 and is_mine.any():
+        inbound = _inbound_enemy_pressure(state, seat)
+        threat = (inbound / MAX_EDGE).clip(0.0, 1.0)
+        intrinsic[is_mine] = defense_bonus * threat[is_mine]
+    intrinsic[is_dead] = 0.0
+
+    nbr_dead = (owner[nb_safe] == DEAD) & nb_valid
+    nbr_ok = nb_valid & ~nbr_dead
+    nbr_ok_f = nbr_ok.astype(np.float32)
+
+    # One-hop neighbor average of intrinsic.
+    deg_self = nbr_ok_f.sum(axis=1)
+    safe_deg = np.where(deg_self > 0, deg_self, 1.0)
+    one_hop = (intrinsic[nb_safe] * nbr_ok_f).sum(axis=1) / safe_deg
+
+    # Friendly strength gradient: empty cells > full cells. Pulls relay
+    # from rear to front without needing the pressure field to have
+    # propagated yet (bootstraps from game start).
+    strength_signal = np.where(
+        is_mine,
+        (1.0 - strength / MAX_STRENGTH).clip(0.0, 1.0),
+        0.0,
+    ).astype(np.float32)
+
+    # Flow signal from live edge_pressure: inbound + outbound, normalized.
+    ep = state.edge_pressure
+    opp = OPPOSITE_SLOT[None, :]
+    inbound_grid = ep[nb_safe, opp] * nbr_ok_f
+    inbound_total = inbound_grid.sum(axis=1)
+    outbound_total = (ep * nbr_ok_f).sum(axis=1)
+    norm = max(2.0 * K * MAX_EDGE, 1.0)
+    flow_signal = (inbound_total + outbound_total) / norm
+
+    pot = (
+        intrinsic
+        + gamma * one_hop
+        + strength_weight * strength_signal
+        + flow_weight * flow_signal
+    )
+    pot = pot.astype(np.float32)
+    pot[is_dead] = 0.0
+    return pot
+
+
+_OPPOSITE_SLOT_ARR_VEC = np.asarray(OPPOSITE_SLOT, dtype=np.int32)
+
+
+@njit(cache=True, fastmath=True)
+def _compute_potential_core(
+    owner: np.ndarray,
+    intrinsic: np.ndarray,
+    init_pot: np.ndarray,
+    neighbors: np.ndarray,
+    edge_pressure: np.ndarray,
+    opposite_slot: np.ndarray,
+    gamma: float,
+    max_iter: int,
+    tol: float,
+    mode_id: int,
+    dead_id: int,
+) -> np.ndarray:
+    """JIT'd value iteration for compute_potential.
+
+    mode_id: 0=max, 1=sum, 2=sum_pw.
+    Returns (N,) float32 pot field. Same algorithm as the numpy version,
+    just per-cell explicit loops so Numba can vectorize/optimize.
+    """
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    # Start from init_pot (caller passes intrinsic for cold start, or the
+    # previous AI tick's converged pot for warm start).
+    pot = init_pot.copy()
+    new_pot = np.empty_like(pot)
+
+    # Precompute per-cell degree (count of non-DEAD non-off-grid neighbors).
+    deg = np.zeros(N, dtype=np.int32)
+    for c in range(N):
+        n = 0
+        for k in range(K):
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            if owner[d] == dead_id:
+                continue
+            n += 1
+        deg[c] = n
+
+    for _ in range(max_iter):
+        if mode_id == 0:  # max
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                max_nbr = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    if pot[d] > max_nbr:
+                        max_nbr = pot[d]
+                v = intrinsic[c]
+                gm = gamma * max_nbr
+                if gm > v:
+                    v = gm
+                new_pot[c] = v
+        elif mode_id == 1:  # sum (uniform)
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                contrib = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    dd = deg[d]
+                    if dd == 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    contrib += pot[d] / dd
+                new_pot[c] = intrinsic[c] + gamma * contrib
+        else:  # 2: sum_pw (pressure-weighted)
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                contrib = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    opp_k = opposite_slot[k]
+                    ep_dc = edge_pressure[d, opp_k]
+                    total = 0.0
+                    for kk in range(K):
+                        total += edge_pressure[d, kk]
+                    if total > 1e-9:
+                        w = ep_dc / total
+                    else:
+                        dd = deg[d]
+                        w = 1.0 / dd if dd > 0 else 0.0
+                    contrib += pot[d] * w
+                new_pot[c] = intrinsic[c] + gamma * contrib
+
+        # Convergence check (reduction in a separate scan; cheap vs the
+        # inner loop).
+        max_diff = 0.0
+        for c in range(N):
+            d_abs = new_pot[c] - pot[c]
+            if d_abs < 0.0:
+                d_abs = -d_abs
+            if d_abs > max_diff:
+                max_diff = d_abs
+
+        # swap pot ↔ new_pot
+        tmp = pot
+        pot = new_pot
+        new_pot = tmp
+        if max_diff < tol:
+            break
+    return pot
+
+
+def compute_potential(
+    state: State,
+    seat: int,
+    gamma: float = 0.85,
+    weak_bonus: float = 1.0,
+    expand_bonus: float = 0.6,
+    defense_bonus: float = 0.0,
+    max_iter: int = 32,
+    tol: float = 1e-4,
+    mode: str = "max",
+) -> np.ndarray:
+    """Return (N,) float32 potential field for `seat`. Modes:
+    'max': pot[c] = max(intrinsic[c], gamma * max neighbor pot)
+    'sum': pot[c] = intrinsic[c] + gamma * uniform sum of neighbor pots
+    'sum_pw': sum but weighted by current edge pressure ratios
+    """
+    N = state.N
+    owner = state.owner
+    strength = state.strength
+
+    is_enemy = (owner >= 0) & (owner != seat)
+    is_neutral = owner == NEUTRAL
+    is_mine = owner == seat
+    is_dead = owner == DEAD
+
+    intrinsic = np.zeros(N, dtype=np.float32)
+    if is_enemy.any():
+        intrinsic[is_enemy] = (
+            weak_bonus * (1.0 - strength[is_enemy] / MAX_STRENGTH)
+        ).clip(0.0, weak_bonus)
+    intrinsic[is_neutral] = expand_bonus
+    if defense_bonus > 0.0 and is_mine.any():
+        inbound = _inbound_enemy_pressure(state, seat)
+        threat = (inbound / MAX_EDGE).clip(0.0, 1.0)
+        intrinsic[is_mine] = defense_bonus * threat[is_mine]
+    intrinsic[is_dead] = 0.0
+
+    mode_id = {"max": 0, "sum": 1, "sum_pw": 2}.get(mode, -1)
+    if mode_id < 0:
+        raise ValueError(f"unknown mode {mode!r}")
+
+    # Warm-start cache: keyed by (board id, seat, mode, gamma). The board
+    # geometry is fixed within a game (copy_state preserves neighbors
+    # identity). State changes per AI tick are small under fluid physics
+    # (~5 game ticks of slow edge-pressure evolution), so previous pot is a
+    # close-to-truth init and the Bellman fixed point is reached in 4-6
+    # iterations instead of 32.
+    cache_key = (id(state.neighbors), int(seat), mode, float(gamma))
+    prev_pot = _pot_warm_cache.get(cache_key)
+
+    if prev_pot is not None and prev_pot.shape == intrinsic.shape:
+        init_pot = prev_pot
+        iters = _WARM_ITERS
+    else:
+        init_pot = intrinsic
+        iters = int(max_iter)
+
+    # MLX fast path for sum / max modes when iters == 32 cold start.
+    # sum_pw uses runtime edge_pressure weights — left on Numba.
+    if (
+        _MLX_AVAILABLE
+        and mode_id in (0, 1)
+        and iters == 32
+        and prev_pot is None
+    ):
+        board = _get_mlx_board(state)
+        intrinsic_mx = mx.array(intrinsic.astype(np.float32))
+        gamma_mx = mx.array(np.float32(gamma))
+        if mode_id == 1:
+            pot_mx = _mlx_bellman_sum_32(
+                intrinsic_mx, gamma_mx,
+                board["nb_safe"], board["nbr_ok"], board["safe_deg"],
+                board["alive_mask"],
+            )
+        else:
+            pot_mx = _mlx_bellman_max_32(
+                intrinsic_mx, gamma_mx,
+                board["nb_safe"], board["nbr_ok"], board["alive_mask"],
+            )
+        mx.eval(pot_mx)
+        pot = np.asarray(pot_mx, dtype=np.float32)
+    else:
+        pot = _compute_potential_core(
+            np.ascontiguousarray(owner, dtype=np.int32),
+            np.ascontiguousarray(intrinsic, dtype=np.float32),
+            np.ascontiguousarray(init_pot, dtype=np.float32),
+            np.ascontiguousarray(state.neighbors, dtype=np.int32),
+            np.ascontiguousarray(state.edge_pressure, dtype=np.float32),
+            _OPPOSITE_SLOT_ARR_VEC,
+            float(gamma),
+            iters,
+            float(tol),
+            int(mode_id),
+            int(DEAD),
+        )
+
+    pot = pot.astype(np.float32, copy=False)
+    # Cache for next AI tick's warm start. Cap cache size; arbitrary keys
+    # could grow unbounded across long runs.
+    if len(_pot_warm_cache) > 256:
+        _pot_warm_cache.clear()
+    _pot_warm_cache[cache_key] = pot
+    return pot
+
+
+# Warm-start cache. (id(neighbors), seat, mode, gamma) -> last pot. Reset
+# when board structure changes (different game). Inside one game,
+# copy_state preserves neighbors identity so the key is stable.
+_pot_warm_cache: dict = {}
+
+# Number of iterations to run on a warm start. With state changing only
+# ~5% per AI tick under fluid physics (and γ=0.94 contraction factor),
+# even 3-4 iters from prev pot tracks the slowly-moving fixed point. 4 is
+# the empirical sweet spot — 3 visibly degrades game quality, 6 is no
+# better than 4 at this state-change rate.
+_WARM_ITERS = 4
+
+
+# ---------------------------------------------------------------------------
+# Batched lightning_sum solver: one JIT call for ALL seats in an AI tick.
+# Eliminates per-seat dispatch overhead, intermediate np.ascontiguousarray /
+# astype, redundant deg precompute, and the chain of separate
+# compute_potential -> _gradient_relay_core -> _picker_core dispatches.
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True, fastmath=True)
+def _lightning_sum_batched_core(
+    owner: np.ndarray,             # (N,) int32
+    strength: np.ndarray,          # (N,) float32
+    outflow: np.ndarray,           # (N, K) bool
+    neighbors: np.ndarray,         # (N, K) int32
+    deg: np.ndarray,               # (N,) int32, precomputed per-game
+    prev_pots: np.ndarray,         # (P, N) float32 — warm init per seat
+    have_warm: np.ndarray,         # (P,) bool — per-seat: warm-start or cold
+    offsets: np.ndarray,           # (P, N) int32 — picker rotation offsets
+    num_players: int,
+    warm_iters: int,
+    cold_iters: int,
+    gamma: float,
+    weak_bonus: float,
+    expand_bonus: float,
+    fanout_eps: float,
+    max_strength: float,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+    dead_id: int,
+    neutral_id: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Batched sum-mode lightning. Returns (actions (P, N) int32,
+    new_pots (P, N) float32).
+
+    Each seat is independent — the function runs P near-identical
+    pipelines back-to-back without leaving JIT space.
+    """
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    P = num_players
+
+    actions = np.full((P, N), action_noop, dtype=np.int32)
+    new_pots = np.zeros((P, N), dtype=np.float32)
+
+    # Scratch reused across seats (serial loop — prange across P=6 seats
+    # was tried and lost to thread-sync overhead since each seat is only
+    # ~400µs of work).
+    intrinsic = np.zeros(N, dtype=np.float32)
+    pot = np.zeros(N, dtype=np.float32)
+    new_pot = np.zeros(N, dtype=np.float32)
+    desired = np.zeros((N, K), dtype=np.bool_)
+
+    for p in range(P):
+        # ---- intrinsic ----
+        for c in range(N):
+            oc = owner[c]
+            if oc == dead_id:
+                intrinsic[c] = 0.0
+            elif oc >= 0 and oc != p:
+                v = weak_bonus * (1.0 - strength[c] / max_strength)
+                if v < 0.0:
+                    v = 0.0
+                if v > weak_bonus:
+                    v = weak_bonus
+                intrinsic[c] = v
+            elif oc == neutral_id:
+                intrinsic[c] = expand_bonus
+            else:
+                intrinsic[c] = 0.0
+
+        # ---- Bellman iteration ----
+        if have_warm[p]:
+            for c in range(N):
+                pot[c] = prev_pots[p, c]
+            iters = warm_iters
+        else:
+            for c in range(N):
+                pot[c] = intrinsic[c]
+            iters = cold_iters
+
+        for _ in range(iters):
+            for c in range(N):
+                if owner[c] == dead_id:
+                    new_pot[c] = 0.0
+                    continue
+                contrib = 0.0
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    dd = deg[d]
+                    if dd == 0:
+                        continue
+                    if owner[d] == dead_id:
+                        continue
+                    contrib += pot[d] / dd
+                new_pot[c] = intrinsic[c] + gamma * contrib
+            # swap pot / new_pot
+            tmp = pot
+            pot = new_pot
+            new_pot = tmp
+
+        # Store pot for caller (caching). Copy because pot may alias scratch.
+        for c in range(N):
+            new_pots[p, c] = pot[c]
+
+        # ---- attack + relay mask (combined as "desired") ----
+        for c in range(N):
+            for k in range(K):
+                desired[c, k] = False
+            pot_c = pot[c]
+            # First pass: classify slots, find max friendly pot.
+            NEG_INF = np.float32(-1.0e30)
+            max_friendly = NEG_INF
+            any_friendly = False
+            for k in range(K):
+                d = neighbors[c, k]
+                if d < 0:
+                    continue
+                od = owner[d]
+                if od == dead_id:
+                    continue
+                if od == p:
+                    any_friendly = True
+                    pd = pot[d]
+                    if pd > max_friendly:
+                        max_friendly = pd
+                else:
+                    desired[c, k] = True  # attack
+            if any_friendly:
+                for k in range(K):
+                    d = neighbors[c, k]
+                    if d < 0:
+                        continue
+                    if owner[d] != p:
+                        continue
+                    pd = pot[d]
+                    if pd <= pot_c:
+                        continue
+                    if max_friendly - pd <= fanout_eps:
+                        desired[c, k] = True  # relay
+
+        # ---- picker (SET-missing > CLEAR-stale > NOOP) ----
+        for c in range(N):
+            if owner[c] != p:
+                continue
+            offset = offsets[p, c]
+            chosen = -1
+            for j in range(K):
+                k = offset + j
+                if k >= K:
+                    k -= K
+                if desired[c, k] and not outflow[c, k]:
+                    chosen = k
+                    break
+            if chosen >= 0:
+                actions[p, c] = action_set_base + chosen
+                continue
+            for j in range(K):
+                k = offset + j
+                if k >= K:
+                    k -= K
+                if outflow[c, k] and not desired[c, k]:
+                    chosen = k
+                    break
+            if chosen >= 0:
+                actions[p, c] = action_clear_base + chosen
+    return actions, new_pots
+
+
+# Cache: per-game "deg" precompute (int32 (N,)). Keyed by id(neighbors).
+_deg_cache: dict = {}
+
+
+def _get_deg(state: State) -> np.ndarray:
+    """Cached per-cell non-DEAD non-off-grid neighbor count.
+
+    deg depends only on (neighbors, DEAD set). DEAD cells don't change
+    during a game, so it's static per game and cheap to share.
+    """
+    key = id(state.neighbors)
+    cached = _deg_cache.get(key)
+    if cached is not None:
+        return cached
+    neighbors = state.neighbors
+    owner = state.owner
+    N, K = neighbors.shape
+    deg = np.zeros(N, dtype=np.int32)
+    nb_safe = np.maximum(neighbors, 0)
+    nb_valid = neighbors >= 0
+    nbr_owner = np.where(nb_valid, owner[nb_safe], NEUTRAL)
+    nbr_ok = nb_valid & (nbr_owner != DEAD)
+    deg[:] = nbr_ok.sum(axis=1).astype(np.int32)
+    if len(_deg_cache) > 16:
+        _deg_cache.clear()
+    _deg_cache[key] = deg
+    return deg
+
+
+def lightning_sum_batched(
+    state: State,
+    rng: Optional[np.random.Generator] = None,
+    gamma: float = 0.94,
+    weak_bonus: float = 1.0,
+    expand_bonus: float = 0.6,
+    fanout_eps: float = 0.05,
+) -> np.ndarray:
+    """Batched sum-mode lightning. Returns (P, N) int32 actions for all
+    seats in one JIT call. Wraps cache lookup and offset RNG, then hands
+    off to `_lightning_sum_batched_core`.
+
+    The runner combines per-seat actions by masking to each seat's owned
+    cells, so this returns the full (P, N) grid — caller picks rows.
+    """
+    N = state.N
+    P = state.num_players
+    K_ = state.neighbors.shape[1]
+
+    # Per-seat warm-start pot lookup. Cache key includes gamma so multiple
+    # gamma values don't pollute each other (e.g. sum vs sum_long).
+    prev_pots = np.zeros((P, N), dtype=np.float32)
+    have_warm = np.zeros(P, dtype=np.bool_)
+    nb_key = id(state.neighbors)
+    for seat in range(P):
+        key = (nb_key, int(seat), "sum", float(gamma))
+        prev = _pot_warm_cache.get(key)
+        if prev is not None and prev.shape == (N,):
+            prev_pots[seat] = prev
+            have_warm[seat] = True
+
+    # Random rotation offsets for tie-break in picker, one per (seat, cell).
+    if rng is not None:
+        offsets = rng.integers(0, K_, size=(P, N)).astype(np.int32)
+    else:
+        offsets = np.zeros((P, N), dtype=np.int32)
+
+    deg = _get_deg(state)
+
+    actions_grid, new_pots = _lightning_sum_batched_core(
+        np.ascontiguousarray(state.owner, dtype=np.int32),
+        np.ascontiguousarray(state.strength, dtype=np.float32),
+        np.ascontiguousarray(state.outflow, dtype=np.bool_),
+        np.ascontiguousarray(state.neighbors, dtype=np.int32),
+        deg,
+        prev_pots,
+        have_warm,
+        offsets,
+        P,
+        _WARM_ITERS,
+        32,                                      # cold_iters
+        float(gamma),
+        float(weak_bonus),
+        float(expand_bonus),
+        float(fanout_eps),
+        float(MAX_STRENGTH),
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+        int(DEAD),
+        int(NEUTRAL),
+    )
+
+    # Update warm-start cache for next AI tick.
+    if len(_pot_warm_cache) > 256:
+        _pot_warm_cache.clear()
+    for seat in range(P):
+        key = (nb_key, int(seat), "sum", float(gamma))
+        _pot_warm_cache[key] = new_pots[seat]
+    return actions_grid
+
+
+def reset_potential_cache() -> None:
+    """Clear the warm-start cache. Call between unrelated games to avoid
+    stale-init when board structure or seat layout changes mid-process."""
+    _pot_warm_cache.clear()
+
+
+
+
+# ---------------------------------------------------------------------------
+# Action picker — the heart of the vectorization.
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True)
+def _picker_core(
+    is_mine: np.ndarray,
+    desired: np.ndarray,
+    cur: np.ndarray,
+    offsets: np.ndarray,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+) -> np.ndarray:
+    """Explicit-loop picker. For each owned cell c, walk slots starting at
+    `offsets[c]` (mod K) and emit the first SET-missing slot (preferred) or
+    CLEAR-stale slot (fallback). NOOP if neither exists.
+    """
+    N = is_mine.shape[0]
+    Kn = desired.shape[1]
+    actions = np.full(N, action_noop, dtype=np.int32)
+    for c in range(N):
+        if not is_mine[c]:
+            continue
+        offset = offsets[c]
+        # First pass: any SET-missing slot? Walk in rotated order.
+        chosen = -1
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if desired[c, k] and not cur[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_set_base + chosen
+            continue
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if cur[c, k] and not desired[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_clear_base + chosen
+    return actions
+
+
+def _actions_from_desired(
+    is_mine: np.ndarray,
+    desired: np.ndarray,
+    cur: np.ndarray,
+    rng: Optional[np.random.Generator],
+) -> np.ndarray:
+    """Build (N,) int32 action array from a per-cell (N, K) desired mask.
+
+    For each owned cell:
+      1. If any slot is "missing" (desired & not current) → SET it.
+      2. Else if any slot is "stale" (current & not desired) → CLEAR it.
+      3. Else NOOP.
+
+    Tie-breaking: a per-cell rotation offset rotates the slot search order
+    so we don't always pick the lowest slot index.
+    """
+    N = is_mine.shape[0]
+    if rng is not None:
+        offsets = rng.integers(0, K, size=N).astype(np.int32)
+    else:
+        offsets = np.zeros(N, dtype=np.int32)
+    actions = _picker_core(
+        np.ascontiguousarray(is_mine, dtype=np.bool_),
+        np.ascontiguousarray(desired, dtype=np.bool_),
+        np.ascontiguousarray(cur, dtype=np.bool_),
+        offsets,
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+    )
+    return actions
+
+
+# ---------------------------------------------------------------------------
+# Per-cell "neighbor classification" helpers.
+# ---------------------------------------------------------------------------
+
+
+def _classify_slots(
+    state: State, seat: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return (nb_safe, nb_valid, nb_owner, is_friendly, is_attack):
+      is_friendly[c, k]: slot k of c points at a friendly non-dead non-self cell.
+      is_attack[c, k]:  slot k of c points at a non-friendly non-dead cell.
+    All shapes are (N, K) bool except nb_owner which is (N, K) int.
+    """
+    nb_safe, nb_valid, nb_owner = _neighbor_owner_grid(state)
+    is_friendly = nb_valid & (nb_owner == seat)
+    is_attack = nb_valid & (nb_owner != seat) & (nb_owner != DEAD)
+    return nb_safe, nb_valid, nb_owner, is_friendly, is_attack
+
+
+def _relay_mask(
+    pot: np.ndarray, nb_safe: np.ndarray, is_friendly: np.ndarray,
+    fanout_eps: float,
+) -> np.ndarray:
+    """Friendly slots whose pot is within `fanout_eps` of the cell's max
+    friendly-slot pot AND strictly greater than pot[c]."""
+    N, _ = is_friendly.shape
+    NEG_INF = np.float32(-1e30)
+    pot_at_slot = np.where(is_friendly, pot[nb_safe], NEG_INF)        # (N, K)
+    max_per_cell = pot_at_slot.max(axis=1)                            # (N,)
+    has_any_friendly = is_friendly.any(axis=1)                        # (N,)
+    near_max = (max_per_cell[:, None] - pot_at_slot) <= fanout_eps    # (N, K)
+    above_self = pot_at_slot > pot[:, None]                           # (N, K)
+    return has_any_friendly[:, None] & near_max & above_self & is_friendly
+
+
+# ---------------------------------------------------------------------------
+# BFS solver (replaces solver.solver_actions per-cell loop).
+# ---------------------------------------------------------------------------
+
+
+def _frontier_distance(state: State, seat: int) -> np.ndarray:
+    """Vectorized iterative BFS over owned cells from the frontier.
+    Distance through owned cells to the nearest non-friendly non-dead cell.
+
+    Implementation: Bellman-Ford-style relaxation over (N, K). Iterates at
+    most diameter of the friendly subgraph. For our board sizes (≤4000)
+    this is cheaper than queue management.
+    """
+    N = state.N
+    owner = state.owner
+    nb_safe, nb_valid, nb_owner = _neighbor_owner_grid(state)
+    is_mine = owner == seat
+
+    BIG = np.int32(10_000)
+    dist = np.full(N, BIG, dtype=np.int32)
+
+    if not is_mine.any():
+        return dist
+
+    # Seed: friendly cells with at least one non-friendly non-dead neighbor.
+    is_frontier_target = nb_valid & (nb_owner != seat) & (nb_owner != DEAD)
+    seed = is_mine & is_frontier_target.any(axis=1)
+    dist[seed] = 0
+
+    # Iterate. Max iterations = friendly subgraph diameter; cap at N.
+    for _ in range(N):
+        prev = dist
+        # For each non-frontier owned cell c: dist[c] = min over friendly nbrs of dist[d]+1
+        # Build (N, K) candidate distances from friendly neighbors.
+        nbr_dist = np.where(
+            is_mine[nb_safe] & nb_valid,
+            dist[nb_safe].astype(np.int32),
+            BIG,
+        )
+        cand = nbr_dist.min(axis=1) + 1
+        cand = np.minimum(cand, BIG)
+        new_dist = np.minimum(prev, cand)
+        new_dist = np.where(is_mine, new_dist, BIG)
+        new_dist[seed] = 0
+        if np.array_equal(new_dist, prev):
+            break
+        dist = new_dist
+    return dist
+
+
+def bfs_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    """Vectorized BFS solver.
+
+    For each owned cell:
+      attack: slot points at enemy/neutral (non-dead).
+      relay:  slot points at friendly cell with smaller frontier distance,
+              EXCLUDING dead-end MAX-sink friendlies (MAX strength + 0 outflows).
+      priority: SET missing attack > SET missing relay > CLEAR stale.
+    """
+    N = state.N
+    owner = state.owner
+    outflow = state.outflow
+
+    is_mine = owner == seat
+    if not is_mine.any():
+        return np.full(N, ACTION_NOOP, dtype=np.int32)
+
+    nb_safe, nb_valid, nb_owner, is_friendly, is_attack = _classify_slots(state, seat)
+    dist = _frontier_distance(state, seat)
+
+    # Friendly neighbor closer to frontier?
+    BIG = np.int32(10_000)
+    nbr_dist = np.where(is_friendly, dist[nb_safe], BIG)
+    is_closer = nbr_dist < dist[:, None]                      # (N, K)
+
+    # Dead-end MAX sink filter on the friendly neighbor.
+    num_active = outflow.sum(axis=1).astype(np.int32)
+    nbr_is_dead_end = (
+        is_friendly
+        & (state.strength[nb_safe] >= MAX_STRENGTH)
+        & (num_active[nb_safe] == 0)
+    )
+    relay = is_friendly & is_closer & ~nbr_is_dead_end
+
+    # Phase 1: missing attack. Phase 2: missing relay. Then clear stale.
+    # We collapse the two SET phases by building a desired = attack | relay
+    # mask, with attack treated as higher priority via a tweak: if a cell has
+    # any missing attack slot we ignore relay slots for the set step.
+    desired = is_attack | relay
+    cur = outflow.astype(np.bool_)
+
+    needs_set_attack = is_attack & ~cur
+    has_attack_missing = needs_set_attack.any(axis=1)
+
+    # When attack-missing, drop relay from desired so the picker chooses an
+    # attack slot for the SET. When no attack missing, picker handles relay
+    # normally.
+    desired_for_set = np.where(has_attack_missing[:, None], is_attack, desired)
+    # For the clear phase we still want to clear toward attack|relay.
+    # Use a two-pass: compute SET first, then CLEAR against `desired`.
+    set_mask = desired_for_set & ~cur
+    clear_mask = cur & ~desired
+    return _picker_two_pass(is_mine, set_mask, clear_mask, rng)
+
+
+def _picker_two_pass(
+    is_mine: np.ndarray,
+    set_mask: np.ndarray,
+    clear_mask: np.ndarray,
+    rng: Optional[np.random.Generator],
+) -> np.ndarray:
+    """Same as _actions_from_desired but accepts the two phase masks
+    directly (caller has already imposed any priority ordering).
+    Delegates to the JIT'd _picker_core; set_mask and clear_mask are
+    the pre-computed desired-vs-cur masks."""
+    N = is_mine.shape[0]
+    if rng is not None:
+        offsets = rng.integers(0, K, size=N).astype(np.int32)
+    else:
+        offsets = np.zeros(N, dtype=np.int32)
+    return _picker_core_split(
+        np.ascontiguousarray(is_mine, dtype=np.bool_),
+        np.ascontiguousarray(set_mask, dtype=np.bool_),
+        np.ascontiguousarray(clear_mask, dtype=np.bool_),
+        offsets,
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+    )
+
+
+@njit(cache=True)
+def _picker_core_split(
+    is_mine: np.ndarray,
+    set_mask: np.ndarray,
+    clear_mask: np.ndarray,
+    offsets: np.ndarray,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+) -> np.ndarray:
+    """Like _picker_core but takes the two phase masks directly (BFS
+    solver uses this because it has its own SET priority logic)."""
+    N = is_mine.shape[0]
+    Kn = set_mask.shape[1]
+    actions = np.full(N, action_noop, dtype=np.int32)
+    for c in range(N):
+        if not is_mine[c]:
+            continue
+        offset = offsets[c]
+        chosen = -1
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if set_mask[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_set_base + chosen
+            continue
+        for j in range(Kn):
+            k = offset + j
+            if k >= Kn:
+                k -= Kn
+            if clear_mask[c, k]:
+                chosen = k
+                break
+        if chosen >= 0:
+            actions[c] = action_clear_base + chosen
+    return actions
+
+
+# ---------------------------------------------------------------------------
+# Lightning solver — all modes vectorized.
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True, fastmath=True)
+def _gradient_relay_core(
+    owner: np.ndarray,
+    neighbors: np.ndarray,
+    pot: np.ndarray,
+    seat: int,
+    fanout_eps: float,
+    dead_id: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-cell explicit loop building (attack, relay) (N, K) bool grids.
+
+    attack[c, k] : slot k points at a non-friendly non-dead non-off-grid cell.
+    relay[c, k]  : slot k points at a friendly cell whose pot is within
+                   fanout_eps of c's max friendly-slot pot AND strictly
+                   above pot[c].
+    """
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    attack = np.zeros((N, K), dtype=np.bool_)
+    relay = np.zeros((N, K), dtype=np.bool_)
+
+    NEG_INF = np.float32(-1.0e30)
+    for c in range(N):
+        pot_c = pot[c]
+        # First pass: classify slots and find max friendly pot.
+        max_friendly = NEG_INF
+        any_friendly = False
+        for k in range(K):
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            od = owner[d]
+            if od == dead_id:
+                continue
+            if od == seat:
+                any_friendly = True
+                p = pot[d]
+                if p > max_friendly:
+                    max_friendly = p
+            else:
+                attack[c, k] = True
+        if not any_friendly:
+            continue
+        # Second pass: mark slots whose pot is within eps of max and above self.
+        for k in range(K):
+            d = neighbors[c, k]
+            if d < 0:
+                continue
+            od = owner[d]
+            if od != seat:
+                continue
+            p = pot[d]
+            if p <= pot_c:
+                continue
+            if max_friendly - p <= fanout_eps:
+                relay[c, k] = True
+    return attack, relay
+
+
+def _gradient_relay_desired(
+    state: State, seat: int,
+    pot: np.ndarray, fanout_eps: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (attack, relay) (N, K) bool masks for the gradient-relay rule
+    used by max / sum / sum_pw modes. Delegates to JIT'd core."""
+    return _gradient_relay_core(
+        np.ascontiguousarray(state.owner, dtype=np.int32),
+        np.ascontiguousarray(state.neighbors, dtype=np.int32),
+        np.ascontiguousarray(pot, dtype=np.float32),
+        int(seat),
+        float(fanout_eps),
+        int(DEAD),
+    )
+
+
+@njit(cache=True, fastmath=True)
+def _throttle_top_k_core(
+    desired: np.ndarray,
+    attack: np.ndarray,
+    pot: np.ndarray,
+    neighbors: np.ndarray,
+    throttle: int,
+) -> np.ndarray:
+    """Cap desired outflows per cell to top-`throttle` slots.
+
+    Attack-tier slots beat relay-tier slots; within tier, rank by pot[d].
+    Validated as the structural prior that makes sum-mode beat bfs and
+    vanilla sum at R=25 P=12 40%-dead (see v2-temporal-strategy).
+    """
+    N, K = desired.shape
+    BIG = np.float32(1.0e30)
+    NEG = np.float32(-1.0e30)
+    out = np.zeros((N, K), dtype=np.bool_)
+    scores = np.empty(K, dtype=np.float32)
+    for c in range(N):
+        cnt = 0
+        for k in range(K):
+            if desired[c, k]:
+                cnt += 1
+        if cnt <= throttle:
+            for k in range(K):
+                out[c, k] = desired[c, k]
+            continue
+        for k in range(K):
+            if not desired[c, k]:
+                scores[k] = NEG
+                continue
+            d = neighbors[c, k]
+            base = pot[d] if d >= 0 else NEG
+            if attack[c, k]:
+                base = base + BIG
+            scores[k] = base
+        for _ in range(throttle):
+            best_k = -1
+            best_score = NEG
+            for k in range(K):
+                if scores[k] > best_score:
+                    best_score = scores[k]
+                    best_k = k
+            if best_k < 0:
+                break
+            out[c, best_k] = True
+            scores[best_k] = NEG
+    return out
+
+
+def _throttle_desired(
+    state: State, desired: np.ndarray, attack: np.ndarray,
+    pot: np.ndarray, throttle: int,
+) -> np.ndarray:
+    """Cap `desired` (N, K) bool to top-`throttle` slots per cell."""
+    return _throttle_top_k_core(
+        np.ascontiguousarray(desired, dtype=np.bool_),
+        np.ascontiguousarray(attack, dtype=np.bool_),
+        np.ascontiguousarray(pot, dtype=np.float32),
+        np.ascontiguousarray(state.neighbors, dtype=np.int32),
+        int(throttle),
+    )
+
+
+def _wave_gate(
+    state: State, seat: int, wave_frac: float,
+    attack: np.ndarray, relay: np.ndarray, gate_attack: bool,
+) -> np.ndarray:
+    """Combined desired mask for wave-gated modes."""
+    is_mine = state.owner == seat
+    below = (state.strength < wave_frac * MAX_STRENGTH) & is_mine        # (N,)
+    if gate_attack:
+        desired_fired = attack | relay
+        desired_gated = np.zeros_like(attack)
+    else:
+        desired_fired = attack | relay
+        desired_gated = attack
+    return np.where(below[:, None], desired_gated, desired_fired)
+
+
+def _loop_desired(
+    state: State, seat: int, curl_dir: int,
+) -> np.ndarray:
+    """Structural loop curl: even-k slots get set when slot k and slot
+    (k+curl_dir)%K both point at friendlies. Frontier always attacks."""
+    _, _, _, is_friendly, is_attack = _classify_slots(state, seat)
+    # For each even k in {0,2,4}, partner = (k+curl_dir)%K. Build (N, K) loop mask.
+    loop = np.zeros_like(is_friendly)
+    for k in (0, 2, 4):
+        kk = (k + curl_dir) % K
+        loop[:, k] = is_friendly[:, k] & is_friendly[:, kk]
+    return is_attack | loop
+
+
+def _attn_desired(
+    state: State, seat: int,
+    gamma: float, weak_bonus: float, expand_bonus: float,
+    deep_threshold: float, relay_thresh: float,
+    build_release_frac: float,
+) -> np.ndarray:
+    """Two-head attn solver: gradient attack head blended with even-k loop
+    head, weighted by frontier distance through friendly cells.
+    """
+    N = state.N
+    pot = compute_potential(
+        state, seat, gamma=gamma, weak_bonus=weak_bonus,
+        expand_bonus=expand_bonus, defense_bonus=0.0, mode="max",
+    )
+    nb_safe, nb_valid, nb_owner, is_friendly, is_attack = _classify_slots(state, seat)
+    is_mine = state.owner == seat
+
+    # Frontier-distance BFS through friendly cells, distance to any
+    # non-friendly-alive (enemy or neutral) cell.
+    not_friendly_alive = nb_valid & (nb_owner != seat) & (nb_owner != DEAD)
+    INF = np.float32(1e9)
+    fdist = np.full(N, INF, dtype=np.float32)
+    seed = is_mine & not_friendly_alive.any(axis=1)
+    fdist[seed] = 0.0
+    iters = int(2 * deep_threshold) + 4
+    for _ in range(iters):
+        prev = fdist
+        nbr_friendly = is_friendly & is_mine[nb_safe]
+        cand_per_slot = np.where(nbr_friendly, fdist[nb_safe] + 1.0, INF)
+        cand = cand_per_slot.min(axis=1)
+        new_fdist = np.where(is_mine, np.minimum(prev, cand), prev)
+        if np.array_equal(new_fdist, prev):
+            break
+        fdist = new_fdist
+
+    alpha = np.clip(fdist / max(deep_threshold, 1e-6), 0.0, 1.0).astype(np.float32)
+
+    # ATTACK head scores per friendly slot: max(0, pot[d] - pot[c]).
+    pot_at_slot = pot[nb_safe]
+    attack_score = np.where(
+        is_friendly, np.maximum(0.0, pot_at_slot - pot[:, None]), 0.0,
+    ).astype(np.float32)
+    amax = attack_score.max(axis=1, keepdims=True)
+    safe_amax = np.where(amax > 0, amax, 1.0)
+    attack_score = np.where(amax > 0, attack_score / safe_amax, attack_score)
+
+    # LOOP head: even-k & friend k+1 friend.
+    loop_score = np.zeros_like(attack_score)
+    for k in (0, 2, 4):
+        kk = (k + 1) % K
+        loop_score[:, k] = (is_friendly[:, k] & is_friendly[:, kk]).astype(np.float32)
+
+    # Build-release gate on the LOOP head only.
+    if build_release_frac > 0.0:
+        strength_frac = state.strength / MAX_STRENGTH
+        loop_scale = (strength_frac >= build_release_frac).astype(np.float32)
+        loop_score = loop_score * loop_scale[:, None]
+
+    combined = (1.0 - alpha)[:, None] * attack_score + alpha[:, None] * loop_score
+    has_any_friendly = is_friendly.any(axis=1)
+    cmax = combined.max(axis=1)
+    safe_cmax = np.where(cmax > 0, cmax, 1.0)
+    thresh = np.maximum(relay_thresh * cmax, 0.15)
+    above_thresh = (combined >= thresh[:, None]) & is_friendly & (cmax[:, None] > 0)
+    relay = has_any_friendly[:, None] & above_thresh
+    return is_attack | relay
+
+
+def _chase_desired(state: State, seat: int, panic_threshold: float) -> np.ndarray:
+    """Counter-attack: always attack frontier; relay toward any friendly
+    neighbor whose inbound enemy pressure exceeds the panic threshold.
+    """
+    N = state.N
+    nb_safe, nb_valid, nb_owner, is_friendly, is_attack = _classify_slots(state, seat)
+    inbound = _inbound_enemy_pressure(state, seat)
+    threat_thresh = panic_threshold * MAX_EDGE
+    friend_under_threat = is_friendly & (inbound[nb_safe] > threat_thresh)
+    return is_attack | friend_under_threat
+
+
+def _random_actions(
+    state: State, seat: int, rng: Optional[np.random.Generator],
+) -> np.ndarray:
+    """Random per-cell action."""
+    if rng is None:
+        rng = np.random.default_rng()
+    N = state.N
+    owner = state.owner
+    nb_safe, nb_valid, nb_owner, is_friendly, is_attack = _classify_slots(state, seat)
+    valid_slot = nb_valid & (nb_owner != DEAD)
+    is_mine = owner == seat
+
+    # 30% noop, otherwise 70% SET / 30% CLEAR on a uniformly chosen valid slot.
+    actions = np.full(N, ACTION_NOOP, dtype=np.int32)
+    if not is_mine.any():
+        return actions
+
+    r = rng.random(N).astype(np.float32)
+    do_action = (r >= 0.3) & is_mine
+    # Choose a valid slot per cell.
+    valid_count = valid_slot.sum(axis=1).astype(np.int32)
+    has_valid = valid_count > 0
+    do_action = do_action & has_valid
+    # Pick slot: rotate by offset; first True after rotation is our slot.
+    offsets = rng.integers(0, K, size=N).astype(np.int32)
+    slot_idx = np.arange(K, dtype=np.int32)
+    rot = (slot_idx[None, :] + offsets[:, None]) % K
+    valid_rot = np.take_along_axis(valid_slot, rot, axis=1)
+    first = valid_rot.argmax(axis=1)
+    chosen_slot = ((first + offsets) % K).astype(np.int32)
+
+    r2 = rng.random(N).astype(np.float32)
+    set_choice = r2 < 0.7
+    actions = np.where(
+        do_action & set_choice,
+        ACTION_SET_BASE + chosen_slot,
+        actions,
+    )
+    actions = np.where(
+        do_action & ~set_choice,
+        ACTION_CLEAR_BASE + chosen_slot,
+        actions,
+    )
+    return actions
+
+
+def _flood_desired(state: State, seat: int) -> np.ndarray:
+    """Set every valid non-dead slot."""
+    _, nb_valid, nb_owner, _, _ = _classify_slots(state, seat)
+    return nb_valid & (nb_owner != DEAD)
+
+
+# ---------------------------------------------------------------------------
+# Top-level mode dispatch.
+# ---------------------------------------------------------------------------
+
+
+def lightning_actions(
+    state: State,
+    seat: int,
+    rng: Optional[np.random.Generator] = None,
+    gamma: float = 0.85,
+    weak_bonus: float = 1.0,
+    expand_bonus: float = 0.6,
+    defense_bonus: float = 0.0,
+    fanout_eps: float = 0.05,
+    mode: str = "max",
+    curl_dir: int = 1,
+    throttle: Optional[int] = None,
+    **mode_kwargs,
+) -> np.ndarray:
+    """Vectorized dispatch for all lightning modes."""
+    N = state.N
+    owner = state.owner
+    is_mine = owner == seat
+    if not is_mine.any():
+        return np.full(N, ACTION_NOOP, dtype=np.int32)
+
+    cur = state.outflow.astype(np.bool_)
+
+    # Pure modes that don't need a potential field.
+    if mode == "loop":
+        desired = _loop_desired(state, seat, curl_dir=curl_dir)
+        return _actions_from_desired(is_mine, desired, cur, rng)
+    if mode == "vortex":
+        desired = _loop_desired(state, seat, curl_dir=-1)
+        return _actions_from_desired(is_mine, desired, cur, rng)
+    if mode == "flood":
+        desired = _flood_desired(state, seat)
+        return _actions_from_desired(is_mine, desired, cur, rng)
+    if mode == "random":
+        return _random_actions(state, seat, rng)
+    if mode == "chase":
+        desired = _chase_desired(
+            state, seat,
+            panic_threshold=mode_kwargs.pop("panic_threshold", 0.3),
+        )
+        return _actions_from_desired(is_mine, desired, cur, rng)
+    if mode == "attn":
+        desired = _attn_desired(
+            state, seat,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            deep_threshold=mode_kwargs.pop("deep_threshold", 2.0),
+            relay_thresh=mode_kwargs.pop("relay_thresh", 0.5),
+            build_release_frac=mode_kwargs.pop("build_release_frac", 0.0),
+        )
+        return _actions_from_desired(is_mine, desired, cur, rng)
+    if mode == "attn_release":
+        desired = _attn_desired(
+            state, seat,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            deep_threshold=mode_kwargs.pop("deep_threshold", 2.0),
+            relay_thresh=mode_kwargs.pop("relay_thresh", 0.5),
+            build_release_frac=mode_kwargs.pop("build_release_frac", 0.7),
+        )
+        return _actions_from_desired(is_mine, desired, cur, rng)
+    if mode == "attn_slam":
+        desired = _attn_desired(
+            state, seat,
+            gamma=gamma, weak_bonus=weak_bonus, expand_bonus=expand_bonus,
+            deep_threshold=mode_kwargs.pop("deep_threshold", 2.0),
+            relay_thresh=mode_kwargs.pop("relay_thresh", 0.5),
+            build_release_frac=mode_kwargs.pop("build_release_frac", 0.95),
+        )
+        return _actions_from_desired(is_mine, desired, cur, rng)
+
+    # Potential-field-based modes.
+    if mode in ("max", "sum", "sum_pw"):
+        pot = compute_potential(
+            state, seat, gamma=gamma, weak_bonus=weak_bonus,
+            expand_bonus=expand_bonus, defense_bonus=defense_bonus, mode=mode,
+        )
+        attack, relay = _gradient_relay_desired(state, seat, pot, fanout_eps)
+        desired = attack | relay
+        if throttle is not None:
+            desired = _throttle_desired(state, desired, attack, pot, throttle)
+        return _actions_from_desired(is_mine, desired, cur, rng)
+
+    if mode == "live":
+        # One-pass live-field proxy. Skips the 32-iter Bellman solve.
+        # Designed for fluid (EDGE_ALPHA < 1.0) rules where edge_pressure
+        # is time-integrated; the strength_signal term bootstraps the
+        # relay gradient at game start before pressure has propagated.
+        pot = compute_potential_live(
+            state, seat, gamma=gamma, weak_bonus=weak_bonus,
+            expand_bonus=expand_bonus, defense_bonus=defense_bonus,
+            flow_weight=mode_kwargs.pop("flow_weight", 1.0),
+            strength_weight=mode_kwargs.pop("strength_weight", 0.5),
+        )
+        attack, relay = _gradient_relay_desired(state, seat, pot, fanout_eps)
+        desired = attack | relay
+        if throttle is not None:
+            desired = _throttle_desired(state, desired, attack, pot, throttle)
+        return _actions_from_desired(is_mine, desired, cur, rng)
+
+    if mode in ("sum_wave", "max_wave", "wave_keep_attack"):
+        pot_mode = "sum" if mode in ("sum_wave", "wave_keep_attack") else "max"
+        wave_frac = mode_kwargs.pop("wave_frac", 0.6)
+        pot = compute_potential(
+            state, seat, gamma=gamma, weak_bonus=weak_bonus,
+            expand_bonus=expand_bonus, defense_bonus=0.0, mode=pot_mode,
+        )
+        attack, relay = _gradient_relay_desired(state, seat, pot, fanout_eps)
+        gate_attack = (mode != "wave_keep_attack")
+        desired = _wave_gate(state, seat, wave_frac, attack, relay, gate_attack)
+        return _actions_from_desired(is_mine, desired, cur, rng)
+
+    if mode in ("pulse", "pulse_stagger"):
+        period = mode_kwargs.pop("period", 200)
+        duty = mode_kwargs.pop("duty", 0.5)
+        stagger = (mode == "pulse_stagger") or mode_kwargs.pop("stagger", False)
+        cycle_pos = int(state.tick) % period
+        global_fire = cycle_pos >= int(period * (1.0 - duty))
+        pot = compute_potential(
+            state, seat, gamma=gamma, weak_bonus=weak_bonus,
+            expand_bonus=expand_bonus, defense_bonus=0.0, mode="sum",
+        )
+        attack, relay = _gradient_relay_desired(state, seat, pot, fanout_eps)
+        if stagger:
+            # Even-index cells fire when global_fire, odd cells fire when not.
+            cell_idx = np.arange(N, dtype=np.int32)
+            cell_fire = ((cell_idx % 2 == 0) == global_fire)
+        else:
+            cell_fire = np.full(N, global_fire, dtype=np.bool_)
+        cell_fire = cell_fire & is_mine
+        desired = np.where(cell_fire[:, None], attack | relay,
+                           np.zeros_like(attack))
+        return _actions_from_desired(is_mine, desired, cur, rng)
+
+    raise ValueError(f"unknown mode {mode!r}")

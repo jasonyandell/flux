@@ -1,18 +1,19 @@
 /**
- * flux v2 — trainer-displayer entry.
+ * flux v3 — sphere trainer-displayer entry.
  *
- * Reads .flxr v2 replays from /v2/replays/, auto-reloads on new replays,
- * and renders against the v1-style hex layout (same colors, no debug GUI).
+ * Reads sphere-format .flxr replays from /v3/replays/ (written by
+ * python/scripts/run_v3_solver.py), auto-reloads on new replays, and
+ * renders the geodesic-icosphere board with electric barbell edges and
+ * selective bloom. See wiki/topics/v3-viewer.md.
  */
 import { buildBoard } from './board';
 import { createPlayer } from './replay/player';
-import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer, setFadeEnabled } from './render/scene';
+import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer } from './render/scene';
 import { createTopBar } from './render/topbar';
 import { createPlaybackBar } from './render/playback';
-import { createPlaylist } from './render/playlist';
 
-const REPLAY_BASE = '/v2/replays/';
-const INDEX_URL = '/v2/replays/index.json';
+const REPLAY_BASE = '/v3/replays/';
+const INDEX_URL = '/v3/replays/index.json';
 const POLL_INTERVAL_MS = 3000;
 const PLAY_TICKS_PER_SEC = 10; // 1x game time: dt_per_tick_ms is 100
 const PLAYBACK_SPEED = 2.0;     // multiplier applied to all playback rates
@@ -35,10 +36,9 @@ const player = createPlayer({
   playTicksPerSec: PLAY_TICKS_PER_SEC,
   playbackSpeed: PLAYBACK_SPEED,
 });
-const playlist = createPlaylist();
-playlist.setOnSelect((file) => {
-  // Selecting from the playlist implies the user wants that specific run on
-  // screen — unpause if needed and load it.
+topBar.setOnSelect((file) => {
+  // Selecting from the recent-runs list implies the user wants that
+  // specific run on screen — unpause if needed and load it.
   if (player.isPaused()) player.setPaused(false);
   player.loadReplay(file);
 });
@@ -48,17 +48,6 @@ function stepFrame(delta: number) {
   // Stepping a single frame implies the user wants the new frame held still.
   if (!player.isPaused()) player.setPaused(true);
   player.stepFrames(delta);
-}
-
-const FADE_STORAGE_KEY = 'flux-v2-fade-enabled';
-function loadFadeEnabled(): boolean {
-  try {
-    const v = localStorage.getItem(FADE_STORAGE_KEY);
-    return v === null ? true : v === '1';
-  } catch { return true; }
-}
-function saveFadeEnabled(enabled: boolean): void {
-  try { localStorage.setItem(FADE_STORAGE_KEY, enabled ? '1' : '0'); } catch { /* ignore */ }
 }
 
 const playbackBar = createPlaybackBar({
@@ -73,18 +62,7 @@ const playbackBar = createPlaybackBar({
     player.seekFraction(t);
   },
   onSpeedChange: (m) => player.setSpeedMultiplier(m),
-  onToggleFade: (enabled) => {
-    setFadeEnabled(scene, enabled);
-    saveFadeEnabled(enabled);
-  },
 });
-
-// Restore the user's fade-toggle preference (default on).
-{
-  const initialFade = loadFadeEnabled();
-  setFadeEnabled(scene, initialFade);
-  playbackBar.setFadeEnabled(initialFade);
-}
 
 // Standard media-player keys: Space toggles, arrows jog by frame,
 // Shift+arrows swap to the prev/next replay.
@@ -122,7 +100,7 @@ function frame(now: number) {
   // Surface live player status even before the first replay loads, so the
   // top bar shows polling / loading state to the user.
   topBar.setStatus(player.status());
-  playlist.setEntries(player.recentEntries(), player.currentName());
+  topBar.setRecent(player.recentEntries(), player.currentName());
 
   const r = player.current();
   if (r) {
@@ -142,7 +120,7 @@ function frame(now: number) {
     const idx = player.currentFrame();
     const f = r.frames[idx];
     if (f) {
-      updateScene(scene, board, f, idx, dt);
+      updateScene(scene, board, f, idx);
       const meta = r.header.metadata as Record<string, unknown>;
       const it = typeof meta.iteration === 'number' ? meta.iteration : 0;
       const fit = typeof meta.best_fitness === 'number' ? meta.best_fitness : 0;

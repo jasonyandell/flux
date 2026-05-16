@@ -11,6 +11,7 @@ the per-tick algorithm and mutation invariants from the v2 PRD.
 from __future__ import annotations
 
 import numpy as np
+from numba import njit
 
 from .state import (
     ACTION_CLEAR_BASE,
@@ -18,11 +19,13 @@ from .state import (
     ACTION_SET_BASE,
     CAPTURE_STRENGTH,
     DEAD,
+    EDGE_ALPHA,
     K,
     MAX_EDGE,
     MAX_STRENGTH,
     NEUTRAL,
     OPPOSITE_SLOT,
+    REGEN_BASE_PER_TICK,
     State,
     TRANSIT_CREDIT_STRICT,
     WASTE_WEIGHT_CAP_BOUND,
@@ -33,82 +36,105 @@ from .state import (
 )
 
 
+# Module-level int32 OPPOSITE_SLOT view; passed into @njit cores.
+_OPPOSITE_SLOT_ARR = np.asarray(OPPOSITE_SLOT, dtype=np.int32)
+
+
 # ---------------------------------------------------------------------------
 # AI-tick action application
 # ---------------------------------------------------------------------------
 
-def apply_actions(state: State, actions: np.ndarray) -> State:
-    """Apply one action per cell (per the policy's output).
+@njit(cache=True)
+def _apply_actions_core(
+    owner: np.ndarray,
+    outflow: np.ndarray,
+    actions: np.ndarray,
+    neighbors: np.ndarray,
+    opposite_slot: np.ndarray,
+    action_set_base: int,
+    action_clear_base: int,
+    action_noop: int,
+    dead_id: int,
+) -> np.ndarray:
+    """Apply one action per cell with friendly-bidirectional resolution.
 
-    `actions` is (N,) int. Action 0..K-1 = set slot k; K..2K-1 = clear slot
-    k-K; 2K = no-op. Actions on cells the policy doesn't own are still
-    accepted at the reducer level — the trainer should only feed actions for
-    owned cells, but unowned cells are no-op'd here so the reducer stays
-    pure even if a stale action sneaks through.
-
-    Mutation invariants resolved here:
-      1. No friendly bidirectional flow.
-      2. Higher cell-index wins simultaneous mutual mutation.
-      3. (Capture clears) — handled in `tick`, not here.
-      4. Stale targets stay on — handled implicitly: only actions on the
-         current owner's cells take effect.
+    Returns new_outflow (N, K) bool. Pure: input outflow not mutated.
     """
-    s = copy_state(state)
-    N = s.N
-    owner = s.owner
-    nb = s.neighbors
-
-    if actions.shape != (N,):
-        raise ValueError(f"actions shape mismatch: {actions.shape} vs ({N},)")
-
-    # First pass: per-cell, apply the mutation (no cross-cell coupling yet).
-    # We track which cells turned ON a slot toward a *friendly* neighbor; those
-    # need invariant resolution before commit.
-    new_outflow = s.outflow.copy()
-    # (cell, slot) pairs that flipped on this tick targeting a friendly neighbor.
-    pending_on: list[tuple[int, int]] = []
+    N = owner.shape[0]
+    K = neighbors.shape[1]
+    new_outflow = outflow.copy()
+    # Track newly-set friendly slots for bidirectional resolution.
+    # fresh_friendly[c, k] = True if this action set c→d (d friendly) anew.
+    fresh_friendly = np.zeros((N, K), dtype=np.bool_)
 
     for c in range(N):
-        a = int(actions[c])
-        if a == ACTION_NOOP:
+        a = actions[c]
+        oc = owner[c]
+        if oc < 0:
             continue
-        if owner[c] < 0:                # neutral or dead — can't act
+        if a == action_noop:
             continue
-        if ACTION_SET_BASE <= a < ACTION_CLEAR_BASE:
-            k = a - ACTION_SET_BASE
-            if nb[c, k] < 0:           # off-grid; no-op
+        if a >= action_set_base and a < action_clear_base:
+            k = a - action_set_base
+            d = neighbors[c, k]
+            if d < 0:
                 continue
-            d = int(nb[c, k])
-            if owner[d] == DEAD:       # connections to dead cells are forbidden
+            if owner[d] == dead_id:
                 continue
             if new_outflow[c, k]:
-                continue               # idempotent
+                continue
             new_outflow[c, k] = True
-            if owner[d] == owner[c]:
-                pending_on.append((c, k))
-        elif ACTION_CLEAR_BASE <= a < ACTION_NOOP:
-            k = a - ACTION_CLEAR_BASE
-            if nb[c, k] < 0:
+            if owner[d] == oc:
+                fresh_friendly[c, k] = True
+        elif a >= action_clear_base and a < action_noop:
+            k = a - action_clear_base
+            d = neighbors[c, k]
+            if d < 0:
                 continue
             new_outflow[c, k] = False
 
-    # Invariant resolution:
-    #  - For each freshly-set c→d with d friendly:
-    #     if d→c is set, clear the lower-cell-index side.
-    for (c, k) in pending_on:
-        d = int(nb[c, k])
-        if owner[d] != owner[c]:
-            continue                   # ownership might have changed (not really, but safe)
-        opp = int(OPPOSITE_SLOT[k])
-        if not new_outflow[d, opp]:
-            continue                   # no back-edge — fine
-        # Back-edge is set. Higher-cell-index wins; clear the loser.
-        if c > d:
-            new_outflow[d, opp] = False
-        else:
-            new_outflow[c, k] = False
+    # Resolve friendly bidirectional: for each fresh c→d, check back edge.
+    # Higher cell-index wins; loser's slot is cleared.
+    for c in range(N):
+        for k in range(K):
+            if not fresh_friendly[c, k]:
+                continue
+            d = neighbors[c, k]
+            opp_k = opposite_slot[k]
+            if not new_outflow[d, opp_k]:
+                continue
+            if c > d:
+                new_outflow[d, opp_k] = False
+            else:
+                new_outflow[c, k] = False
+                fresh_friendly[c, k] = False
+    return new_outflow
 
-    s.outflow = new_outflow
+
+def apply_actions(state: State, actions: np.ndarray) -> State:
+    """Apply one action per cell. Pure: returns a fresh State.
+
+    Invariants:
+      1. No friendly bidirectional flow — for each freshly-set c→d with d
+         friendly, if the back-edge d→c is also set, lower cell-index side
+         is cleared (higher wins).
+      2. Capture-clears handled in `tick`, not here.
+      3. Stale targets stay on (only owned-cell actions apply).
+    """
+    s = copy_state(state)
+    if actions.shape != (s.N,):
+        raise ValueError(f"actions shape mismatch: {actions.shape} vs ({s.N},)")
+    s.outflow = _apply_actions_core(
+        np.ascontiguousarray(s.owner, dtype=np.int32),
+        np.ascontiguousarray(s.outflow, dtype=np.bool_),
+        np.ascontiguousarray(actions, dtype=np.int32),
+        np.ascontiguousarray(s.neighbors, dtype=np.int32),
+        _OPPOSITE_SLOT_ARR,
+        int(ACTION_SET_BASE),
+        int(ACTION_CLEAR_BASE),
+        int(ACTION_NOOP),
+        int(DEAD),
+    )
     return s
 
 
@@ -116,168 +142,236 @@ def apply_actions(state: State, actions: np.ndarray) -> State:
 # Per-tick physics
 # ---------------------------------------------------------------------------
 
-def tick(state: State) -> State:
-    """Apply the per-tick algorithm. Returns a fresh state. Edge pressure
-    recomputed from the cell's overflow this tick.
+@njit(cache=True, fastmath=True)
+def _tick_core(
+    owner: np.ndarray,
+    strength: np.ndarray,
+    outflow: np.ndarray,
+    edge_pressure_prev: np.ndarray,
+    neighbors: np.ndarray,
+    opposite_slot: np.ndarray,
+    num_players: int,
+    edge_alpha: float,
+    max_strength: float,
+    max_edge: float,
+    regen_base: float,
+    w_no_spill: float,
+    w_cap_bound: float,
+    w_dest_terminated: float,
+    dead_id: int,
+    neutral_id: int,
+):
+    """JIT'd per-tick physics. Pure: returns fresh arrays.
+
+    Mirrors the numpy version semantically; structured as explicit per-
+    cell loops because Numba optimizes loop-and-arithmetic better than
+    chains of (N, K) numpy expressions, and small-array dispatch
+    overhead per numpy call dominates pure-Python at our board sizes.
     """
-    s = copy_state(state)
-    N = s.N
-    owner = s.owner
-    strength = s.strength
-    nb = s.neighbors
-    outflow = s.outflow
-    edge_pressure_prev = s.edge_pressure   # read end-of-last-tick
-
-    # Per-cell "alive" mask (owned & not dead).
-    is_alive = owner >= 0
-    is_dead = owner == DEAD
-    # Pressure can land on neutrals too (to capture them). DEAD walls absorb
-    # nothing. Gate inbound accumulation on `not_dead`, not on `is_alive` —
-    # the latter excludes neutral receivers and breaks neutral capture.
-    not_dead = ~is_dead
-
-    # ---- Gather pressure_in_friendly and pressure_in_enemy at each cell ----
-    pressure_in_friendly = np.zeros(N, dtype=np.float32)
-    pressure_in_enemy = np.zeros(N, dtype=np.float32)
-    enemy_pressure_by_player = np.zeros((N, max(s.num_players, 1)), dtype=np.float32)
-
-    # Regen contributes to friendly pressure only on owned cells.
-    pressure_in_friendly[is_alive] = regen(strength[is_alive]).astype(np.float32)
-
-    # For each neighbor slot k of each cell c, look at edge_pressure[d, slot_d→c]
-    # where d = neighbors[c, k].  d → c slot is OPPOSITE_SLOT[k].
-    for k in range(K):
-        d_ids = nb[:, k]                                   # (N,)
-        valid = d_ids >= 0
-        opp = int(OPPOSITE_SLOT[k])
-        # Pressure flowing from d into c along slot opp.
-        # Only counts if d had outflow[d, opp] = True (otherwise edge_pressure[d, opp] is 0).
-        pressure = np.zeros(N, dtype=np.float32)
-        valid_d = d_ids[valid]
-        pressure[valid] = edge_pressure_prev[valid_d, opp]
-        # Partition by friendly vs enemy (relative to receiver c).
-        d_owner = np.full(N, NEUTRAL, dtype=np.int32)
-        d_owner[valid] = owner[valid_d]
-        is_friendly_d = valid & (d_owner == owner) & is_alive
-        is_enemy_d = valid & (d_owner != owner) & (d_owner >= 0) & not_dead
-        pressure_in_friendly += pressure * is_friendly_d.astype(np.float32)
-        pressure_in_enemy   += pressure * is_enemy_d.astype(np.float32)
-        # Attribute enemy pressure by the source player so we can resolve
-        # captures (which attacker takes the cell).
-        if is_enemy_d.any():
-            idxs = np.where(is_enemy_d)[0]
-            attackers = d_owner[idxs]
-            enemy_pressure_by_player[idxs, attackers] += pressure[idxs]
-
-    # ---- Fill first ----
-    headroom = np.maximum(MAX_STRENGTH - strength, 0.0)
-    grew = np.minimum(pressure_in_friendly, headroom)
-    overflow = pressure_in_friendly - grew              # excess friendly pressure
-    overflow = np.where(is_alive, overflow, 0.0)
-    pre_strength = strength + grew - pressure_in_enemy
-
-    # ---- Capture detection ----
-    # pre_strength < 0 with at least one enemy attacker → captured by the
-    # strongest attacker.
-    will_capture = (pre_strength < 0) & is_alive & (pressure_in_enemy > 0)
-    # Neutral cells: capturable directly if any enemy pressure exceeded their
-    # strength + grew (regen). pre_strength < 0 covers it the same way, but
-    # neutrals start with is_alive = False and don't regen. Re-include them.
-    is_neutral = owner == NEUTRAL
-    neutral_capture_pre = strength - pressure_in_enemy
-    will_capture_neutral = (neutral_capture_pre < 0) & is_neutral & (pressure_in_enemy > 0)
-    capture_mask = will_capture | will_capture_neutral
+    N = owner.shape[0]
+    K = neighbors.shape[1]
 
     new_owner = owner.copy()
-    new_strength = np.where(
-        is_alive | is_neutral,
-        np.clip(pre_strength, 0.0, MAX_STRENGTH),
-        strength,
-    ).astype(np.float32)
-    new_strength = np.where(
-        is_neutral,
-        np.clip(neutral_capture_pre, 0.0, MAX_STRENGTH),
-        new_strength,
-    ).astype(np.float32)
-
-    if capture_mask.any():
-        cap_cells = np.where(capture_mask)[0]
-        attackers = enemy_pressure_by_player[cap_cells].argmax(axis=1)
-        new_owner[cap_cells] = attackers.astype(new_owner.dtype)
-        # New: captured cell takes |pre_strength| as starting strength — i.e.
-        # the surplus pressure that broke the defender. pre_strength = strength
-        # + grew - pressure_in_enemy (for owned) or strength - pressure_in_enemy
-        # (for neutral, grew=0). Negative when captured; surplus = -pre_strength.
-        surplus = np.clip(-pre_strength[cap_cells], 0.0, MAX_STRENGTH)
-        new_strength[cap_cells] = surplus
-
-    # Dead cells stay dead.
-    new_owner[is_dead] = DEAD
-    new_strength[is_dead] = 0.0
-
-    # ---- Spill (rewrite edge_pressure for next tick) ----
-    new_edge_pressure = np.zeros_like(edge_pressure_prev)
-    waste_this_tick = 0.0
-
-    # Block 1: capturing cells lose their outflows.
+    new_strength = strength.copy()
     new_outflow = outflow.copy()
-    if capture_mask.any():
-        new_outflow[capture_mask] = False
+    new_edge_pressure = np.zeros((N, K), dtype=np.float32)
 
-    num_active = new_outflow.sum(axis=1).astype(np.int32)              # (N,)
-    can_spill = (num_active > 0) & (overflow > 0) & is_alive
+    overflow_arr = np.zeros(N, dtype=np.float32)
+    is_alive_arr = np.zeros(N, dtype=np.bool_)
+    enemy_pressure_by_player = np.zeros((N, num_players), dtype=np.float32)
+    num_active = np.zeros(N, dtype=np.int32)
+    per_edge = np.zeros(N, dtype=np.float32)
+    can_spill_arr = np.zeros(N, dtype=np.bool_)
 
-    if can_spill.any():
-        per_edge_unclipped = np.zeros(N, dtype=np.float32)
-        per_edge_unclipped[can_spill] = overflow[can_spill] / num_active[can_spill]
-        per_edge = np.minimum(per_edge_unclipped, MAX_EDGE)
-        # Write pressure on active slots.
-        # Broadcast per-cell scalar to the active-slot mask.
-        new_edge_pressure = new_outflow * per_edge[:, None]
-        # Cap-bound waste: amount per slot above MAX_EDGE (busy waste).
-        excess_per_slot = (per_edge_unclipped - per_edge)             # (N,)
-        waste_this_tick += WASTE_WEIGHT_CAP_BOUND * float(
-            (excess_per_slot[can_spill] * num_active[can_spill]).sum()
-        )
+    waste_delta = 0.0
 
-    # Cells with overflow > 0 but no active outflows → all overflow is waste.
-    # Weighted much heavier than cap-bound waste — a cell maxed with no
-    # outflows is producing pressure that goes nowhere, the worst kind.
-    no_spill = is_alive & (overflow > 0) & (num_active == 0)
-    if no_spill.any():
-        waste_this_tick += WASTE_WEIGHT_NO_SPILL * float(overflow[no_spill].sum())
+    # Pass 1: gather inbound pressure, apply fill, detect capture.
+    for c in range(N):
+        oc = owner[c]
+        sc = strength[c]
+        is_dead_c = oc == dead_id
+        is_alive_c = oc >= 0
+        is_neutral_c = oc == neutral_id
+        is_alive_arr[c] = is_alive_c
 
-    # Destination-terminated waste: source's active outflow points at a
-    # friendly cell that is at MAX strength AND has zero active outflows.
-    # Pressure lands on a pure sink — no relay, no headroom. Attribute to
-    # source so the policy learns to clear those outflows. Pass-through MAX
-    # cells (outflows > 0) are combo relays and stay un-penalized.
-    if WASTE_WEIGHT_DEST_TERMINATED > 0.0 and can_spill.any():
+        if is_dead_c:
+            new_owner[c] = dead_id
+            new_strength[c] = 0.0
+            continue
+
+        p_in_friendly = regen_base if is_alive_c else 0.0
+        p_in_enemy = 0.0
         for k in range(K):
-            d_ids = nb[:, k]
-            slot_active = new_outflow[:, k] & (d_ids >= 0) & can_spill
-            if not slot_active.any():
+            d = neighbors[c, k]
+            if d < 0:
                 continue
-            src_idx = np.where(slot_active)[0]
-            d_idx = d_ids[src_idx]
-            is_dead_end = (
-                (owner[d_idx] == owner[src_idx])
-                & (strength[d_idx] >= MAX_STRENGTH)
-                & (num_active[d_idx] == 0)
-            )
-            if is_dead_end.any():
-                terminated_src = src_idx[is_dead_end]
-                waste_this_tick += WASTE_WEIGHT_DEST_TERMINATED * float(
-                    per_edge[terminated_src].sum()
+            press = edge_pressure_prev[d, opposite_slot[k]]
+            od = owner[d]
+            if od == dead_id:
+                continue
+            if od == oc and is_alive_c:
+                p_in_friendly += press
+            elif od != oc and od >= 0:
+                p_in_enemy += press
+                enemy_pressure_by_player[c, od] += press
+
+        if sc < max_strength:
+            headroom = max_strength - sc
+        else:
+            headroom = 0.0
+        grew = p_in_friendly if p_in_friendly < headroom else headroom
+        of = (p_in_friendly - grew) if is_alive_c else 0.0
+        pre_strength = sc + grew - p_in_enemy
+        overflow_arr[c] = of
+
+        will_capture = False
+        cap_pre_strength = pre_strength
+        if is_alive_c and pre_strength < 0.0 and p_in_enemy > 0.0:
+            will_capture = True
+        elif is_neutral_c:
+            neutral_pre = sc - p_in_enemy
+            if neutral_pre < 0.0 and p_in_enemy > 0.0:
+                will_capture = True
+                cap_pre_strength = neutral_pre
+
+        if will_capture:
+            best_p = 0
+            best_pressure = enemy_pressure_by_player[c, 0]
+            for p in range(1, num_players):
+                ep = enemy_pressure_by_player[c, p]
+                if ep > best_pressure:
+                    best_pressure = ep
+                    best_p = p
+            new_owner[c] = best_p
+            surplus = -cap_pre_strength
+            if surplus < 0.0:
+                surplus = 0.0
+            if surplus > max_strength:
+                surplus = max_strength
+            new_strength[c] = surplus
+            for k in range(K):
+                new_outflow[c, k] = False
+        else:
+            if is_alive_c:
+                ns = pre_strength
+                if ns < 0.0:
+                    ns = 0.0
+                if ns > max_strength:
+                    ns = max_strength
+                new_strength[c] = ns
+            elif is_neutral_c:
+                ns = sc - p_in_enemy
+                if ns < 0.0:
+                    ns = 0.0
+                if ns > max_strength:
+                    ns = max_strength
+                new_strength[c] = ns
+            else:
+                new_strength[c] = sc
+
+    # Pass 2: num_active on post-capture outflow.
+    for c in range(N):
+        n = 0
+        for k in range(K):
+            if new_outflow[c, k]:
+                n += 1
+        num_active[c] = n
+
+    # Pass 3: per_edge + waste (cap-bound and no-spill).
+    for c in range(N):
+        if not is_alive_arr[c]:
+            continue
+        of = overflow_arr[c]
+        if of <= 0.0:
+            continue
+        na = num_active[c]
+        if na > 0:
+            pe = of / na
+            pe_clipped = pe if pe < max_edge else max_edge
+            per_edge[c] = pe_clipped
+            can_spill_arr[c] = True
+            waste_delta += w_cap_bound * (pe - pe_clipped) * na
+        else:
+            waste_delta += w_no_spill * of
+
+    # Pass 4: target_edge_pressure + momentum blend.
+    if edge_alpha >= 1.0:
+        for c in range(N):
+            cs = can_spill_arr[c]
+            for k in range(K):
+                if cs and new_outflow[c, k]:
+                    new_edge_pressure[c, k] = per_edge[c]
+                else:
+                    new_edge_pressure[c, k] = 0.0
+    else:
+        one_minus_alpha = 1.0 - edge_alpha
+        for c in range(N):
+            cs = can_spill_arr[c]
+            for k in range(K):
+                target = per_edge[c] if (cs and new_outflow[c, k]) else 0.0
+                new_edge_pressure[c, k] = (
+                    one_minus_alpha * edge_pressure_prev[c, k]
+                    + edge_alpha * target
                 )
 
+    # Pass 5: dest-terminated waste.
+    if w_dest_terminated > 0.0:
+        for c in range(N):
+            if not can_spill_arr[c]:
+                continue
+            oc = owner[c]
+            for k in range(K):
+                if not new_outflow[c, k]:
+                    continue
+                d = neighbors[c, k]
+                if d < 0:
+                    continue
+                if (
+                    owner[d] == oc
+                    and strength[d] >= max_strength
+                    and num_active[d] == 0
+                ):
+                    waste_delta += w_dest_terminated * per_edge[c]
+
+    return new_owner, new_strength, new_outflow, new_edge_pressure, waste_delta
+
+
+def tick(state: State, edge_alpha: float | None = None) -> State:
+    """Apply the per-tick algorithm. Returns a fresh state.
+
+    edge_alpha controls edge-pressure momentum:
+      next = (1 - alpha) * old + alpha * target
+    alpha=1.0 → snap to target (original v2 physics, default).
+    alpha<1.0 → fluid-style buildup. None falls back to the module-level
+    EDGE_ALPHA constant.
+    """
+    if edge_alpha is None:
+        edge_alpha = EDGE_ALPHA
+    s = copy_state(state)
+    new_owner, new_strength, new_outflow, new_edge_pressure, waste_delta = _tick_core(
+        np.ascontiguousarray(s.owner, dtype=np.int32),
+        np.ascontiguousarray(s.strength, dtype=np.float32),
+        np.ascontiguousarray(s.outflow, dtype=np.bool_),
+        np.ascontiguousarray(s.edge_pressure, dtype=np.float32),
+        np.ascontiguousarray(s.neighbors, dtype=np.int32),
+        _OPPOSITE_SLOT_ARR,
+        max(s.num_players, 1),
+        float(edge_alpha),
+        float(MAX_STRENGTH),
+        float(MAX_EDGE),
+        float(REGEN_BASE_PER_TICK),
+        float(WASTE_WEIGHT_NO_SPILL),
+        float(WASTE_WEIGHT_CAP_BOUND),
+        float(WASTE_WEIGHT_DEST_TERMINATED),
+        int(DEAD),
+        int(NEUTRAL),
+    )
     s.owner = new_owner
     s.strength = new_strength
     s.outflow = new_outflow
-    s.edge_pressure = new_edge_pressure.astype(np.float32)
+    s.edge_pressure = new_edge_pressure
     s.tick = state.tick + 1
-    s.waste_total = state.waste_total + waste_this_tick
-
+    s.waste_total = state.waste_total + float(waste_delta)
     return s
 
 
