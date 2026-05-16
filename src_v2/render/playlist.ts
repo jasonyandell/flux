@@ -17,6 +17,10 @@ export type PlaylistEntry = {
 export type Playlist = {
   setEntries(entries: PlaylistEntry[], currentFile: string | null): void;
   setOnSelect(handler: (file: string) => void): void;
+  // Display "+N" badge on the hamburger and flash if N increased.
+  setNewCount(n: number): void;
+  // Called when the panel closes — caller persists "last seen" timestamp.
+  setOnClose(handler: () => void): void;
   open(): void;
   close(): void;
   isOpen(): boolean;
@@ -80,11 +84,42 @@ export function createPlaylist(): Playlist {
     'transition:opacity 0.18s ease, background 0.18s ease;' +
     'backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);' +
     'box-shadow:0 2px 12px rgba(0,0,0,0.35);';
+  const bars = document.createElement('div');
+  bars.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;';
   for (let i = 0; i < 3; i++) {
     const bar = document.createElement('div');
     bar.style.cssText = 'width:16px;height:2px;background:#ddd;border-radius:1px;';
-    btn.appendChild(bar);
+    bars.appendChild(bar);
   }
+  btn.appendChild(bars);
+
+  // "+N" arrival badge — top-right of the hamburger. Hidden when N=0.
+  const badge = document.createElement('div');
+  badge.style.cssText =
+    'position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;' +
+    'padding:0 5px;display:none;align-items:center;justify-content:center;' +
+    'background:#4a90e2;color:#fff;font:inherit;font-size:10px;font-weight:600;' +
+    'line-height:1;border-radius:9px;box-shadow:0 1px 4px rgba(0,0,0,0.4);' +
+    'pointer-events:none;font-variant-numeric:tabular-nums;';
+  badge.textContent = '';
+  btn.style.position = 'fixed';
+  btn.appendChild(badge);
+
+  // Flash keyframes injected once. The pulse lasts ~0.9s so it reads at the
+  // edge of vision without being annoying when new replays land in bursts.
+  if (!document.getElementById('flux-v2-playlist-flash-style')) {
+    const style = document.createElement('style');
+    style.id = 'flux-v2-playlist-flash-style';
+    style.textContent =
+      '@keyframes flux-v2-playlist-flash {' +
+      '  0%   { box-shadow: 0 0 0 0 rgba(74,144,226,0.6), 0 2px 12px rgba(0,0,0,0.35); }' +
+      '  60%  { box-shadow: 0 0 0 10px rgba(74,144,226,0.0), 0 2px 12px rgba(0,0,0,0.35); }' +
+      '  100% { box-shadow: 0 0 0 0 rgba(74,144,226,0.0), 0 2px 12px rgba(0,0,0,0.35); }' +
+      '}' +
+      '.flux-v2-playlist-flash { animation: flux-v2-playlist-flash 0.9s ease-out 1; }';
+    document.head.appendChild(style);
+  }
+
   btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; btn.style.background = 'rgba(40,40,52,0.85)'; });
   btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.62'; btn.style.background = 'rgba(20,20,28,0.72)'; });
   document.body.appendChild(btn);
@@ -147,9 +182,11 @@ export function createPlaylist(): Playlist {
 
   let isOpen = false;
   let onSelect: (file: string) => void = () => {};
+  let onClose: () => void = () => {};
   let lastSignature = '';
   let lastCurrent: string | null = null;
   let lastEntries: PlaylistEntry[] = [];
+  let lastNewCount = 0;
 
   function setOpen(open: boolean) {
     isOpen = open;
@@ -166,6 +203,10 @@ export function createPlaylist(): Playlist {
       backdrop.style.opacity = '0';
       backdrop.style.pointerEvents = 'none';
       btn.setAttribute('aria-label', 'Open playlist');
+      // Hand control of "last seen" back to the caller. We don't clear the
+      // badge here — the caller will set newCount=0 on the next tick after
+      // it updates its lastClosedAt cursor.
+      onClose();
     }
   }
 
@@ -265,6 +306,27 @@ export function createPlaylist(): Playlist {
       }
     },
     setOnSelect(handler) { onSelect = handler; },
+    setOnClose(handler) { onClose = handler; },
+    setNewCount(n) {
+      const clamped = Math.max(0, n | 0);
+      if (clamped === lastNewCount) return;
+      const increased = clamped > lastNewCount;
+      lastNewCount = clamped;
+      if (clamped === 0) {
+        badge.style.display = 'none';
+        badge.textContent = '';
+        return;
+      }
+      badge.style.display = 'flex';
+      badge.textContent = `+${clamped > 99 ? '99' : clamped}`;
+      // Flash only when N grew — refreshes shouldn't re-animate the button.
+      if (increased) {
+        btn.classList.remove('flux-v2-playlist-flash');
+        // Force reflow so re-adding the class restarts the animation.
+        void btn.offsetWidth;
+        btn.classList.add('flux-v2-playlist-flash');
+      }
+    },
     open() { setOpen(true); },
     close() { setOpen(false); },
     isOpen() { return isOpen; },
