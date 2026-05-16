@@ -2,7 +2,7 @@
 title: v2 training runs
 kind: topic
 first_seen: 2026-05-13
-last_updated: 2026-05-13
+last_updated: 2026-05-16
 status: active
 ---
 
@@ -53,6 +53,14 @@ nohup .venv/bin/python scripts/train_v2.py \
 the edge-aware policy head and uses `python/checkpoints/v2/latest_edge.npz`
 when `--checkpoint` is omitted. Use `--fresh` for first edge-model runs; do
 not accidentally resume from a short smoke-test checkpoint.
+
+`--pretrain-solver` / `--opponent-solver` include `lightning_sum_long` and
+`lightning_sum_throttled` as of 2026-05-16. Prefer
+`lightning_sum_throttled` for current teacher work; the vectorized recheck
+kept it strong while `sum_long` did not reproduce its old advantage.
+`--pretrain-only` saves a supervised warmstart checkpoint and exits before
+PPO; `--pretrain-nonnoop-weight` can upweight non-`NOOP` teacher actions
+when cloning sparse solver policies.
 
 Before a long edge-model PPO run, use the auxiliary smoke/pretrain surface:
 
@@ -151,6 +159,51 @@ shutdown with `ps -p <pid>` (should exit within ~5 s).
   is the right shape for "wake me at iter N or on crash" —
   alternation must include `Traceback|Error|Killed|OOM` so silent
   failures don't look the same as still-running.
+
+## 2026-05-16 — throttled-sum BC/PPO probe
+
+Goal: train the next iteration from the strongest current solver prior rather
+than from scratch. Solver revalidation chose `lightning_sum_throttled` as the
+teacher: vectorized matched-pair checks preserved its advantage over vanilla
+`sum` and `bfs`; `sum_long` leaned worse than vanilla `sum` on the same
+recheck.
+
+Implementation changes:
+
+- `python/scripts/train_v2.py` registers `lightning_sum_long` and
+  `lightning_sum_throttled` for supervised warmstart and fixed opponent seats.
+- The warmstart collector now matches the current six-value `tick_batched`
+  return.
+- `--pretrain-only` saves a behavior-clone checkpoint without PPO updates.
+- `--pretrain-nonnoop-weight` upweights non-`NOOP` teacher actions.
+- `python/scripts/run_v2_solver.py` can evaluate `--trained-model-kind edge`
+  and `--trained-action-mode argmax`.
+
+Results on R=5 P=6 dead=10, alternating trained seats vs
+`lightning_sum_throttled`, 24-game samples:
+
+| checkpoint | model | training | decode | result vs teacher |
+|---|---|---|---|---|
+| `sum_throttle_bc_ppo.npz` | GNN | 1 BC epoch + 20 PPO iters | sample | 0 wins, teacher 11, 1 stale |
+| `sum_throttle_bc15.npz` | GNN | 15 BC epochs | sample | 0 wins, teacher 20, 4 stale |
+| `sum_throttle_bc15.npz` | GNN | 15 BC epochs | argmax | 0 wins, teacher 21, 3 stale |
+| `sum_throttle_bc15_w4.npz` | GNN | 15 BC epochs, non-`NOOP` ×4 | argmax | 0 wins, teacher 20, 4 stale |
+| `sum_throttle_edge_bc15_w4.npz` | edge | 15 BC epochs, non-`NOOP` ×4 | argmax | 0 wins, teacher 19, 5 stale |
+| `sum_throttle_edge_bc_ppo.npz` | edge | 15 BC epochs + 10 PPO iters | argmax | 0 wins, teacher 22, 2 stale |
+
+The GNN BC-only checkpoint reached teacher-forced mean seat-tick action
+accuracy ≈0.89 (median 1.0) but over-predicted `NOOP` (93% vs teacher 87%)
+and failed catastrophically once deployed. The edge-aware clone reached lower
+supervised loss (0.52 weighted CE) but also failed head-to-head. PPO fine-tunes
+from both clone families collapsed entropy near zero within a few iterations
+and produced huge KL spikes; they should not be continued as-is.
+
+Interpretation: the problem is not "run PPO longer." Plain cell-level
+behavior cloning does not produce a playable clone of an edge-intent solver.
+The next training surface should supervise `desired` edge masks / solver
+intent directly, or use DAgger-style on-policy correction where the teacher
+labels states induced by the clone. A residual head over
+`lightning_sum_throttled` is more promising than another full-policy PPO run.
 
 ## Overnight 2026-05-13 — summary
 

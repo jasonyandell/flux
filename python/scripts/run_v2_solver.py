@@ -19,8 +19,10 @@ import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -28,6 +30,8 @@ import numpy as np
 
 from flux_v2 import (
     ACTION_NOOP,
+    ACTION_CLEAR_BASE,
+    ACTION_SET_BASE,
     DEAD,
     K,
     NEUTRAL,
@@ -106,6 +110,73 @@ def _lightning_sum_long(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.94)
 
 
+def _lightning_sum_throttled_base(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", throttle=1)
+
+
+def _lightning_sum_long_base(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.94)
+
+
+def _infer_modal_enemy_target(state, seat: int, actions: np.ndarray) -> int | None:
+    """Infer the enemy seat receiving this seat's outgoing attack pressure.
+
+    Counts active outflow after applying the candidate one-action-per-cell
+    action vector for this seat. Used only by the hysteresis prototypes to
+    latch onto the target the base solver is already attacking.
+    """
+    counts = np.zeros(state.num_players, dtype=np.int64)
+    owner = state.owner
+    for c in np.where(owner == seat)[0]:
+        active = state.outflow[c].copy()
+        action = int(actions[c])
+        if ACTION_SET_BASE <= action < ACTION_CLEAR_BASE:
+            active[action - ACTION_SET_BASE] = True
+        elif ACTION_CLEAR_BASE <= action < ACTION_NOOP:
+            active[action - ACTION_CLEAR_BASE] = False
+        for k in np.where(active)[0]:
+            d = int(state.neighbors[c, k])
+            if d < 0:
+                continue
+            target = int(owner[d])
+            if target >= 0 and target != seat:
+                counts[target] += 1
+    if counts.max() <= 0:
+        return None
+    return int(counts.argmax())
+
+
+class TargetHysteresisSolver:
+    """Stateful wrapper: keep attacking one enemy seat until it is gone."""
+
+    def __init__(self, base: Callable):
+        self.base = base
+        self.target: int | None = None
+
+    def __call__(self, state, seat: int, rng=None):
+        owner = state.owner
+        if self.target is not None and not np.any(owner == self.target):
+            self.target = None
+
+        if self.target is None:
+            actions = self.base(state, seat, rng=rng)
+            self.target = _infer_modal_enemy_target(state, seat, actions)
+            return actions
+
+        target_state = copy_state(state)
+        other_enemy = (owner >= 0) & (owner != seat) & (owner != self.target)
+        target_state.owner[other_enemy] = DEAD
+        return self.base(target_state, seat, rng=rng)
+
+
+@dataclass(frozen=True)
+class StatefulSolverFactory:
+    create: Callable[[], Callable]
+
+    def make(self) -> Callable:
+        return self.create()
+
+
 def _lightning_live(state, seat, rng=None):
     # One-pass live-field proxy. Designed for fluid rules (EDGE_ALPHA < 1.0)
     # where edge_pressure is a time-integrated steady-state approximation.
@@ -176,9 +247,15 @@ SOLVERS = {
     "lightning": lightning_solver_actions,       # mode=max (original)
     "lightning_sum": _lightning_sum,             # value-iteration sum
     "lightning_sum_throttled": _lightning_sum_throttled,  # sum field, ≤1 outflow slot per cell
+    "lightning_sum_throttled_sticky": StatefulSolverFactory(
+        lambda: TargetHysteresisSolver(_lightning_sum_throttled_base)
+    ),
     "lightning_max_throttled": _lightning_max_throttled,  # max field, ≤1 outflow slot per cell
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
     "lightning_sum_long": _lightning_sum_long,   # exp5 winner: γ=0.92 sum
+    "lightning_sum_long_sticky": StatefulSolverFactory(
+        lambda: TargetHysteresisSolver(_lightning_sum_long_base)
+    ),
     "lightning_sum_wide": _lightning_sum_wide,   # γ=0.92 + expand_bonus=1.0
     "lightning_live": _lightning_live,           # live-field proxy; for EDGE_ALPHA<1.0
     "lightning_loop": _lightning_loop,           # structural CCW 3-loop curl
@@ -199,13 +276,27 @@ SOLVERS = {
 }
 
 
-def _make_trained_solver(ckpt_path: str, model_kind: str = "attn"):
+def _solver_instance(name: str) -> Callable:
+    solver = SOLVERS[name]
+    if isinstance(solver, StatefulSolverFactory):
+        return solver.make()
+    return solver
+
+
+def _make_trained_solver(
+    ckpt_path: str,
+    model_kind: str = "attn",
+    action_mode: str = "sample",
+):
     """Load a PPO checkpoint and wrap it as a solver(state, seat, rng) → (N,) action array."""
     import mlx.core as mx
-    from flux_v2.ppo import AttnActorCritic, GNNActorCritic
+    from flux_v2.ppo import AttnActorCritic, GNNActorCritic, make_actor_critic
 
-    cls = {"attn": AttnActorCritic, "gnn": GNNActorCritic}[model_kind]
-    model = cls()
+    if model_kind == "edge":
+        model = make_actor_critic("edge")
+    else:
+        cls = {"attn": AttnActorCritic, "gnn": GNNActorCritic}[model_kind]
+        model = cls()
     # Walk the model's nested parameter tree and substitute weights from the
     # checkpoint, skipping non-parameter entries like __generation__.
     data = np.load(ckpt_path, allow_pickle=False)
@@ -244,12 +335,14 @@ def _make_trained_solver(ckpt_path: str, model_kind: str = "attn"):
         P = state.num_players
         logits, _ = model(owner_mx, strength_mx, outflow_mx, edge_pressure_mx, neighbors_mx, P)
         seat_logits = logits[0, seat]                          # (N, A)
-        # Categorical sample (matches training-time action selection) rather
-        # than argmax — the trained policy is intentionally stochastic.
-        rng_key, sub = mx.random.split(rng_key_state[0])
-        rng_key_state[0] = rng_key
-        gumbel = -mx.log(-mx.log(mx.random.uniform(shape=seat_logits.shape, key=sub) + 1e-9) + 1e-9)
-        actions_mx = (seat_logits + gumbel).argmax(axis=-1).astype(mx.int32)
+        if action_mode == "argmax":
+            actions_mx = seat_logits.argmax(axis=-1).astype(mx.int32)
+        else:
+            # Categorical sample (matches training-time action selection).
+            rng_key, sub = mx.random.split(rng_key_state[0])
+            rng_key_state[0] = rng_key
+            gumbel = -mx.log(-mx.log(mx.random.uniform(shape=seat_logits.shape, key=sub) + 1e-9) + 1e-9)
+            actions_mx = (seat_logits + gumbel).argmax(axis=-1).astype(mx.int32)
         actions = np.array(actions_mx, copy=False).astype(np.int32)
         actions = np.where(state.owner == seat, actions, ACTION_NOOP)
         return actions
@@ -389,7 +482,7 @@ def run_game(
     state, dead = _build_initial_state(
         radius, num_players, num_dead_cells, rng, connect_mode=connect_mode,
     )
-    solver_fns = [SOLVERS[name] for name in seat_solvers]
+    solver_fns = [_solver_instance(name) for name in seat_solvers]
 
     # Fast path: when all seats run lightning_sum_long, dispatch one batched
     # JIT call per AI tick instead of P separate solver calls. The savings
@@ -448,15 +541,20 @@ def _game_worker(payload: dict) -> dict:
     )
     dt = time.time() - t0
     cells = _cells_per_seat(state, cfg["num_players"])
+    alive_count = int((cells > 0).sum())
+    decisive = alive_count <= 1
+    dominance = float(cells.max() / max(cells.sum(), 1))
+    display_winner = int(winner) if decisive else -1
 
     replay_info = None
     if cfg["write_replay"]:
         DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
         suffix = f"_g{cfg['game_idx']}" if cfg["total_games"] > 1 else ""
-        name = f"solver_v2_{cfg['tag']}_{cfg['stamp']}{suffix}.flxr"
-        path = DEFAULT_OUT_DIR / name
         dead_list = [int(x) for x in dead] if dead is not None else []
         ea = float(cfg["edge_alpha"])
+        alpha_tag = f"_ea{ea:g}".replace(".", "p")
+        name = f"solver_v2_{cfg['tag']}{alpha_tag}_{cfg['stamp']}{suffix}.flxr"
+        path = DEFAULT_OUT_DIR / name
         ruleset = "v2-pressure" if ea >= 1.0 else f"v2-fluid-{ea:g}"
         metadata = {
             "kind": "solver_v2",
@@ -466,6 +564,20 @@ def _game_worker(payload: dict) -> dict:
             "saved_at": datetime.now(timezone.utc).isoformat(),
             "dead_cells": dead_list,
             "seats": cfg["seat_solvers"],
+            "seed": int(cfg["seed"]),
+            "radius": int(cfg["radius"]),
+            "num_players": int(cfg["num_players"]),
+            "num_dead_cells": int(cfg["num_dead_cells"]),
+            "ai_period_ticks": int(cfg["ai_period_ticks"]),
+            "max_ticks": int(cfg["max_ticks"]),
+            "record_stride": int(cfg["record_stride"]),
+            "connect_mode": cfg["connect_mode"],
+            "winner": display_winner,
+            "leading_seat": int(winner),
+            "ticks": int(state.tick),
+            "alive_count": alive_count,
+            "dominance": dominance,
+            "final_cells": cells.tolist(),
             "iteration": 0,
             "generation": cfg["game_idx"],
         }
@@ -481,8 +593,16 @@ def _game_worker(payload: dict) -> dict:
             "ruleset": ruleset,
             "edge_alpha": ea,
             "seats": cfg["seat_solvers"],
+            "seat_solvers": cfg["seat_solvers"],
+            "seed": int(cfg["seed"]),
+            "winner": display_winner,
+            "leading_seat": int(winner),
+            "ticks": int(state.tick),
+            "alive_count": alive_count,
+            "dominance": dominance,
             "iteration": 0, "generation": cfg["game_idx"],
             "radius": cfg["radius"], "num_players": cfg["num_players"],
+            "num_dead_cells": cfg["num_dead_cells"],
         }
     return {
         "game_idx": cfg["game_idx"],
@@ -542,8 +662,10 @@ def main() -> None:
                          "shortest paths to bridge disconnected components.")
     ap.add_argument("--trained-ckpt", type=str, default=None,
                     help="Path to a PPO checkpoint (.npz). Required if 'trained' appears in --seats.")
-    ap.add_argument("--trained-model-kind", choices=("attn", "gnn"), default="attn",
+    ap.add_argument("--trained-model-kind", choices=("attn", "gnn", "edge"), default="attn",
                     help="Architecture of the trained checkpoint.")
+    ap.add_argument("--trained-action-mode", choices=("sample", "argmax"), default="sample",
+                    help="How to decode trained-policy logits in solver eval.")
     ap.add_argument("--workers", type=int, default=None,
                     help="Number of worker processes for parallel games. "
                          "Default: min(games, cpu_count). Set to 1 to force "
@@ -569,7 +691,11 @@ def main() -> None:
         if "trained" in seat_solvers:
             if not args.trained_ckpt:
                 raise SystemExit("--trained-ckpt is required when 'trained' appears in --seats")
-            SOLVERS["trained"] = _make_trained_solver(args.trained_ckpt, args.trained_model_kind)
+            SOLVERS["trained"] = _make_trained_solver(
+                args.trained_ckpt,
+                args.trained_model_kind,
+                args.trained_action_mode,
+            )
     else:
         seat_solvers = ["bfs"] * args.num_players
 

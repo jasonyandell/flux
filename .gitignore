@@ -20,6 +20,7 @@ public/replays/index.json
 public/v2/replays/*.flxr
 public/v2/replays/*.flxr.tmp
 public/v2/replays/index.json
+public/v2/replays/events.jsonl
 public/v3/replays/*.flxr
 public/v3/replays/*.flxr.tmp
 public/v3/replays/index.json

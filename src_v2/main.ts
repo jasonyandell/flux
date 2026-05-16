@@ -10,10 +10,14 @@ import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer,
 import { createTopBar } from './render/topbar';
 import { createPlaybackBar } from './render/playback';
 import { createPlaylist } from './render/playlist';
+import { createRunHeader } from './render/runHeader';
+import { createEventsTailer } from './replay/events';
 
 const REPLAY_BASE = '/v2/replays/';
 const INDEX_URL = '/v2/replays/index.json';
+const EVENTS_URL = '/v2/replays/events.jsonl';
 const POLL_INTERVAL_MS = 3000;
+const NEW_COUNT_POLL_MS = 3000;
 const PLAY_TICKS_PER_SEC = 10; // 1x game time: dt_per_tick_ms is 100
 const PLAYBACK_SPEED = 2.0;     // multiplier applied to all playback rates
 
@@ -36,12 +40,99 @@ const player = createPlayer({
   playbackSpeed: PLAYBACK_SPEED,
 });
 const playlist = createPlaylist();
+const runHeader = createRunHeader();
+
+function replayParam(): string | null {
+  const raw = new URLSearchParams(window.location.search).get('replay');
+  return raw && raw.trim() ? raw.trim() : null;
+}
+
+function replayUrl(file: string): string {
+  const url = new URL(window.location.href);
+  url.searchParams.set('replay', file);
+  return url.toString();
+}
+
+function copyReplayLink(file: string | null): void {
+  if (!file) return;
+  void navigator.clipboard?.writeText(replayUrl(file)).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = replayUrl(file);
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  });
+  topBar.setStatus(`copied link ${file}`);
+}
+
+function replaceReplayUrl(file: string): void {
+  const current = replayParam();
+  if (current === file) return;
+  window.history.replaceState(null, '', replayUrl(file));
+}
+
 playlist.setOnSelect((file) => {
   // Selecting from the playlist implies the user wants that specific run on
   // screen — unpause if needed and load it.
   if (player.isPaused()) player.setPaused(false);
   player.loadReplay(file);
+  replaceReplayUrl(file);
 });
+
+playlist.setOnCopyLink((file) => copyReplayLink(file));
+runHeader.setOnCopyLink(() => copyReplayLink(player.currentName()));
+
+const requestedReplay = replayParam();
+if (requestedReplay) {
+  player.loadReplay(requestedReplay);
+}
+
+const LAST_CLOSED_KEY = 'flux-v2-playlist-last-closed';
+function loadLastClosedMs(): number {
+  try {
+    const v = localStorage.getItem(LAST_CLOSED_KEY);
+    if (v === null) return Date.now();
+    const n = Number(v);
+    return Number.isFinite(n) ? n : Date.now();
+  } catch { return Date.now(); }
+}
+
+function saveLastClosedMs(ms: number): void {
+  try { localStorage.setItem(LAST_CLOSED_KEY, String(ms)); } catch { /* ignore */ }
+}
+
+let lastClosedMs = loadLastClosedMs();
+if (!localStorage.getItem(LAST_CLOSED_KEY)) saveLastClosedMs(lastClosedMs);
+playlist.setNewSince(lastClosedMs);
+
+playlist.setOnClose(() => {
+  lastClosedMs = Date.now();
+  saveLastClosedMs(lastClosedMs);
+  playlist.setNewSince(lastClosedMs);
+  playlist.setNewCount(0);
+});
+
+const eventsTailer = createEventsTailer(EVENTS_URL);
+let lastEventsPoll = 0;
+let eventsInFlight = false;
+
+function pollNewCount(now: number): void {
+  if (eventsInFlight) return;
+  if (now - lastEventsPoll < NEW_COUNT_POLL_MS) return;
+  lastEventsPoll = now;
+  eventsInFlight = true;
+  eventsTailer.fetchNewer(lastClosedMs)
+    .then((events) => {
+      if (playlist.isOpen()) return;
+      playlist.setNewCount(events.length);
+    })
+    .catch(() => { /* transient; retry on next poll */ })
+    .finally(() => { eventsInFlight = false; });
+}
+
 player.start();
 
 function stepFrame(delta: number) {
@@ -118,6 +209,7 @@ function frame(now: number) {
   last = now;
 
   player.tick(dt);
+  pollNewCount(now);
 
   // Surface live player status even before the first replay loads, so the
   // top bar shows polling / loading state to the user.
@@ -128,6 +220,7 @@ function frame(now: number) {
   if (r) {
     const name = player.currentName();
     if (name !== currentName) {
+      if (name) replaceReplayUrl(name);
       const nextBoardKey = boardKey(r.board);
       // Replay swap: rebuild geometry if board shape differs from current.
       // Mixed radius streams are normal while experiments pivot, so compare
@@ -138,6 +231,7 @@ function frame(now: number) {
       }
       board = r.board;
       currentName = name;
+      runHeader.setReplay(name, r);
     }
     const idx = player.currentFrame();
     const f = r.frames[idx];
@@ -156,6 +250,8 @@ function frame(now: number) {
         r.header.dtPerTickMs,
       );
     }
+  } else {
+    runHeader.setReplay(null, null);
   }
 
   playbackBar.setFrame(player.currentFrame(), player.frameCount());

@@ -14,6 +14,12 @@ export type IndexEntry = {
   generation?: number;
   radius?: number;
   num_players?: number;
+  ruleset?: string;
+  edge_alpha?: number;
+  model?: string;
+  winner?: number;
+  ticks?: number;
+  seat_solvers?: string[];
 };
 
 export type Player = {
@@ -164,6 +170,7 @@ export function createPlayer(opts: Opts): Player {
       // Skip entries we already know are unplayable (parsed to <2 frames).
       const newest = entries.find(e => e.file && !skippedFiles.has(e.file));
       if (!newest || !newest.file) return;
+      if (forceLoad || pendingFile) return;
       const isNewArrival = newest.file !== lastSeenNewestFile;
       lastSeenNewestFile = newest.file;
       if (newest.file === replayName) return;
@@ -190,9 +197,19 @@ export function createPlayer(opts: Opts): Player {
     const file = pendingFile;
     loading = true;
     setStatus(`loading ${file}`);
+    const clearPending = () => {
+      pendingFile = null;
+      pendingIsShapeChange = false;
+      forceLoad = false;
+    };
     try {
       const res = await fetch(`${opts.replayBaseUrl}${file}?t=${Date.now()}`, { cache: 'no-cache' });
-      if (!res.ok) { setStatus(`replay http ${res.status}`); loading = false; return; }
+      if (!res.ok) {
+        setStatus(`replay http ${res.status}: ${file}`);
+        clearPending();
+        loading = false;
+        return;
+      }
       const buf = await res.arrayBuffer();
       const r = await parseReplay(buf);
       if (r.frames.length < 2) {
@@ -200,9 +217,7 @@ export function createPlayer(opts: Opts): Player {
         // Mark it skipped so future polls walk past it to the next candidate.
         skippedFiles.add(file);
         setStatus(`skipped ${file} (${r.frames.length} frames)`);
-        pendingFile = null;
-        pendingIsShapeChange = false;
-        forceLoad = false;
+        clearPending();
         loading = false;
         return;
       }
@@ -210,9 +225,7 @@ export function createPlayer(opts: Opts): Player {
       replayName = file;
       frameIdx = 0;
       frameAccSec = 0;
-      pendingFile = null;
-      pendingIsShapeChange = false;
-      forceLoad = false;
+      clearPending();
       // Recompute auto-speed from the recorded stride so playback follows
       // the trainer's replay cadence once the index has timestamps.
       if (manualSpeedOverride !== null) {
@@ -232,6 +245,7 @@ export function createPlayer(opts: Opts): Player {
       }
     } catch (err) {
       setStatus(`load error: ${(err as Error).message}`);
+      clearPending();
     } finally {
       loading = false;
     }

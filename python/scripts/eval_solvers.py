@@ -148,6 +148,7 @@ def run_pair(
     max_ticks: int,
     seed: int,
     connect_mode: str,
+    edge_alpha: float,
     capture_diagnostic: bool,
     diagnostic_period_ticks: int,
 ) -> dict:
@@ -165,10 +166,12 @@ def run_pair(
     s1, frames1, winner1, _ = run_game(
         radius, num_players, num_dead_cells, ai_period, max_ticks, rng_g1,
         seats_g1, record_stride=10**9, connect_mode=connect_mode,
+        edge_alpha=edge_alpha,
     )
     s2, frames2, winner2, _ = run_game(
         radius, num_players, num_dead_cells, ai_period, max_ticks, rng_g2,
         seats_g2, record_stride=10**9, connect_mode=connect_mode,
+        edge_alpha=edge_alpha,
     )
 
     w1 = _winner_solver(seats_g1, winner1)
@@ -196,6 +199,9 @@ def main() -> None:
     ap.add_argument("--max-ticks", type=int, default=6000)
     ap.add_argument("--seed", type=int, default=int(time.time()) & 0xFFFFFFFF)
     ap.add_argument("--connect-mode", choices=("retry", "carve"), default="retry")
+    ap.add_argument("--edge-alpha", type=float, default=1.0,
+                    help="Edge-pressure momentum: 1.0 = snap-to-target; "
+                         "<1.0 = fluid-style buildup.")
     args = ap.parse_args()
 
     for name in (args.solver_a, args.solver_b):
@@ -204,7 +210,8 @@ def main() -> None:
 
     print(f"matched-pair eval: {args.solver_a} vs {args.solver_b}")
     print(f"  config: R={args.radius} P={args.num_players} dead={args.num_dead_cells} "
-          f"max_ticks={args.max_ticks} pairs={args.pairs} seed={args.seed}")
+          f"max_ticks={args.max_ticks} pairs={args.pairs} seed={args.seed} "
+          f"edge_alpha={args.edge_alpha:g}")
     print()
 
     rng_seed_master = np.random.default_rng(args.seed)
@@ -227,6 +234,7 @@ def main() -> None:
             args.radius, args.num_players, args.num_dead_cells,
             args.ai_period_ticks, args.max_ticks, int(sd),
             args.connect_mode,
+            args.edge_alpha,
             capture_diagnostic=False, diagnostic_period_ticks=100,
         )
         # Tally

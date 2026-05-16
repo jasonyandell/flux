@@ -2,7 +2,7 @@
 title: v2 temporal strategy — throttle, targeting, and options as one ML problem
 kind: topic
 first_seen: 2026-05-15
-last_updated: 2026-05-15
+last_updated: 2026-05-16
 status: active
 ---
 
@@ -248,6 +248,22 @@ alone.
 
 ### Open follow-ups
 
+- **Target-spell diagnostic exists.** `python/scripts/target_spell.py`
+  samples modal enemy target at a coarse cadence and reports spell
+  completion vs live-target abandonment. In a small mixed R=20 P=6 sample,
+  hard sticky targeting pushed completion up (75% vs 25%) and abandonment
+  down (0% vs 33%) but still lost badly in head-to-head. The diagnostic
+  is useful; the hard intervention is not.
+- **Target-hysteresis needs a softer form.** A hard prototype
+  (`lightning_sum_throttled_sticky`, registered in
+  `python/scripts/run_v2_solver.py`) latches the first modal enemy target
+  receiving outgoing attack pressure, then treats other enemy seats as
+  blocked until the target has no cells. It is a useful negative control,
+  not a win: at R=20 P=8 dead=80 max_ticks=6000, 12 matched pairs,
+  `lightning_sum_throttled` beat it 8/8 coherent pairs (p≈0.0078,
+  20-4 raw games). The failure suggests all-or-nothing target commitment
+  starves opportunistic conversion and local defense. If target commitment
+  is still worth testing, make it a bias/switching cost, not a hard mask.
 - **Multi-strategy FFA test.** Run `lightning_sum_throttled` in the
   R=30 P=21 big-zoo where bfs was previously the only converter.
   Predict: throttled-sum becomes the new converter, beating bfs at

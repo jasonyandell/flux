@@ -161,7 +161,11 @@ def write_replay(
 
 
 def append_index(out_dir: Path, entry: dict, cap: int = 50) -> None:
-    """Maintain a JSON index of recent replays, newest-first, capped at `cap`."""
+    """Maintain a JSON index of recent replays, newest-first, capped at `cap`.
+
+    Also append a compact line to events.jsonl. The viewer uses that durable
+    arrival log for "new replay" badges and agent-friendly run handoff.
+    """
     index_path = out_dir / "index.json"
     entries = []
     if index_path.exists():
@@ -180,3 +184,22 @@ def append_index(out_dir: Path, entry: dict, cap: int = 50) -> None:
             except OSError:
                 pass
     index_path.write_text(json.dumps(kept, indent=2) + "\n")
+
+    events_path = out_dir / "events.jsonl"
+    event = {
+        "ts": entry.get("saved_at", ""),
+        "event": "replay_added",
+        "file": entry.get("file"),
+        "iteration": entry.get("iteration"),
+        "generation": entry.get("generation"),
+        "radius": entry.get("radius"),
+        "num_players": entry.get("num_players"),
+        "kind": entry.get("kind"),
+        "ruleset": entry.get("ruleset"),
+        "edge_alpha": entry.get("edge_alpha"),
+        "seed": entry.get("seed"),
+        "winner": entry.get("winner"),
+        "ticks": entry.get("ticks"),
+    }
+    with open(events_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event) + "\n")

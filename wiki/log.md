@@ -2,9 +2,102 @@
 title: flux Wiki Log
 kind: log
 first_seen: bootstrap
-last_updated: 2026-05-15
+last_updated: 2026-05-16
 status: active
 ---
+
+## [2026-05-16 | workspace | r40 smooth replay probes]
+
+**Touched pages:** [[topics/v2-viewer]] [[log]]
+
+Launched and verified two large solver replay probes for the upgraded v2
+viewer: `radius=40`, `num_players=12`, `num_dead_cells=720`,
+`edge_alpha=0.05`, `max_ticks=9000`, `record_stride=1`, carved connectivity.
+The frontier duel
+`solver_v2_lightning_sum_throttled+lightning_wave_long_ea0p05_20260516T210154.flxr`
+ended with `lightning_sum_throttled` seat 8 winning at tick 6794. The
+morphology mix
+`solver_v2_lightning_chase+lightning_sum_wave+lightning_vortex_ea0p05_20260516T210154.flxr`
+ended with `lightning_sum_wave` seat 11 winning at tick 4921.
+
+## [2026-05-16 | workspace | v2 viewer run-management cleanup]
+
+**Touched pages:** [[topics/v2-viewer]] [[index]] [[log]]
+
+Upgraded `/index-v2.html` from a simple replay playlist into an
+agent-friendly run viewer. Added URL-addressable runs via
+`?replay=<file.flxr>`, keeping the URL synchronized when the current replay
+changes. Replaced the drawer with a searchable/filterable replay browser
+(All / Solver / Train / Fluid / New / Current), per-row copy-link buttons, a
+new-arrival badge driven by `public/v2/replays/events.jsonl`, and inert
+closed-state behavior so hidden rows cannot catch clicks. Added a compact
+current-run header with metadata and a current-link button.
+
+Solver replay publishing now records richer metadata in both the `.flxr`
+header and index entry: seed, board/run shape, seat solvers, edge alpha,
+winner/leader, final ticks, alive count, dominance, and final cell counts.
+`append_index` now also appends replay-added events to `events.jsonl`.
+
+## [2026-05-16 | workspace | fluid EDGE_ALPHA keeps champ and makes loop-release real]
+
+**Touched pages:** [[topics/v2-edge-loop-emergence]] [[topics/v2-ml-gameplay-opportunities]] [[log]]
+
+Added `scripts/loop_release_probe.py`, a tiny A/B/C friendly triangle plus
+enemy target micro-scenario that compares direct feed against charged-loop
+release while sweeping `EDGE_ALPHA`, `MAX_EDGE`, regen, max strength, target
+strength, charge duration, and release mode. Result: the current rules already
+contain a loop-release advantage, but it is much clearer when pressure has
+edge memory. At `EDGE_ALPHA=0.05`, charged-loop divert captures targets that
+direct pressure has only partially damaged within the same release horizon.
+`MAX_EDGE=50-100` is enough to preserve the effect; no evidence yet says to
+change regen or max strength.
+
+Plumbed `--edge-alpha` into `eval_solvers.py` and added the alpha value to
+solver replay filenames so same-seed alpha sweeps do not overwrite each other.
+Compact R=18 P=6 dead=60 sweeps kept `lightning_sum_throttled` decisive at
+all tested alphas (`1.0`, `0.2`, `0.1`, `0.05`) and ahead in matched pairs
+against `lightning_wave_long`, `lightning_sum`, and `lightning_live`.
+Lower alpha slows games and gives better temporal morphology without
+invalidating the solver frontier.
+
+## [2026-05-16 | workspace | throttled-sum clone/probe fails as full policy]
+
+**Touched pages:** [[topics/v2-training-runs]] [[topics/v2-ml-gameplay-opportunities]] [[topics/v2-temporal-strategy]] [[log]]
+
+Confirmed the next teacher should be `lightning_sum_throttled`, not
+`sum_long`: vectorized matched-pair rechecks kept throttled-sum ahead of
+vanilla `sum` and `bfs`, while `sum_long` leaned worse than vanilla `sum`.
+Added `lightning_sum_long` and `lightning_sum_throttled` to
+`train_v2.py` warmstart/opponent solver choices, added `--pretrain-only`
+and `--pretrain-nonnoop-weight`, fixed warmstart collection for the current
+`tick_batched` return, and let `run_v2_solver.py` evaluate edge-model
+checkpoints plus argmax decoding. Also added `scripts/target_spell.py` for
+coarse target-spell completion/abandonment diagnostics.
+
+Negative result: GNN and edge-aware clones of `lightning_sum_throttled`
+failed as deployed policies on R=5 P=6 dead=10. The best BC probes still got
+0 wins against the teacher in 24-game alternating-seat evals; PPO fine-tunes
+from those clones collapsed entropy near zero and produced huge KL spikes.
+Conclusion: do not keep nudging vanilla PPO here. Next training surface should
+supervise solver intent/desired edge masks directly, use DAgger-style
+teacher labels on clone-induced states, or learn a residual over
+`lightning_sum_throttled`.
+
+## [2026-05-16 | workspace | hard target-hysteresis prototype loses to throttled-sum]
+
+**Touched pages:** [[topics/v2-temporal-strategy]] [[topics/v2-algorithmic-solvers]] [[log]]
+
+Registered two stateful experiment solvers in
+`python/scripts/run_v2_solver.py`: `lightning_sum_throttled_sticky` and
+`lightning_sum_long_sticky`. Each wraps the base Lightning solver with
+per-seat hard target hysteresis: latch the first modal enemy receiving
+outgoing attack pressure, then mask other enemy seats as blocked until the
+target has no cells. Smoke compile and run passed, but the result is a
+negative control. At R=20 P=8 dead=80 max_ticks=6000, 12 matched pairs,
+`lightning_sum_throttled` beat `lightning_sum_throttled_sticky` 8/8
+coherent pairs (p≈0.0078, 20-4 raw games). The smaller R=12 P=6 smoke
+also did not favor sticky variants. The next version should be a soft
+target bias or switching cost, not an all-or-nothing mask.
 
 ## [2026-05-16 | workspace | v2 ML gameplay opportunities synthesis]
 
