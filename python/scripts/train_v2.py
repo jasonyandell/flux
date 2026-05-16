@@ -950,39 +950,18 @@ def write_replay(
         tick_stride=record_stride, dt_per_tick_ms=100,
         metadata=metadata,
     )
-    # Geometry is deterministic from (radius, num_players) — rebuild it once
-    # so we can resolve outflow_slot → dst cell id when emitting flow records.
-    from flux_v2.graph import make_board
-    base = make_board(radius, num_players)
-    neighbors_local = base.neighbors
-
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "wb") as f:
         w = ReplayWriter(f, header)
         for (owner_g, strength_g, outflow_g, ep_g) in frames:
-            flows: list[tuple[int, int, int, float]] = []
-            N_local = owner_g.shape[0]
-            for c in range(N_local):
-                if int(owner_g[c]) < 0:
-                    continue
-                for k in range(K):
-                    if not bool(outflow_g[c, k]):
-                        continue
-                    d = int(neighbors_local[c, k])
-                    if d < 0:
-                        continue
-                    flows.append((c, d, int(owner_g[c]), float(ep_g[c, k])))
-            w.write_frame(_FrameLike(owner_g, strength_g, flows))
+            w.write_frame(Frame(
+                owner=np.asarray(owner_g, dtype=np.int8),
+                strength=np.asarray(strength_g, dtype=np.float32),
+                outflow=np.asarray(outflow_g, dtype=np.bool_),
+                edge_pressure=np.asarray(ep_g, dtype=np.float32),
+            ))
         w.close()
     os.replace(tmp, path)
-
-
-class _FrameLike:
-    """Shim so ReplayWriter.write_frame can take pre-built tuples."""
-    def __init__(self, owner, strength, flows):
-        self.owner = owner
-        self.strength = strength
-        self.flows = flows
 
 
 # ---------------------------------------------------------------------------

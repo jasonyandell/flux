@@ -7,7 +7,6 @@
  */
 import * as THREE from 'three';
 import type { Board } from '../board';
-import { MAX_STRENGTH } from '../replay/format';
 
 export const PLAYER_COLORS_HEX = [
   0x4a90e2, 0xe24a4a, 0x4ae28a, 0xe2c44a,
@@ -199,7 +198,6 @@ export function updateScene(s: Scene, board: Board, frame: FrameRender, frameIdx
   // 0 (no time passed) means render whatever's currently displayed unchanged.
   const maxSlew = FRESHNESS_RATE_PER_SEC * dt;
 
-  const strengthScale = MAX_STRENGTH / 255;
   for (let i = 0; i < board.N; i++) {
     const owner = frame.owners[i];
     if (owner !== s.prevOwners[i] || flowSig[i] !== s.prevFlowSigs[i]) {
@@ -218,8 +216,11 @@ export function updateScene(s: Scene, board: Board, frame: FrameRender, frameIdx
     if (maxSlew <= 0 || Math.abs(diff) <= maxSlew) s.displayed[i] = target;
     else s.displayed[i] += diff < 0 ? -maxSlew : maxSlew;
 
-    const strength = frame.strengths[i] * strengthScale;
-    const scale = 0.45 + (strength / MAX_STRENGTH) * 1.0;
+    // `strengths` is the writer's uint8 quantization of [0, max_strength];
+    // we only need the 0..1 ratio for sizing (max_strength is now carried
+    // in the FLXR v3 header, not a compile-time constant).
+    const ratio = frame.strengths[i] / 255;
+    const scale = 0.45 + ratio * 1.0;
     tmpPos.set(board.pos[i * 2], board.pos[i * 2 + 1], 0.1);
     tmpScale.setScalar(scale);
     tmpMatrix.compose(tmpPos, tmpQuat, tmpScale);

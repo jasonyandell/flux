@@ -93,6 +93,15 @@ def _lightning_sum_long(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.94)
 
 
+def _lightning_live(state, seat, rng=None):
+    # One-pass live-field proxy. Designed for fluid rules (EDGE_ALPHA < 1.0)
+    # where edge_pressure is a time-integrated steady-state approximation.
+    # Skips the 32-iter Bellman solve in compute_potential — 5-10x faster
+    # per AI tick on R≥20. Multi-hop information comes from the
+    # already-propagated edge_pressure field instead.
+    return lightning_solver_actions(state, seat, rng=rng, mode="live", gamma=0.85)
+
+
 def _lightning_sum_wide(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum",
                                     gamma=0.94, expand_bonus=1.0)
@@ -156,6 +165,7 @@ SOLVERS = {
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
     "lightning_sum_long": _lightning_sum_long,   # exp5 winner: γ=0.92 sum
     "lightning_sum_wide": _lightning_sum_wide,   # γ=0.92 + expand_bonus=1.0
+    "lightning_live": _lightning_live,           # live-field proxy; for EDGE_ALPHA<1.0
     "lightning_loop": _lightning_loop,           # structural CCW 3-loop curl
     "lightning_attn": _lightning_attn,           # 2-head: attack + loop with frontier-tilt
     "lightning_attn_release": _lightning_attn_release,  # +build-release (frac=0.7)
@@ -348,30 +358,57 @@ def run_game(
     seat_solvers: list[str],
     record_stride: int = 25,
     connect_mode: str = "retry",
+    edge_alpha: float = 1.0,
+    record_frames: bool = True,
 ):
     """Run one game with per-seat solver assignment. Returns (final_state,
-    frames, winner_seat, dead_cells)."""
+    frames, winner_seat, dead_cells).
+
+    edge_alpha: edge-pressure momentum (1.0 = snap-to-target, original v2;
+    <1 = fluid-style buildup, the brainstorm pilot).
+
+    record_frames: if False, skip the per-stride state_to_frame copy.
+    Saves ~30ms per 6000-tick R=30 game when no replay is being written.
+    Returned frames list is empty in that case.
+    """
     state, dead = _build_initial_state(
         radius, num_players, num_dead_cells, rng, connect_mode=connect_mode,
     )
     solver_fns = [SOLVERS[name] for name in seat_solvers]
 
-    frames = [state_to_frame(state)]
+    # Fast path: when all seats run lightning_sum_long, dispatch one batched
+    # JIT call per AI tick instead of P separate solver calls. The savings
+    # are per-seat Python wrapper overhead + redundant deg precompute + the
+    # JIT-dispatch chain (compute_potential -> _gradient_relay -> picker).
+    sum_long_batched = all(s == "lightning_sum_long" for s in seat_solvers)
+    if sum_long_batched:
+        from flux_v2.solver_vec import lightning_sum_batched
+
+    frames: list = [state_to_frame(state)] if record_frames else []
     for t in range(1, max_ticks + 1):
         if t % ai_period == 0:
-            per_seat: list[np.ndarray] = []
-            for seat in range(num_players):
-                per_seat.append(solver_fns[seat](state, seat, rng=rng))
-            combined = _combine_actions(state, per_seat)
+            if sum_long_batched:
+                actions_grid = lightning_sum_batched(state, rng=rng, gamma=0.94)
+                combined = np.full(state.N, ACTION_NOOP, dtype=np.int32)
+                owner = state.owner
+                for seat in range(num_players):
+                    mask = owner == seat
+                    combined[mask] = actions_grid[seat][mask]
+            else:
+                per_seat: list[np.ndarray] = []
+                for seat in range(num_players):
+                    per_seat.append(solver_fns[seat](state, seat, rng=rng))
+                combined = _combine_actions(state, per_seat)
             state = apply_actions(state, combined)
-        state = tick(state)
-        if t % record_stride == 0:
+        state = tick(state, edge_alpha=edge_alpha)
+        if record_frames and t % record_stride == 0:
             frames.append(state_to_frame(state))
 
         # Early stop: at most one seat still has any cells.
         cells = _cells_per_seat(state, num_players)
         if (cells > 0).sum() <= 1:
-            frames.append(state_to_frame(state))
+            if record_frames:
+                frames.append(state_to_frame(state))
             break
 
     cells = _cells_per_seat(state, num_players)
@@ -391,6 +428,8 @@ def _game_worker(payload: dict) -> dict:
         cfg["ai_period_ticks"], cfg["max_ticks"], rng,
         cfg["seat_solvers"], cfg["record_stride"],
         connect_mode=cfg["connect_mode"],
+        edge_alpha=cfg["edge_alpha"],
+        record_frames=bool(cfg["write_replay"]),
     )
     dt = time.time() - t0
     cells = _cells_per_seat(state, cfg["num_players"])
@@ -402,10 +441,13 @@ def _game_worker(payload: dict) -> dict:
         name = f"solver_v2_{cfg['tag']}_{cfg['stamp']}{suffix}.flxr"
         path = DEFAULT_OUT_DIR / name
         dead_list = [int(x) for x in dead] if dead is not None else []
+        ea = float(cfg["edge_alpha"])
+        ruleset = "v2-pressure" if ea >= 1.0 else f"v2-fluid-{ea:g}"
         metadata = {
             "kind": "solver_v2",
             "model": f"solver_{cfg['tag']}",
-            "ruleset": "v2-pressure",
+            "ruleset": ruleset,
+            "edge_alpha": ea,
             "saved_at": datetime.now(timezone.utc).isoformat(),
             "dead_cells": dead_list,
             "seats": cfg["seat_solvers"],
@@ -421,7 +463,8 @@ def _game_worker(payload: dict) -> dict:
             "file": path.name,
             "saved_at": metadata["saved_at"],
             "kind": "solver_v2", "model": metadata["model"],
-            "ruleset": "v2-pressure",
+            "ruleset": ruleset,
+            "edge_alpha": ea,
             "seats": cfg["seat_solvers"],
             "iteration": 0, "generation": cfg["game_idx"],
             "radius": cfg["radius"], "num_players": cfg["num_players"],
@@ -490,6 +533,11 @@ def main() -> None:
                     help="Number of worker processes for parallel games. "
                          "Default: min(games, cpu_count). Set to 1 to force "
                          "sequential. Ignored when 'trained' is in --seats.")
+    ap.add_argument("--edge-alpha", type=float, default=1.0,
+                    help="Edge-pressure momentum: 1.0 (default) = snap-to-target "
+                         "(original v2 physics). <1.0 = fluid-style buildup over "
+                         "~1/alpha ticks. Pilot value 0.05 ≈ 20 ticks to ~63%% "
+                         "of a held target.")
     args = ap.parse_args()
     if args.record_stride is None:
         args.record_stride = args.ai_period_ticks
@@ -543,6 +591,7 @@ def main() -> None:
             "total_games": args.games,
             "tag": tag,
             "stamp": stamp,
+            "edge_alpha": float(args.edge_alpha),
         }
         for g in range(args.games)
     ]

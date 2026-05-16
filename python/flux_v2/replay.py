@@ -1,17 +1,35 @@
-"""FLXR v2 binary replay format.
+"""FLXR v3 binary replay format.
 
-Layout (little-endian) — same fixed header as v1 (magic + version + radius
-+ ...), with version=2. Per-frame flow record is **6 bytes** instead of 5:
+Layout (little-endian):
 
-  src u16, dst u16, player u8, pressure_q u8
+  magic        4 bytes   "FLXR"
+  version      u8        = 3
+  reserved     u8
+  header_len   u32       length of JSON metadata blob
+  header_json  bytes     UTF-8 JSON: radius, num_players, num_nodes,
+                                    tick_stride, dt_per_tick_ms, num_frames,
+                                    max_strength, max_edge, metadata
+  frames_gz    bytes     gzip-compressed frame stream (until EOF)
 
-`pressure_q` is the directed edge pressure quantized to MAX_EDGE → 0..255.
+Frame stream (uncompressed; concatenated, fixed-size per game):
+  owners            N bytes int8    -2 dead, -1 neutral, 0..P-1 seat
+  strengths         N bytes uint8   quantized 0..255 over [0, max_strength]
+  outflow_bits      ceil(N*K/8)     bit i: cell (i//K), slot (i%K)
+  pressure_bytes    popcount bytes  uint8 quantized over [0, max_edge],
+                                    in the same iteration order as outflow_bits
 
-Geometry is NOT stored — it's derived from (radius, num_players) by the
-v2 board builder (`make_board`) on the player side.
+Geometry is NOT stored — derived from (radius, num_players) on the player
+side via `make_board`.
+
+Reducer, action space, geometry are unchanged from v2; only the wire format
+is. Old v1/v2 readers don't speak v3. Per project direction (2026-05-15):
+historical replays are disposable and quickly regeneratable, so we don't
+carry a back-compat path.
 """
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import os
 import struct
@@ -24,7 +42,7 @@ import numpy as np
 from .state import MAX_EDGE, MAX_STRENGTH, K
 
 MAGIC = b"FLXR"
-VERSION = 2
+VERSION = 3
 
 
 @dataclass
@@ -35,106 +53,104 @@ class ReplayHeader:
     tick_stride: int
     dt_per_tick_ms: int
     metadata: dict
+    max_strength: float = MAX_STRENGTH
+    max_edge: float = MAX_EDGE
 
 
 @dataclass
 class Frame:
-    """One recorded frame of game 0 state.
+    """One recorded frame of game state.
 
-    owner          (N,)        int32   -2 dead / -1 neutral / 0..P-1 seat
-    strength       (N,)        float32
-    flows          list of (src, dst, player, pressure)
+    owner          (N,)        int8    -2 dead / -1 neutral / 0..P-1 seat
+    strength       (N,)        float32 in [0, max_strength]
+    outflow        (N, K)      bool
+    edge_pressure  (N, K)      float32 in [0, max_edge]
     """
     owner: np.ndarray
     strength: np.ndarray
-    flows: list[tuple[int, int, int, float]]
+    outflow: np.ndarray
+    edge_pressure: np.ndarray
 
 
 def state_to_frame(state) -> Frame:
-    """Project a v2 State into a Frame.
-
-    Each active outflow slot becomes one flow record with its current
-    edge_pressure value.
-    """
-    flows: list[tuple[int, int, int, float]] = []
-    N = state.N
-    for c in range(N):
-        owner_c = int(state.owner[c])
-        if owner_c < 0:
-            continue
-        for k in range(K):
-            if not bool(state.outflow[c, k]):
-                continue
-            d = int(state.neighbors[c, k])
-            if d < 0:
-                continue
-            pressure = float(state.edge_pressure[c, k])
-            flows.append((c, d, owner_c, pressure))
+    """Project a v2 State into a Frame."""
     return Frame(
-        owner=np.asarray(state.owner, dtype=np.int32).copy(),
+        owner=np.asarray(state.owner, dtype=np.int8).copy(),
         strength=np.asarray(state.strength, dtype=np.float32).copy(),
-        flows=flows,
+        outflow=np.asarray(state.outflow, dtype=np.bool_).copy(),
+        edge_pressure=np.asarray(state.edge_pressure, dtype=np.float32).copy(),
     )
 
 
+def _encode_frame(
+    frame: Frame, max_strength: float, max_edge: float,
+) -> bytes:
+    """Pack one frame to dense bytes (pre-compression)."""
+    owners_bytes = np.asarray(frame.owner, dtype=np.int8).tobytes()
+    s_scale = 255.0 / max_strength
+    s_q = np.clip(np.rint(frame.strength * s_scale), 0, 255).astype(np.uint8)
+    strengths_bytes = s_q.tobytes()
+    outflow_flat = np.asarray(frame.outflow, dtype=np.bool_).reshape(-1)
+    outflow_packed = np.packbits(outflow_flat, bitorder="big").tobytes()
+    e_scale = 255.0 / max_edge
+    ep_flat = np.asarray(frame.edge_pressure, dtype=np.float32).reshape(-1)
+    ep_active = ep_flat[outflow_flat]
+    ep_q = np.clip(np.rint(ep_active * e_scale), 0, 255).astype(np.uint8)
+    pressures_bytes = ep_q.tobytes()
+    return owners_bytes + strengths_bytes + outflow_packed + pressures_bytes
+
+
 class ReplayWriter:
+    """Streaming writer: header buffered until close along with frame stream.
+
+    Header carries the final frame count, so we accumulate frames in memory
+    (dense bytes — cheap) and write everything at close. Memory footprint:
+    ~3.5KB × num_frames for R=20 (≈ 13 MB for an 18 k-tick stride-5 run),
+    well within process memory.
+    """
     def __init__(self, f: BinaryIO, header: ReplayHeader) -> None:
         self._f = f
-        self._frame_count = 0
-        self._num_nodes = header.num_nodes
-        # Note: distance is fixed to 1 in v2 (K=6 direct neighbors); we still
-        # encode it in the same i16 slot so the header is byte-compatible with
-        # v1 readers that ignore the version byte.
-        metadata_bytes = json.dumps(header.metadata, separators=(",", ":")).encode("utf-8")
-        f.write(MAGIC)
-        f.write(struct.pack(
-            "<BBhhBBIHHI",
-            VERSION,
-            0,                          # reserved
-            header.radius,
-            1,                          # "distance" — always 1 in v2
-            header.num_players,
-            0,                          # reserved
-            header.num_nodes,
-            header.tick_stride,
-            header.dt_per_tick_ms,
-            0,                          # num_frames placeholder
-        ))
-        f.write(struct.pack("<I", len(metadata_bytes)))
-        f.write(metadata_bytes)
-        self._num_frames_offset = 20
+        self._header = header
+        self._frames: list[bytes] = []
 
     def write_frame(self, frame: Frame) -> None:
         n = frame.owner.shape[0]
-        assert n == self._num_nodes, f"frame nodes {n} != header {self._num_nodes}"
-        # owner u8 with two's-complement (Python doesn't sign-encode; use & 0xFF).
-        owner_bytes = bytes((int(o) & 0xFF) for o in frame.owner)
-        # strength quantized to u8.
-        scale = 255.0 / MAX_STRENGTH
-        strength_bytes = bytes(
-            max(0, min(255, int(s * scale + 0.5))) for s in frame.strength
+        assert n == self._header.num_nodes, (
+            f"frame nodes {n} != header {self._header.num_nodes}"
         )
-        self._f.write(owner_bytes)
-        self._f.write(strength_bytes)
-        flows = frame.flows
-        self._f.write(struct.pack("<H", len(flows)))
-        edge_scale = 255.0 / MAX_EDGE
-        for src, dst, player, pressure in flows:
-            pq = max(0, min(255, int(pressure * edge_scale + 0.5)))
-            self._f.write(struct.pack("<HHBB", src, dst, player, pq))
-        self._frame_count += 1
+        self._frames.append(_encode_frame(
+            frame, self._header.max_strength, self._header.max_edge,
+        ))
 
     def close(self) -> None:
-        self._f.seek(self._num_frames_offset)
-        self._f.write(struct.pack("<I", self._frame_count))
-        self._f.seek(0, 2)
+        hdr = {
+            "radius": int(self._header.radius),
+            "num_players": int(self._header.num_players),
+            "num_nodes": int(self._header.num_nodes),
+            "tick_stride": int(self._header.tick_stride),
+            "dt_per_tick_ms": int(self._header.dt_per_tick_ms),
+            "num_frames": len(self._frames),
+            "max_strength": float(self._header.max_strength),
+            "max_edge": float(self._header.max_edge),
+            "metadata": self._header.metadata,
+        }
+        header_json = json.dumps(hdr, separators=(",", ":")).encode("utf-8")
+        self._f.write(MAGIC)
+        self._f.write(struct.pack("<BB", VERSION, 0))
+        self._f.write(struct.pack("<I", len(header_json)))
+        self._f.write(header_json)
+        raw = b"".join(self._frames)
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6, mtime=0) as gz:
+            gz.write(raw)
+        self._f.write(buf.getvalue())
         self._f.flush()
 
 
 def write_replay(
-    path: Path, header: ReplayHeader, frames: list[Frame]
+    path: Path, header: ReplayHeader, frames: list[Frame],
 ) -> None:
-    """Convenience wrapper that writes to a temp path then renames."""
+    """Convenience wrapper: writes to a temp path then renames."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "wb") as f:
         w = ReplayWriter(f, header)

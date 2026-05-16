@@ -6,6 +6,56 @@ last_updated: workspace
 status: active
 ---
 
+## [2026-05-16 | workspace | v2 vectorized lands on main — ~24× at R=30, ~36× at R=100]
+
+**Touched pages:** [[topics/v2-vectorized]] [[index]] [[log]]
+
+Branch `worktree-v2-vectorize-compact` merged. The v2 hot path is now
+Numba-JIT'd top-to-bottom: vectorized solver pipeline (all 17 lightning
+modes + BFS in one (N, K) shape), JIT'd `step.tick` /
+`step.apply_actions`, JIT'd `compute_potential` Bellman value iteration
+with warm-start across AI ticks under fluid `EDGE_ALPHA`, JIT'd
+board-setup BFS (the unexpected ~1.16 s/game pure-Python culprit), and
+a batched per-AI-tick solver call. Plus FLXR v3 replay format —
+gzip-compressed dense per-frame, ~43–180× smaller than v2 — and an
+`EDGE_ALPHA` momentum knob on the reducer that gives edges memory and
+roughly halves the stalemate rate at `alpha=0.05`.
+
+Headline numbers, R 6-seat all-`lightning_sum_long` fluid:
+
+  R=20 (decisive)   pre-vec ~9.7s   new 0.7s     ~14×
+  R=30 6000-tick    pre-vec 31.3s   new 1.3s     ~24×
+  R=60 6000-tick    pre-vec ~140s   new 5.1s     ~27×
+  R=80 6000-tick    pre-vec ~280s   new 8.8s     ~32×
+  R=100 6000-tick   pre-vec ~500s   new 13.9s    ~36×
+
+Pre-vec column is measured for R≤30 and extrapolated for R≥60 (game
+loop linear in N, pre-vec board setup O(N²) Python BFS — the speedup
+*grows* with N because the JIT'd path stays linear on both).
+
+Parallel: 10× R=100 6000-tick games in 15.3 s on `--workers 10`
+(1.53 s/game amortized; M5 Max 12 P-cores saturated).
+
+**Added/updated:**
+- [[topics/v2-vectorized]] — the canonical writeup. Status flipped to
+  active. Contains the full perf table, the EDGE_ALPHA pilot, the
+  Numba pass, the warm-start trick, the batched pipeline, the JIT
+  board-setup, and a frank "MLX wired in lost vs Numba" finding so
+  future tinkerers don't re-invent the dead end.
+- [[index]] — `v2-vectorized` is now the current hot path entry in
+  the "v2 research" list, no longer flagged provisional.
+
+**Open item:**
+- [[topics/v2-overnight-research]] rankings (`wave_long > sum > bfs ≈
+  max >> attn …`) were produced against the per-cell-loop solvers.
+  The two intentional semantic deltas in the new pipeline (RNG draw
+  schedule via per-cell rotation offset; ε-tie relay rule now
+  globally "within `fanout_eps` of max friendly pot AND above
+  pot[c]") are individually small but the rankings live inside a
+  ~6 pp seat-bias noise floor. A matched-pair rerun under the new
+  code is the next thing to do before that page's official rankings
+  are refreshed.
+
 ## [2026-05-15 | workspace | v2 viewer — wall-clock smoothing + 80/20 fade/pressure mix on node brightness]
 
 **Touched pages:** [[topics/v2-viewer]] [[log]]
