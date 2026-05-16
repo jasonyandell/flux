@@ -189,6 +189,51 @@ Browser decode: `DecompressionStream('gzip')` is standard in modern
 browsers (Safari ≥ 16.4, all evergreen). No third-party gunzip
 needed. `parseReplay` is now `async`.
 
+## Batched solver + JIT board setup (commits `4fb7e23`, `b0d19c7`)
+
+Two more big wins after the warm-start landing.
+
+**Batched solver pipeline.** When all P seats run `lightning_sum_long`,
+the runner now dispatches one batched JIT call per AI tick instead of
+P × 3 separate calls. Combines `compute_potential` + gradient-relay +
+picker into a single function that runs all P seats back-to-back
+without leaving JIT space. Also caches the per-cell `deg` precompute
+(non-DEAD non-off-grid neighbor count) per game keyed by
+`id(neighbors)`, since DEAD cells are static within a game.
+
+Game-loop work: **0.42s → 0.26s (38% faster on the per-tick portion)**.
+
+**JIT'd board setup.** Profile-driven: `_build_initial_state` took
+**1.16s per game** at R=30 with 800 dead cells. Each dead-cell
+candidate ran `_live_subgraph_connected` as a pure-Python BFS over
+N=2791 cells, called ~N times → ~8M Python ops per board generation.
+Three @njit BFS cores plus `_place_dead_cells_core` (fuses the
+candidate-iteration loop with the inner BFS into one JIT call) brought
+board setup to **0.14s — 8× faster**.
+
+| Stage | R=30 6000-tick |
+| --- | --- |
+| pre-vec main | 31.3s |
+| post-vec (numpy) | 23.5s |
+| Numba JIT all solver paths | 3.8s |
+| warm-start compute_potential | 2.5s |
+| + batched pipeline | 2.4s |
+| **+ JIT board setup** | **1.3s** |
+| **total speedup vs pre-vec** | **24×** |
+
+R=40 6000-tick: 45.5s post-vec → 2.2s = 20.7× total.
+
+`_WARM_ITERS` also dropped from 6 to 4 — empirical sweet spot at
+`EDGE_ALPHA=0.05` (3 visibly degrades game quality, 6 is no better
+than 4 at this state-change rate).
+
+Things that did NOT pay off and were reverted:
+- `parallel=True` over the seat dimension in
+  `_lightning_sum_batched_core`: P=6 seats × ~400 µs work is too
+  little to overcome thread-sync overhead.
+- `parallel=True` inside `_compute_potential_core` over cells:
+  76,800 prange invocations × tiny per-iter work = 10× *slower*.
+
 ## Warm-start `compute_potential` (commit `88d8fd3`)
 
 After all the JIT work the profile showed `compute_potential` at 77%
