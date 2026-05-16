@@ -43,12 +43,13 @@ v2 reference:
 
 v2 research (freshest first):
 
-- [[topics/v2-vectorized|v2-vectorized]] — **provisional.**
-  Branch-local rewrite (`worktree-v2-vectorize-compact`) that
-  vectorizes all 17 solver modes + BFS + `step.apply_actions` and
-  ships FLXR v3 (gzip dense per-frame, ~43-180× smaller). 141 tests
-  + tsc + vite pass; matched-pair rankings against the new code
-  have **not** yet been re-confirmed.
+- [[topics/v2-vectorized|v2-vectorized]] — **the current hot path.**
+  Numba-JIT'd solver pipeline, fluid `EDGE_ALPHA` momentum knob,
+  warm-start Bellman, batched per-AI-tick solver, JIT'd board-setup
+  BFS, FLXR v3 gzip-compressed replays. R=30 6000-tick game runs in
+  1.3s (~24× pre-vec); R=100 in 13.9s (~36×). One open item: the
+  matched-pair rankings need a rerun under the new code before the
+  v2-overnight-research rankings get refreshed.
 - [[topics/v2-overnight-research|v2-overnight-research]] — autonomous
   overnight matched-pair tournaments (2026-05-15). **Current ranking:
   `wave_long` > `sum` > `bfs` ≈ `max` >> `attn` >> `pulse`/`pulse_stagger`.**

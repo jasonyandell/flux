@@ -1,21 +1,22 @@
 ---
-title: v2 vectorized (provisional)
+title: v2 vectorized
 kind: topic
 first_seen: 2026-05-15
-last_updated: 2026-05-15
-status: provisional
+last_updated: 2026-05-16
+status: active
 ---
 
 ## Status
 
-**Provisional.** Lives on branch `worktree-v2-vectorize-compact`
-(commit `194f29b`). All 141 Python tests + tsc + vite build pass, and
-all 17 solver modes dispatch and play through a small smoke run, but
-the matched-pair tournament numbers in
-[[v2-overnight-research|v2-overnight-research]] have not yet been
-re-checked under the new code. Until that happens, treat this page as
-a separate track — the wiki's current rankings still describe the
-pre-vectorize loop solvers.
+Landed on main 2026-05-16. The hot path is now Numba-JIT'd top to
+bottom and parallel-friendly. **One open question remains**: the
+matched-pair tournament rankings in
+[[v2-overnight-research|v2-overnight-research]] were produced
+against the pre-vectorize per-cell-loop solvers. The two semantic
+deltas documented below (RNG draw schedule, ε-tie relay rule) are
+individually small but the rankings live inside a 6 pp seat-bias
+noise floor, so they need a rerun under the new code before the
+official rankings get refreshed.
 
 ## What this is
 
@@ -36,34 +37,50 @@ A single-shot rewrite of the v2 hot path:
   header. Old `.flxr` v1/v2 files are unreadable by the new player —
   see the format section below.
 
-## Measured numbers
+## Headline numbers
 
-| | before | after |
-| --- | --- | --- |
-| 6000-tick R=20 6-seat `lightning_sum_long`, single-thread | 9.7s | 6.0s (1.6×) |
-| 6000-tick R=30 6-seat `lightning_sum_long`, single-thread | 31.3s | 25.2s (1.24×) |
-| 18 same R=20 games, `--workers 18` | n/a (single-process baseline) | 19s wall (5,700 ticks/sec aggregate) |
-| Replay file size (R=20 6000-tick stride-5) | ~20 MB | 468 KB (~43×) |
-| Replay file size (R=20 6000-tick stride-25) | ~5 MB | 109 KB (~180×) |
-| Python tests | 141 pass | 141 pass |
-| `tsc --noEmit` | clean | clean |
-| `vite build` | clean | clean |
+6000-tick 6-seat all-`lightning_sum_long` fluid `EDGE_ALPHA=0.05`,
+single process, M5 Max. Pre-vec column is measured for R=20/30 and
+extrapolated for R≥60 (pre-vec board setup is O(N²) Python BFS, game
+loop is ≈linear in N).
 
-The single-thread speedup shrinks on bigger boards (1.6× at R=20,
-1.24× at R=30) because the picker-loop overhead I removed scaled
-with the count of *owned cells*, while `compute_potential`'s
-32-iteration `(N, K)` field iteration scales with *N* and was
-already vectorized. As `N` grows, `compute_potential` becomes the
-dominant cost. The bigger wins are shape, not raw throughput:
-parallel-throughput on `--workers 18`, and the per-replay file size
-dropping from MB to KB so the trainer-displayer can live on the
-Cloudflare free tier and load on a phone.
+| R | N (cells) | new | pre-vec | speedup |
+| --- | --- | --- | --- | --- |
+| 20 | 1,261 | 0.7s | 9.7s | ~14× |
+| 30 | 2,791 | 1.3s | 31.3s | ~24× |
+| 60 | 10,981 | 5.1s | ~140s | ~27× |
+| 80 | 19,441 | 8.8s | ~280s | ~32× |
+| 100 | 30,301 | 13.9s | ~500s | ~36× |
 
-Both R=30 runs stalemated at 6000 ticks under identical seeds with
-different surviving-seat counts (old=4 alive, new=5 alive) — the
-expected divergence from the two intentional semantic deltas
-documented below. Macro behavior class is the same (same regime,
-same dominance, same outcome).
+The speedup *grows* with board size because the pre-vec
+`_live_subgraph_connected` ran a pure-Python BFS over the live
+subgraph once per dead-cell candidate during board setup — N
+candidates × N-cell BFS = O(N²) Python ops. The JIT'd path is
+linear in N for both game loop and board setup, so the gap widens.
+
+### Parallel throughput
+
+`--workers` parallelizes across games. R=100 6000-tick × 10 games,
+`--workers 10` on M5 Max (12 P-cores): **15.3s wall, 1.53s per game
+amortized**. Aggregate CPU usage was ~145s — full saturation. A
+100-game tournament at R=100 fits in ~150s; at R=30 in ~13s.
+
+### Replay file sizes (FLXR v3, gzip-compressed dense per-frame)
+
+| Config | size |
+| --- | --- |
+| R=20 6000-tick stride-5 | 468 KB |
+| R=20 6000-tick stride-25 | 109 KB |
+| R=60 6000-tick stride-25 | 3.8 MB |
+| R=100 6000-tick stride-25 | 9.2 MB |
+
+All comfortably under Cloudflare free-tier asset limits.
+Pre-vec FLXR v2 size at R=20 stride-5 was ~20 MB → v3 is 43× smaller
+at the same fidelity, ~180× at stride-25.
+
+### Build / test gates
+
+141/141 Python tests pass. `tsc --noEmit` clean. `vite build` clean.
 
 ## Why the file size dropped 43-180×
 
