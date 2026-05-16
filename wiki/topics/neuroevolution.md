@@ -45,11 +45,25 @@ Initial architecture: 91 → 32 (tanh) → 19. ~3.5k weights per genome. Small e
 
 ## Effort tiers
 
-- **Tier 1 — fixed topology, evolved weights only.** *Working.* Genome = `Float32Array` of weights. Forward pass per cell = two matmuls. Already powerful for this game space.
-- **Tier 2 — proper NEAT.** ~800–1500 LOC. Innovation numbers, speciation, structural mutations, compatibility distance. Genuinely more interesting evolution. Not on the active path.
+This was the v1 era's framing. For the v2 frontier, neuroevolution is no
+longer the active path — see "Where this fits now" below.
+
+- **Tier 1 — fixed topology, evolved weights only.** *Working.* Genome = `Float32Array` of weights. Forward pass per cell = two matmuls.
+- **Tier 2 — proper NEAT.** ~800–1500 LOC. Innovation numbers, speciation, structural mutations, compatibility distance. Not on the active path.
 - **Tier 3 — rtNEAT.** Time-based selection + real-time speciation. Not on the active path; batch generations win on throughput with MLX vectorization.
-- **Tier 4 — WebGPU compute.** *Shipped, no longer the training path.* `src/gpu/` runs population eval as compute shaders in-browser. See [[../decisions/webgpu-evolution|webgpu-evolution]]. Coexists with Tier 5; the browser still hosts it as a side-quest, but champions on disk now come from Python.
-- **Tier 5 — MLX training pipeline (the training path).** *Shipped end-to-end.* `python/flux/mlx_*` runs the whole evolution loop on Metal via MLX. Two models coexist: v1 (91-input, 2-hop neighborhood, 32 hidden, 19 output, 3571 weights) and v2 (181-input, 3-hop neighborhood, 32 hidden, 19 output, 6451 weights). Win-based termination per game (alive ≤ 1 → freeze), 10k tick cap. Champions serialize to `public/champions/` (v1) and `public/champions/v2/` (v2). Replays serialize to `public/replays/*.flxr` and are the production way users see what evolved. See [[../decisions/replay-rendering|replay-rendering]] and [[../decisions/v2-vision|v2-vision]].
+- **Tier 4 — WebGPU compute.** *Shipped, side-quest.* `src/gpu/` runs population eval as compute shaders in-browser. See [[../decisions/webgpu-evolution|webgpu-evolution]]. Champions on disk now come from Python.
+- **Tier 5 — MLX neuroevolution (v1, frozen).** *Shipped end-to-end, then saturated.* `python/flux/mlx_*` runs the whole evolution loop on Metal via MLX. Two model widths landed: v1 (91-input, 2-hop neighborhood, 32 hidden, 19 output, 3571 weights) and v2-vision (181-input, 3-hop neighborhood, 32 hidden, 19 output, 6451 weights — see [[../decisions/v2-vision|v2-vision]]). Win-based termination per game, 10k tick cap. Champions serialize to `public/champions/` and `public/champions/v2/`. Replays serialize to `public/replays/*.flxr`. **At saturation as of 2026-05-11** (v1 gen 5372 / fit 1540, v2-vision gen 347 / fit 1521). No longer where new design happens.
+- **Tier 6 — v2 PPO on persistent-edge sim (the current training path).** *Active.* Different sim ([[../decisions/v2-edge-pressure-state|v2-edge-pressure-state]]), different action space ([[../decisions/v2-set-clear-actions|v2-set-clear-actions]]), different reward shape ([[../decisions/v2-three-term-reward|v2-three-term-reward]]). PPO + GCN policy in `python/flux_v2/ppo.py` driven by `python/scripts/train_v2.py`. See [[../decisions/ppo-gnn|ppo-gnn]] and [[../topics/v2-training-runs|v2-training-runs]]. The proposed edge-voting head ([[../topics/v2-edge-voting-policy|v2-edge-voting-policy]]) is the next move.
+
+## Where this fits now
+
+Tier 5 is the high-water mark for neuroevolution proper in this repo and
+remains the deployed `evolved` seat. Tier 6 (v2 PPO) is what's actively
+learning. The current open question is whether a learned policy on v2 can
+beat the best hand-coded Lightning solver
+([[../topics/v2-overnight-research|v2-overnight-research]]) — under big-bag
+rules as of 2026-05-15 it has not yet, and the attn-headed PPO variant was
+abandoned.
 
 ## Python pipeline (Tier 5) — files
 

@@ -6,6 +6,56 @@ last_updated: 2026-05-15
 status: active
 ---
 
+## [2026-05-16 | workspace | v2 vectorized lands on main — ~24× at R=30, ~36× at R=100]
+
+**Touched pages:** [[topics/v2-vectorized]] [[index]] [[log]]
+
+Branch `worktree-v2-vectorize-compact` merged. The v2 hot path is now
+Numba-JIT'd top-to-bottom: vectorized solver pipeline (all 17 lightning
+modes + BFS in one (N, K) shape), JIT'd `step.tick` /
+`step.apply_actions`, JIT'd `compute_potential` Bellman value iteration
+with warm-start across AI ticks under fluid `EDGE_ALPHA`, JIT'd
+board-setup BFS (the unexpected ~1.16 s/game pure-Python culprit), and
+a batched per-AI-tick solver call. Plus FLXR v3 replay format —
+gzip-compressed dense per-frame, ~43–180× smaller than v2 — and an
+`EDGE_ALPHA` momentum knob on the reducer that gives edges memory and
+roughly halves the stalemate rate at `alpha=0.05`.
+
+Headline numbers, R 6-seat all-`lightning_sum_long` fluid:
+
+  R=20 (decisive)   pre-vec ~9.7s   new 0.7s     ~14×
+  R=30 6000-tick    pre-vec 31.3s   new 1.3s     ~24×
+  R=60 6000-tick    pre-vec ~140s   new 5.1s     ~27×
+  R=80 6000-tick    pre-vec ~280s   new 8.8s     ~32×
+  R=100 6000-tick   pre-vec ~500s   new 13.9s    ~36×
+
+Pre-vec column is measured for R≤30 and extrapolated for R≥60 (game
+loop linear in N, pre-vec board setup O(N²) Python BFS — the speedup
+*grows* with N because the JIT'd path stays linear on both).
+
+Parallel: 10× R=100 6000-tick games in 15.3 s on `--workers 10`
+(1.53 s/game amortized; M5 Max 12 P-cores saturated).
+
+**Added/updated:**
+- [[topics/v2-vectorized]] — the canonical writeup. Status flipped to
+  active. Contains the full perf table, the EDGE_ALPHA pilot, the
+  Numba pass, the warm-start trick, the batched pipeline, the JIT
+  board-setup, and a frank "MLX wired in lost vs Numba" finding so
+  future tinkerers don't re-invent the dead end.
+- [[index]] — `v2-vectorized` is now the current hot path entry in
+  the "v2 research" list, no longer flagged provisional.
+
+**Open item:**
+- [[topics/v2-overnight-research]] rankings (`wave_long > sum > bfs ≈
+  max >> attn …`) were produced against the per-cell-loop solvers.
+  The two intentional semantic deltas in the new pipeline (RNG draw
+  schedule via per-cell rotation offset; ε-tie relay rule now
+  globally "within `fanout_eps` of max friendly pot AND above
+  pot[c]") are individually small but the rankings live inside a
+  ~6 pp seat-bias noise floor. A matched-pair rerun under the new
+  code is the next thing to do before that page's official rankings
+  are refreshed.
+
 ## [2026-05-15 | workspace | throttle hypothesis validated — lightning_sum_throttled dominates both bfs and sum]
 
 **Touched pages:** [[topics/v2-temporal-strategy]] [[log]]
@@ -106,6 +156,104 @@ the temporal layer they share. [[index]] adds the new topic.
 gets a named diagnosis (bandit-with-switching-costs) and an
 architectural answer (manager/worker with hysteresis), pending
 implementation.
+
+## [2026-05-15 | workspace | v2 viewer — wall-clock smoothing + 80/20 fade/pressure mix on node brightness]
+
+**Touched pages:** [[topics/v2-viewer]] [[log]]
+
+Refined the v2 fade trail. The iter-based `freshness` is now the
+*target*; a new per-node `displayed` slews toward it at a wall-clock
+cap of `FRESHNESS_RATE_PER_SEC = 2.0/s`, so any single 0↔1 transition
+takes ≥ 0.5 s. Under fast playback or scrub-bursts the displayed value
+never reaches either extreme — it orbits the mean, producing a
+continuous soft pulse instead of hard flashes. At normal cadence (per-
+iter change within budget) behavior is visually unchanged.
+
+Rendered brightness now blends two signals over the above-base
+headroom: 80% `displayed` (age-delta), 20% `pNorm` (max edge pressure
+touching node, per-frame auto-scaled the same way the arrow widths
+are). Max pressure on a long-static node tops out at 20% over base;
+max pressure plus a fresh change hits full bright. Idle nodes fall to
+base. Strength still drives node size — color is the activity layer
+on top.
+
+Updated: [[v2-viewer]]'s "Node fade trail" section rewritten to cover
+the three-stage target/displayed/render pipeline and the mix.
+
+## [2026-05-15 | workspace | v2 viewer — per-node fade trail keyed to replay iters]
+
+**Touched pages:** [[topics/v2-viewer]] [[log]]
+
+Added a brightness pulse-and-fade to v2's node rendering. A node snaps
+to full brightness whenever its owner or flow-membership signature
+changes, then decays by `1/20` per replay frame-index advance —
+fully dim ~20 iters after its last config change. Floor is
+`MIN_BRIGHTNESS = 0.25` of the owner's base color. Pressure changes
+deliberately don't pulse (continuous → every frame would flash).
+
+Keyed to iters, not wall-clock: pause holds the glow, scrubbing back
+doesn't silently fade, fast-forward burns through trails at the
+forward-stepping rate. Frame-index delta handles all three.
+
+User-facing toggle (`✦`/`✧` on the transport bar, default on,
+persisted in `localStorage` under `flux-v2-fade-enabled`) flips a
+`fadeEnabled` flag on `Scene`; when off every node renders full
+brightness regardless of freshness. Knobs: `FADE_PER_ITER` and
+`MIN_BRIGHTNESS` in `src_v2/render/scene.ts`.
+
+Updated: [[v2-viewer]] gained a "Node fade trail" section and a
+fade-button entry in the transport-bar list.
+
+## [2026-05-15 | workspace | wiki curation — entry-page rewrite + ranking reconciliation]
+
+**Touched pages:** [[entities/flux]] [[index]]
+[[decisions/webgpu-evolution]] [[topics/neuroevolution]]
+[[topics/v2-edge-voting-policy]] [[topics/v2-edge-loop-emergence]]
+[[questions/open]] [[log]]
+
+Driver: `entities/flux.md` was the route-map entry point per `index.md`
+but described only v1. With all the v2 work (PPO, edge-pressure, Lightning
+solver family, trainer-displayer at `/index-v2.html`, overnight research),
+new readers were being routed to a page that read as if v2 didn't exist.
+
+**Added:** none new.
+
+**Updated:**
+- [[entities/flux]] rewritten as a v1+v2 project overview. Top sections:
+  "What flux is now," "v2 frontier (read this)," "v1 surface (still
+  deployed, not the frontier)." Implementation map covers
+  `python/flux_v2/`, `src_v2/`, `python/scripts/`, and the v1 surface.
+- [[index]] route map regrouped: Topics split into Context / v2 reference
+  / v2 research (freshest first). Decisions split into v2 / cross-track /
+  v1 / earlier-experiments / retired. The stale `lightning_attn 12-12 tie
+  with sum` line is replaced by the matched-pair ranking. Index now points
+  v2-curious readers straight at
+  [[topics/v2-rules-one-pager|v2-rules-one-pager]] +
+  [[topics/v2-overnight-research|v2-overnight-research]].
+- [[decisions/webgpu-evolution]] status flipped to `superseded` with a
+  "Status (2026-05)" preamble. Still kept live as the parity reference and
+  the home of the deployed `evolved` seat.
+- [[topics/neuroevolution]] Tier 5 split: v1 MLX path marked saturated;
+  added Tier 6 (v2 PPO on persistent-edge sim) as the active training path
+  with backlinks to [[../decisions/ppo-gnn|ppo-gnn]],
+  [[../decisions/v2-edge-pressure-state]], and the overnight research.
+- [[topics/v2-edge-voting-policy]] status flipped to `proposed`. Page now
+  opens with what landed (`edge_features.py`, `edge_flow.py`, `--model
+  edge`) vs what hasn't (full per-edge logit policy beating `sum`).
+- [[topics/v2-edge-loop-emergence]] gained a "Note on rankings" preamble
+  flagging that its `sum > attn ≈ sum > max > loop > sum_pw` ranking is
+  superseded by overnight matched-pair results; the mechanism story is
+  still useful.
+- [[questions/open]] rewritten. v1-bootstrap-era questions moved to
+  "Closed / answered." New v2 questions: can a learned policy beat
+  `wave_long`, is `wave_long`'s gate doing anything beyond `sum_long`,
+  why does γ=0.94 help `sum` and hurt `max`, and is `regen-flow` better
+  for emergence than transfer-flow.
+
+**Retired:** none (`inbound-bonus`, `loop-bonus` already retired and now
+linked from the index under "Retired").
+
+**Questions opened:** all consolidated into [[questions/open]].
 
 ## [2026-05-14 | workspace | lightning_attn — 2-head attention solver with frontier-tilt mixing]
 

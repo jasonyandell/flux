@@ -15,6 +15,8 @@ export type PlaybackHandlers = {
   onSeek(fraction: number): void;
   // user picked a new speed from the cycle
   onSpeedChange(multiplier: number): void;
+  // user toggled the node-fade visual effect
+  onToggleFade(enabled: boolean): void;
 };
 
 export type PlaybackBar = {
@@ -23,6 +25,7 @@ export type PlaybackBar = {
   setPaused(paused: boolean): void;
   setSpeed(multiplier: number): void;
   setEnabled(enabled: boolean): void;
+  setFadeEnabled(enabled: boolean): void;
 };
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4];
@@ -113,6 +116,22 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
     handlers.onSpeedChange(m);
   });
 
+  // Node-fade visual toggle. Filled (✦) = on; outlined (✧) = off.
+  const fadeBtn = makeButton('✦', 'Node fade trail (click to toggle)');
+  fadeBtn.style.minWidth = '3ch';
+  fadeBtn.style.textAlign = 'center';
+  let fadeOn = true;
+  const paintFade = () => {
+    fadeBtn.textContent = fadeOn ? '✦' : '✧';
+    fadeBtn.title = fadeOn ? 'Node fade trail on (click to turn off)' : 'Node fade trail off (click to turn on)';
+    fadeBtn.style.opacity = fadeOn ? '0.85' : '0.45';
+  };
+  fadeBtn.addEventListener('click', () => {
+    fadeOn = !fadeOn;
+    paintFade();
+    handlers.onToggleFade(fadeOn);
+  });
+
   root.appendChild(prev);
   root.appendChild(stepBack);
   root.appendChild(play);
@@ -121,6 +140,7 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
   root.appendChild(scrubber);
   root.appendChild(counter);
   root.appendChild(speedBtn);
+  root.appendChild(fadeBtn);
   document.body.appendChild(root);
 
   return {
@@ -147,10 +167,14 @@ export function createPlaybackBar(handlers: PlaybackHandlers): PlaybackBar {
     },
     setEnabled(enabled: boolean) {
       const o = enabled ? '' : '0.5';
-      [prev, stepBack, play, stepFwd, next, speedBtn].forEach(b => { b.disabled = !enabled; });
+      [prev, stepBack, play, stepFwd, next, speedBtn, fadeBtn].forEach(b => { b.disabled = !enabled; });
       scrubber.disabled = !enabled;
       if (o) root.style.filter = `opacity(${o})`;
       else root.style.filter = '';
+    },
+    setFadeEnabled(enabled: boolean) {
+      fadeOn = enabled;
+      paintFade();
     },
   };
 }
