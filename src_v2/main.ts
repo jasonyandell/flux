@@ -9,6 +9,7 @@ import { createPlayer } from './replay/player';
 import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer, setFadeEnabled } from './render/scene';
 import { createTopBar } from './render/topbar';
 import { createPlaybackBar } from './render/playback';
+import { createPlaylist } from './render/playlist';
 
 const REPLAY_BASE = '/v2/replays/';
 const INDEX_URL = '/v2/replays/index.json';
@@ -34,9 +35,10 @@ const player = createPlayer({
   playTicksPerSec: PLAY_TICKS_PER_SEC,
   playbackSpeed: PLAYBACK_SPEED,
 });
-topBar.setOnSelect((file) => {
-  // Selecting from the recent-runs list implies the user wants that
-  // specific run on screen — unpause if needed and load it.
+const playlist = createPlaylist();
+playlist.setOnSelect((file) => {
+  // Selecting from the playlist implies the user wants that specific run on
+  // screen — unpause if needed and load it.
   if (player.isPaused()) player.setPaused(false);
   player.loadReplay(file);
 });
@@ -120,7 +122,7 @@ function frame(now: number) {
   // Surface live player status even before the first replay loads, so the
   // top bar shows polling / loading state to the user.
   topBar.setStatus(player.status());
-  topBar.setRecent(player.recentEntries(), player.currentName());
+  playlist.setEntries(player.recentEntries(), player.currentName());
 
   const r = player.current();
   if (r) {
