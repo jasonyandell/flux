@@ -9,6 +9,7 @@ dependencies = [
     "wandb>=0.18",
     "pandas>=3.0.3",
     "pillow>=12.2.0",
+    "numba>=0.65.1",
 ]
 
 [build-system]

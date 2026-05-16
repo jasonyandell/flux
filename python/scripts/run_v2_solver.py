@@ -15,8 +15,10 @@ opponent.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +49,19 @@ from flux_v2.state import MAX_STRENGTH, copy_state
 
 def _lightning_sum(state, seat, rng=None):
     return lightning_solver_actions(state, seat, rng=rng, mode="sum")
+
+
+def _lightning_sum_throttled(state, seat, rng=None):
+    # Throttle-1 variant: at most one outflow slot per cell. Tests whether
+    # bfs's structural advantage is "one parent per cell" (commitment by
+    # construction) on top of sum-mode's loop-aware potential field.
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", throttle=1)
+
+
+def _lightning_max_throttled(state, seat, rng=None):
+    # Same throttle-1 cap on the max-mode (tree) potential. Ablation: is the
+    # throttle gain dependent on sum's loop awareness or independent?
+    return lightning_solver_actions(state, seat, rng=rng, mode="max", throttle=1)
 
 
 def _lightning_sum_pw(state, seat, rng=None):
@@ -89,6 +104,15 @@ def _lightning_sum_long(state, seat, rng=None):
     # Exp 6 winner: γ=0.94 hit 8/12 (67%) vs default-γ sum on R=20 10% dead.
     # Modest reproducible signal; the exp 5 γ=0.92 100% was variance.
     return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.94)
+
+
+def _lightning_live(state, seat, rng=None):
+    # One-pass live-field proxy. Designed for fluid rules (EDGE_ALPHA < 1.0)
+    # where edge_pressure is a time-integrated steady-state approximation.
+    # Skips the 32-iter Bellman solve in compute_potential — 5-10x faster
+    # per AI tick on R≥20. Multi-hop information comes from the
+    # already-propagated edge_pressure field instead.
+    return lightning_solver_actions(state, seat, rng=rng, mode="live", gamma=0.85)
 
 
 def _lightning_sum_wide(state, seat, rng=None):
@@ -151,9 +175,12 @@ SOLVERS = {
     "bfs": solver_actions,
     "lightning": lightning_solver_actions,       # mode=max (original)
     "lightning_sum": _lightning_sum,             # value-iteration sum
+    "lightning_sum_throttled": _lightning_sum_throttled,  # sum field, ≤1 outflow slot per cell
+    "lightning_max_throttled": _lightning_max_throttled,  # max field, ≤1 outflow slot per cell
     "lightning_sum_pw": _lightning_sum_pw,       # edge-pressure-weighted sum
     "lightning_sum_long": _lightning_sum_long,   # exp5 winner: γ=0.92 sum
     "lightning_sum_wide": _lightning_sum_wide,   # γ=0.92 + expand_bonus=1.0
+    "lightning_live": _lightning_live,           # live-field proxy; for EDGE_ALPHA<1.0
     "lightning_loop": _lightning_loop,           # structural CCW 3-loop curl
     "lightning_attn": _lightning_attn,           # 2-head: attack + loop with frontier-tilt
     "lightning_attn_release": _lightning_attn_release,  # +build-release (frac=0.7)
@@ -346,35 +373,125 @@ def run_game(
     seat_solvers: list[str],
     record_stride: int = 25,
     connect_mode: str = "retry",
+    edge_alpha: float = 1.0,
+    record_frames: bool = True,
 ):
     """Run one game with per-seat solver assignment. Returns (final_state,
-    frames, winner_seat, dead_cells)."""
+    frames, winner_seat, dead_cells).
+
+    edge_alpha: edge-pressure momentum (1.0 = snap-to-target, original v2;
+    <1 = fluid-style buildup, the brainstorm pilot).
+
+    record_frames: if False, skip the per-stride state_to_frame copy.
+    Saves ~30ms per 6000-tick R=30 game when no replay is being written.
+    Returned frames list is empty in that case.
+    """
     state, dead = _build_initial_state(
         radius, num_players, num_dead_cells, rng, connect_mode=connect_mode,
     )
     solver_fns = [SOLVERS[name] for name in seat_solvers]
 
-    frames = [state_to_frame(state)]
+    # Fast path: when all seats run lightning_sum_long, dispatch one batched
+    # JIT call per AI tick instead of P separate solver calls. The savings
+    # are per-seat Python wrapper overhead + redundant deg precompute + the
+    # JIT-dispatch chain (compute_potential -> _gradient_relay -> picker).
+    sum_long_batched = all(s == "lightning_sum_long" for s in seat_solvers)
+    if sum_long_batched:
+        from flux_v2.solver_vec import lightning_sum_batched
+
+    frames: list = [state_to_frame(state)] if record_frames else []
     for t in range(1, max_ticks + 1):
         if t % ai_period == 0:
-            per_seat: list[np.ndarray] = []
-            for seat in range(num_players):
-                per_seat.append(solver_fns[seat](state, seat, rng=rng))
-            combined = _combine_actions(state, per_seat)
+            if sum_long_batched:
+                actions_grid = lightning_sum_batched(state, rng=rng, gamma=0.94)
+                combined = np.full(state.N, ACTION_NOOP, dtype=np.int32)
+                owner = state.owner
+                for seat in range(num_players):
+                    mask = owner == seat
+                    combined[mask] = actions_grid[seat][mask]
+            else:
+                per_seat: list[np.ndarray] = []
+                for seat in range(num_players):
+                    per_seat.append(solver_fns[seat](state, seat, rng=rng))
+                combined = _combine_actions(state, per_seat)
             state = apply_actions(state, combined)
-        state = tick(state)
-        if t % record_stride == 0:
+        state = tick(state, edge_alpha=edge_alpha)
+        if record_frames and t % record_stride == 0:
             frames.append(state_to_frame(state))
 
         # Early stop: at most one seat still has any cells.
         cells = _cells_per_seat(state, num_players)
         if (cells > 0).sum() <= 1:
-            frames.append(state_to_frame(state))
+            if record_frames:
+                frames.append(state_to_frame(state))
             break
 
     cells = _cells_per_seat(state, num_players)
     winner = int(cells.argmax()) if cells.max() > 0 else -1
     return state, frames, winner, dead
+
+
+def _game_worker(payload: dict) -> dict:
+    """Run one game in a worker process. Writes its own replay (if requested)
+    and returns lightweight metadata. Avoids pickling the frames list (often
+    100MB+ for long games) back to the parent."""
+    cfg = payload
+    rng = np.random.default_rng(cfg["seed"])
+    t0 = time.time()
+    state, frames, winner, dead = run_game(
+        cfg["radius"], cfg["num_players"], cfg["num_dead_cells"],
+        cfg["ai_period_ticks"], cfg["max_ticks"], rng,
+        cfg["seat_solvers"], cfg["record_stride"],
+        connect_mode=cfg["connect_mode"],
+        edge_alpha=cfg["edge_alpha"],
+        record_frames=bool(cfg["write_replay"]),
+    )
+    dt = time.time() - t0
+    cells = _cells_per_seat(state, cfg["num_players"])
+
+    replay_info = None
+    if cfg["write_replay"]:
+        DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = f"_g{cfg['game_idx']}" if cfg["total_games"] > 1 else ""
+        name = f"solver_v2_{cfg['tag']}_{cfg['stamp']}{suffix}.flxr"
+        path = DEFAULT_OUT_DIR / name
+        dead_list = [int(x) for x in dead] if dead is not None else []
+        ea = float(cfg["edge_alpha"])
+        ruleset = "v2-pressure" if ea >= 1.0 else f"v2-fluid-{ea:g}"
+        metadata = {
+            "kind": "solver_v2",
+            "model": f"solver_{cfg['tag']}",
+            "ruleset": ruleset,
+            "edge_alpha": ea,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "dead_cells": dead_list,
+            "seats": cfg["seat_solvers"],
+            "iteration": 0,
+            "generation": cfg["game_idx"],
+        }
+        write_replay(
+            path, frames,
+            cfg["radius"], cfg["num_players"], state.N,
+            cfg["record_stride"], metadata,
+        )
+        replay_info = {
+            "file": path.name,
+            "saved_at": metadata["saved_at"],
+            "kind": "solver_v2", "model": metadata["model"],
+            "ruleset": ruleset,
+            "edge_alpha": ea,
+            "seats": cfg["seat_solvers"],
+            "iteration": 0, "generation": cfg["game_idx"],
+            "radius": cfg["radius"], "num_players": cfg["num_players"],
+        }
+    return {
+        "game_idx": cfg["game_idx"],
+        "dt": dt,
+        "winner": winner,
+        "tick": int(state.tick),
+        "cells": cells.tolist(),
+        "replay_info": replay_info,
+    }
 
 
 def write_replay(
@@ -408,7 +525,9 @@ def main() -> None:
     ap.add_argument("--games", type=int, default=4)
     ap.add_argument("--ai-period-ticks", type=int, default=5)
     ap.add_argument("--max-ticks", type=int, default=4000)
-    ap.add_argument("--record-stride", type=int, default=25)
+    ap.add_argument("--record-stride", type=int, default=None,
+                    help="ticks between recorded frames. Default: match "
+                         "--ai-period-ticks so every AI decision is captured.")
     ap.add_argument("--seed", type=int, default=int(time.time()) & 0xFFFFFFFF)
     ap.add_argument("--write-replay", action="store_true",
                     help="write one .flxr to public/v2/replays/ for game 0")
@@ -425,7 +544,18 @@ def main() -> None:
                     help="Path to a PPO checkpoint (.npz). Required if 'trained' appears in --seats.")
     ap.add_argument("--trained-model-kind", choices=("attn", "gnn"), default="attn",
                     help="Architecture of the trained checkpoint.")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="Number of worker processes for parallel games. "
+                         "Default: min(games, cpu_count). Set to 1 to force "
+                         "sequential. Ignored when 'trained' is in --seats.")
+    ap.add_argument("--edge-alpha", type=float, default=1.0,
+                    help="Edge-pressure momentum: 1.0 (default) = snap-to-target "
+                         "(original v2 physics). <1.0 = fluid-style buildup over "
+                         "~1/alpha ticks. Pilot value 0.05 ≈ 20 ticks to ~63%% "
+                         "of a held target.")
     args = ap.parse_args()
+    if args.record_stride is None:
+        args.record_stride = args.ai_period_ticks
 
     if args.seats:
         seat_solvers = [s.strip() for s in args.seats.split(",")]
@@ -443,46 +573,93 @@ def main() -> None:
     else:
         seat_solvers = ["bfs"] * args.num_players
 
-    rng = np.random.default_rng(args.seed)
     print(f"v2 solver play: radius={args.radius} P={args.num_players} "
           f"G={args.games} max_ticks={args.max_ticks} dead={args.num_dead_cells}")
     print(f"  seats: {seat_solvers}")
 
+    # Per-game seeds derived from the base seed so reruns are reproducible.
+    seed_seq = np.random.SeedSequence(args.seed)
+    game_seeds = [int(s.generate_state(1)[0]) for s in seed_seq.spawn(args.games)]
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    unique_solvers = sorted(set(seat_solvers))
+    joined_tag = "+".join(unique_solvers)
+    # macOS / HFS+ caps filenames at 255 bytes. With timestamp + suffix +
+    # extension the tag itself has ~200 bytes of headroom; bigger zoos blow
+    # past that. Fall back to a compact identifier when the join is too long.
+    # The full seat list is preserved in the replay metadata regardless.
+    tag = joined_tag if len(joined_tag) <= 120 else f"multi{len(unique_solvers)}"
+
+    payloads = [
+        {
+            "game_idx": g,
+            "seed": game_seeds[g],
+            "radius": args.radius,
+            "num_players": args.num_players,
+            "num_dead_cells": args.num_dead_cells,
+            "ai_period_ticks": args.ai_period_ticks,
+            "max_ticks": args.max_ticks,
+            "record_stride": args.record_stride,
+            "seat_solvers": seat_solvers,
+            "connect_mode": args.connect_mode,
+            "write_replay": bool(args.write_replay),
+            "total_games": args.games,
+            "tag": tag,
+            "stamp": stamp,
+            "edge_alpha": float(args.edge_alpha),
+        }
+        for g in range(args.games)
+    ]
+
+    # MLX-backed trained solvers don't survive process spawn (model lives in a
+    # closure with mx.array state) — fall back to sequential when needed.
+    has_trained = "trained" in seat_solvers
+    default_workers = min(args.games, os.cpu_count() or 1)
+    n_workers = args.workers if args.workers is not None else default_workers
+    if has_trained and n_workers > 1:
+        print(f"  (sequential: 'trained' solver does not parallelize)")
+        n_workers = 1
+    n_workers = max(1, min(n_workers, args.games))
+
     win_counts = np.zeros(args.num_players, dtype=np.int64)
     stalemates = 0
     durations: list[int] = []
+    replay_infos: list[dict] = []
+    wall0 = time.time()
 
-    first_game_frames = None
-    first_game_dead = None
-    first_game_state = None
-
-    for g in range(args.games):
-        t0 = time.time()
-        state, frames, winner, dead = run_game(
-            args.radius, args.num_players, args.num_dead_cells,
-            args.ai_period_ticks, args.max_ticks, rng,
-            seat_solvers, args.record_stride,
-            connect_mode=args.connect_mode,
-        )
-        dt = time.time() - t0
-        durations.append(state.tick)
-        cells = _cells_per_seat(state, args.num_players)
+    def _record(result: dict) -> None:
+        nonlocal stalemates
+        g = result["game_idx"]
+        durations.append(result["tick"])
+        cells = np.array(result["cells"], dtype=np.int64)
         dom = float(cells.max() / max(cells.sum(), 1))
+        winner = result["winner"]
         if winner < 0 or (cells > 0).sum() > 1:
             stalemates += 1
-            print(f"  game {g}: stalemate at tick {state.tick} "
-                  f"(dominance {dom:.2f}, alive {(cells > 0).sum()}, {dt:.1f}s)")
+            print(f"  game {g}: stalemate at tick {result['tick']} "
+                  f"(dominance {dom:.2f}, alive {(cells > 0).sum()}, {result['dt']:.1f}s)")
         else:
             win_counts[winner] += 1
-            print(f"  game {g}: seat {winner} wins at tick {state.tick} "
-                  f"(dominance {dom:.2f}, {dt:.1f}s)")
-        if g == 0:
-            first_game_frames = frames
-            first_game_dead = dead
-            first_game_state = state
+            print(f"  game {g}: seat {winner} wins at tick {result['tick']} "
+                  f"(dominance {dom:.2f}, {result['dt']:.1f}s)")
+        if result["replay_info"] is not None:
+            replay_infos.append(result["replay_info"])
+
+    if n_workers == 1:
+        for payload in payloads:
+            _record(_game_worker(payload))
+    else:
+        print(f"  workers: {n_workers} (parallel)")
+        with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            futures = {ex.submit(_game_worker, p): p["game_idx"] for p in payloads}
+            for fut in as_completed(futures):
+                _record(fut.result())
+
+    wall = time.time() - wall0
 
     print()
-    print(f"  total: {args.games} games, mean ticks {np.mean(durations):.0f}")
+    print(f"  total: {args.games} games, mean ticks {np.mean(durations):.0f}, "
+          f"wall {wall:.1f}s")
     for p in range(args.num_players):
         print(f"    seat {p} ({seat_solvers[p]:>17s}): {int(win_counts[p])} wins")
     if stalemates:
@@ -497,39 +674,13 @@ def main() -> None:
             seats_count = seat_solvers.count(name)
             print(f"    {name:>17s} ({seats_count} seats): {w} wins")
 
-    if args.write_replay and first_game_frames is not None:
-        DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        tag = "+".join(sorted(set(seat_solvers)))
-        name = f"solver_v2_{tag}_{stamp}.flxr"
-        path = DEFAULT_OUT_DIR / name
-        dead_list = [int(x) for x in first_game_dead] if first_game_dead is not None else []
-        tag = "+".join(sorted(set(seat_solvers)))
-        metadata = {
-            "kind": "solver_v2",
-            "model": f"solver_{tag}",
-            "ruleset": "v2-pressure",
-            "saved_at": datetime.now(timezone.utc).isoformat(),
-            "dead_cells": dead_list,
-            "seats": seat_solvers,
-            "iteration": 0,
-            "generation": 0,
-        }
-        write_replay(
-            path, first_game_frames,
-            args.radius, args.num_players, first_game_state.N,
-            args.record_stride, metadata,
-        )
-        append_index(DEFAULT_OUT_DIR, {
-            "file": path.name,
-            "saved_at": metadata["saved_at"],
-            "kind": "solver_v2", "model": metadata["model"],
-            "ruleset": "v2-pressure",
-            "seats": seat_solvers,
-            "iteration": 0, "generation": 0,
-            "radius": args.radius, "num_players": args.num_players,
-        })
-        print(f"  wrote replay: {path.relative_to(REPO_ROOT)}")
+    if replay_infos:
+        # Workers already wrote the .flxr files; append index entries in
+        # game-index order so the file ordering and index ordering match.
+        replay_infos.sort(key=lambda r: r.get("generation", 0))
+        for info in replay_infos:
+            append_index(DEFAULT_OUT_DIR, info)
+            print(f"  wrote replay: public/v2/replays/{info['file']}")
 
 
 if __name__ == "__main__":

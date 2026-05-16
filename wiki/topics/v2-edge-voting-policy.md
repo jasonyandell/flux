@@ -2,9 +2,32 @@
 title: v2 edge-voting policy spec
 kind: topic
 first_seen: workspace
-last_updated: workspace
-status: active
+last_updated: 2026-05-15
+status: proposed
 ---
+
+## Status (2026-05-15)
+
+**Proposed, partially landed.** Foundations exist in
+`python/flux_v2/edge_features.py`, `edge_flow.py`, and the `--model edge`
+path in `python/scripts/train_v2.py`, plus the auxiliary pretraining script
+`python/scripts/pretrain_v2_edge_aux.py`. The full edge-voting policy
+(per-edge logits with visibility-normalized aggregation) has **not yet
+landed**, and overnight-research results
+([[v2-overnight-research|v2-overnight-research]]) note that the attn-headed
+PPO direction was abandoned after losing decisively to `lightning_sum`.
+This spec is the design target the next PPO iteration is aimed at, not a
+description of code already shipped.
+
+## Scope note (2026-05-15)
+
+This page specifies the *spatial* output factorization — how the
+policy expresses per-edge intent. It does not address temporal
+commitment (throttle, target persistence, multi-tick options); see
+[[v2-temporal-strategy]] for that layer. The two are complementary: an
+edge-voting head emits *what flow field* to maintain, a slow recurrent
+manager decides *which goal* the flow field is serving and *how long*
+to ride it.
 
 ## Purpose
 
