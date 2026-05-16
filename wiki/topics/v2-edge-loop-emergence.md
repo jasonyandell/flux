@@ -2,9 +2,22 @@
 title: v2 edge-loop emergence (lightning diffusion modes)
 kind: topic
 first_seen: 2026-05-14
-last_updated: 2026-05-14
+last_updated: 2026-05-15
 status: active
 ---
+
+## Update (2026-05-15 PM)
+
+A new champion sits above the ranking on this page: `lightning_sum_throttled`
+(sum-mode potential field with a top-1 desired-slot cap per cell). It beats
+both vanilla `lightning_sum` (9/9 coherent, p≈0.004) and `bfs` (7/7, p≈0.016)
+at R=25 P=12 40%-dead, 12000-tick matched-pair eval. The active mechanism is
+likely waste-reduction plus loop-aware-potential, not the
+"commitment-by-construction" that motivated it. See
+[[v2-temporal-strategy]] for the framing, validation results, and
+implementation. The ranking lower on this page (sum > attn ≈ sum > max > loop
+> sum_pw) still describes the *non-throttled* family; throttled sits above
+all of them in measured head-to-head.
 
 ## The observation
 

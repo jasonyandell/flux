@@ -6,6 +6,20 @@ last_updated: 2026-05-15
 status: in-progress
 ---
 
+## Follow-up (2026-05-15 PM)
+
+The "corrected final ranking" below — `wave_long > sum > bfs ≈ max >>
+attn >> pulse/pulse_stagger` — is now superseded at the top by
+`lightning_sum_throttled` (one-slot-per-cell cap on top of sum-mode
+potential). Throttled beats both `bfs` (7/7 coherent, p≈0.016) and
+vanilla `sum` (9/9 coherent, p≈0.004) at R=25 P=12 40%-dead matched
+pairs. See [[v2-temporal-strategy]] for the framing that produced it
+and the validation experiments. Also revises one of this page's
+implicit framings: bfs's "only converter in mixed-strategy big-zoo"
+status was a property of the *21-strat FFA* condition specifically;
+in 2-strategy head-to-head, `sum` already beats `bfs` (5/5 coherent,
+p≈0.063 borderline) and `throttled-sum` beats both.
+
 ## Charter
 
 Jason went to sleep around 2026-05-15 ~5am. The directive: "try
