@@ -559,11 +559,13 @@ def _lightning_sum_batched_core(
     actions = np.full((P, N), action_noop, dtype=np.int32)
     new_pots = np.zeros((P, N), dtype=np.float32)
 
-    # Scratch reused across seats.
+    # Scratch reused across seats (serial loop — prange across P=6 seats
+    # was tried and lost to thread-sync overhead since each seat is only
+    # ~400µs of work).
     intrinsic = np.zeros(N, dtype=np.float32)
     pot = np.zeros(N, dtype=np.float32)
     new_pot = np.zeros(N, dtype=np.float32)
-    desired = np.zeros((N, K), dtype=np.bool_)  # attack | relay
+    desired = np.zeros((N, K), dtype=np.bool_)
 
     for p in range(P):
         # ---- intrinsic ----

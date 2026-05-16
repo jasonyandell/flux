@@ -359,12 +359,17 @@ def run_game(
     record_stride: int = 25,
     connect_mode: str = "retry",
     edge_alpha: float = 1.0,
+    record_frames: bool = True,
 ):
     """Run one game with per-seat solver assignment. Returns (final_state,
     frames, winner_seat, dead_cells).
 
     edge_alpha: edge-pressure momentum (1.0 = snap-to-target, original v2;
     <1 = fluid-style buildup, the brainstorm pilot).
+
+    record_frames: if False, skip the per-stride state_to_frame copy.
+    Saves ~30ms per 6000-tick R=30 game when no replay is being written.
+    Returned frames list is empty in that case.
     """
     state, dead = _build_initial_state(
         radius, num_players, num_dead_cells, rng, connect_mode=connect_mode,
@@ -379,7 +384,7 @@ def run_game(
     if sum_long_batched:
         from flux_v2.solver_vec import lightning_sum_batched
 
-    frames = [state_to_frame(state)]
+    frames: list = [state_to_frame(state)] if record_frames else []
     for t in range(1, max_ticks + 1):
         if t % ai_period == 0:
             if sum_long_batched:
@@ -396,13 +401,14 @@ def run_game(
                 combined = _combine_actions(state, per_seat)
             state = apply_actions(state, combined)
         state = tick(state, edge_alpha=edge_alpha)
-        if t % record_stride == 0:
+        if record_frames and t % record_stride == 0:
             frames.append(state_to_frame(state))
 
         # Early stop: at most one seat still has any cells.
         cells = _cells_per_seat(state, num_players)
         if (cells > 0).sum() <= 1:
-            frames.append(state_to_frame(state))
+            if record_frames:
+                frames.append(state_to_frame(state))
             break
 
     cells = _cells_per_seat(state, num_players)
@@ -423,6 +429,7 @@ def _game_worker(payload: dict) -> dict:
         cfg["seat_solvers"], cfg["record_stride"],
         connect_mode=cfg["connect_mode"],
         edge_alpha=cfg["edge_alpha"],
+        record_frames=bool(cfg["write_replay"]),
     )
     dt = time.time() - t0
     cells = _cells_per_seat(state, cfg["num_players"])
