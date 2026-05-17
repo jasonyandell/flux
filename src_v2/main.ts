@@ -6,10 +6,20 @@
  */
 import { buildBoard } from './board';
 import { createPlayer } from './replay/player';
-import { createScene, updateScene, rebuildSceneGeometry, render, resizeRenderer, setFadeEnabled } from './render/scene';
+import {
+  createScene,
+  updateScene,
+  rebuildSceneGeometry,
+  render,
+  resizeRenderer,
+  setFadeEnabled,
+  zoomSceneAtClientPoint,
+  panSceneByScreenDelta,
+} from './render/scene';
 import { createTopBar } from './render/topbar';
 import { createPlaybackBar } from './render/playback';
 import { createPlaylist } from './render/playlist';
+import { createRunHeader } from './render/runHeader';
 import { createEventsTailer } from './replay/events';
 
 const REPLAY_BASE = '/v2/replays/';
@@ -19,6 +29,9 @@ const POLL_INTERVAL_MS = 3000;
 const NEW_COUNT_POLL_MS = 3000;
 const PLAY_TICKS_PER_SEC = 10; // 1x game time: dt_per_tick_ms is 100
 const PLAYBACK_SPEED = 2.0;     // multiplier applied to all playback rates
+const SPEED_STOPS = [-8, -4, -2, -1, -0.5, -0.25, -0.1, -0.05, 0, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8];
+const SPEED_ZERO_INDEX = SPEED_STOPS.indexOf(0);
+const SHIFT_SCROLL_SPEED_STEP_PX = 46;
 
 const canvas = document.getElementById('app') as HTMLCanvasElement;
 
@@ -39,53 +52,132 @@ const player = createPlayer({
   playbackSpeed: PLAYBACK_SPEED,
 });
 const playlist = createPlaylist();
+const runHeader = createRunHeader();
+
+function nearestSpeedIndex(speed: number): number {
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < SPEED_STOPS.length; i++) {
+    const d = Math.abs(SPEED_STOPS[i] - speed);
+    if (d < bestDist) {
+      best = i;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+function applyPlaybackSpeed(speed: number): void {
+  player.setSpeedMultiplier(speed);
+  if (speed === 0) player.setPaused(true);
+  else if (player.isPaused()) player.setPaused(false);
+}
+
+function stepPlaybackSpeed(direction: number): boolean {
+  const idx = nearestSpeedIndex(player.speedMultiplier());
+  let nextIdx = Math.max(0, Math.min(SPEED_STOPS.length - 1, idx + direction));
+  const crossesZero =
+    (idx < SPEED_ZERO_INDEX && nextIdx >= SPEED_ZERO_INDEX) ||
+    (idx > SPEED_ZERO_INDEX && nextIdx <= SPEED_ZERO_INDEX);
+  if (crossesZero) nextIdx = SPEED_ZERO_INDEX;
+  applyPlaybackSpeed(SPEED_STOPS[nextIdx]);
+  return nextIdx === SPEED_ZERO_INDEX && idx !== SPEED_ZERO_INDEX;
+}
+
+function wheelDeltaPixels(e: WheelEvent): { dx: number; dy: number } {
+  const modeScale = e.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? 16
+    : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+      ? window.innerHeight
+      : 1;
+  return { dx: e.deltaX * modeScale, dy: e.deltaY * modeScale };
+}
+
+function replayParam(): string | null {
+  const raw = new URLSearchParams(window.location.search).get('replay');
+  return raw && raw.trim() ? raw.trim() : null;
+}
+
+function replayUrl(file: string): string {
+  const url = new URL(window.location.href);
+  url.searchParams.set('replay', file);
+  return url.toString();
+}
+
+function copyReplayLink(file: string | null): void {
+  if (!file) return;
+  void navigator.clipboard?.writeText(replayUrl(file)).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = replayUrl(file);
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  });
+  topBar.setStatus(`copied link ${file}`);
+}
+
+function replaceReplayUrl(file: string): void {
+  const current = replayParam();
+  if (current === file) return;
+  window.history.replaceState(null, '', replayUrl(file));
+}
+
 playlist.setOnSelect((file) => {
-  // Selecting from the playlist implies the user wants that specific run on
-  // screen — unpause if needed and load it.
-  if (player.isPaused()) player.setPaused(false);
   player.loadReplay(file);
+  replaceReplayUrl(file);
 });
 
-// Arrival-badge state: the user's "last closed" cursor lives in localStorage
-// (per-origin / per-worktree by Vite port — net-convenient: each worktree's
-// UI tracks its own seen-state). The events tailer reads the JSONL log that
-// the writer (python/flux_v2/replay.py::append_index) appends to.
+playlist.setOnCopyLink((file) => copyReplayLink(file));
+runHeader.setOnCopyLink(() => copyReplayLink(player.currentName()));
+
+const requestedReplay = replayParam();
+if (requestedReplay) {
+  player.loadReplay(requestedReplay);
+}
+
 const LAST_CLOSED_KEY = 'flux-v2-playlist-last-closed';
 function loadLastClosedMs(): number {
   try {
     const v = localStorage.getItem(LAST_CLOSED_KEY);
-    if (v === null) return Date.now(); // fresh visit: don't badge anything
+    if (v === null) return Date.now();
     const n = Number(v);
     return Number.isFinite(n) ? n : Date.now();
   } catch { return Date.now(); }
 }
+
 function saveLastClosedMs(ms: number): void {
   try { localStorage.setItem(LAST_CLOSED_KEY, String(ms)); } catch { /* ignore */ }
 }
+
 let lastClosedMs = loadLastClosedMs();
-// Seed the cursor on first visit so an empty log doesn't surprise-flash.
 if (!localStorage.getItem(LAST_CLOSED_KEY)) saveLastClosedMs(lastClosedMs);
+playlist.setNewSince(lastClosedMs);
 
 playlist.setOnClose(() => {
   lastClosedMs = Date.now();
   saveLastClosedMs(lastClosedMs);
+  playlist.setNewSince(lastClosedMs);
   playlist.setNewCount(0);
 });
 
 const eventsTailer = createEventsTailer(EVENTS_URL);
 let lastEventsPoll = 0;
 let eventsInFlight = false;
+
 function pollNewCount(now: number): void {
   if (eventsInFlight) return;
   if (now - lastEventsPoll < NEW_COUNT_POLL_MS) return;
   lastEventsPoll = now;
   eventsInFlight = true;
   eventsTailer.fetchNewer(lastClosedMs)
-    .then((evts) => {
-      if (playlist.isOpen()) return;        // open panel = already looking; no badge
-      playlist.setNewCount(evts.length);
+    .then((events) => {
+      if (playlist.isOpen()) return;
+      playlist.setNewCount(events.length);
     })
-    .catch(() => { /* transient — try again next poll */ })
+    .catch(() => { /* transient; retry on next poll */ })
     .finally(() => { eventsInFlight = false; });
 }
 
@@ -119,12 +211,63 @@ const playbackBar = createPlaybackBar({
     if (!player.isPaused()) player.setPaused(true);
     player.seekFraction(t);
   },
-  onSpeedChange: (m) => player.setSpeedMultiplier(m),
+  onSpeedChange: (m) => applyPlaybackSpeed(m),
   onToggleFade: (enabled) => {
     setFadeEnabled(scene, enabled);
     saveFadeEnabled(enabled);
   },
 });
+
+let wheelSpeedAccumPx = 0;
+let speedZeroGateDirection = 0;
+let speedZeroGateUntil = 0;
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const { dx, dy } = wheelDeltaPixels(e);
+  if (e.ctrlKey) {
+    // macOS trackpad pinch arrives in Chromium/Electron as ctrl+wheel.
+    // Exponential scaling makes tiny trackpad deltas feel smooth while
+    // clamping in the scene keeps the board in a sane inspection range.
+    const factor = Math.exp(Math.max(-1.2, Math.min(1.2, -dy * 0.01)));
+    zoomSceneAtClientPoint(scene, e.clientX, e.clientY, factor);
+    wheelSpeedAccumPx = 0;
+    return;
+  }
+
+  if (e.shiftKey) {
+    const now = performance.now();
+    const intendedDirection = dy < 0 ? 1 : -1;
+    if (
+      player.speedMultiplier() === 0 &&
+      speedZeroGateDirection === intendedDirection &&
+      now < speedZeroGateUntil
+    ) {
+      wheelSpeedAccumPx = 0;
+      return;
+    }
+
+    wheelSpeedAccumPx += dy;
+    while (Math.abs(wheelSpeedAccumPx) >= SHIFT_SCROLL_SPEED_STEP_PX) {
+      const direction = wheelSpeedAccumPx < 0 ? 1 : -1;
+      const stoppedAtZero = stepPlaybackSpeed(direction);
+      wheelSpeedAccumPx -= direction < 0
+        ? SHIFT_SCROLL_SPEED_STEP_PX
+        : -SHIFT_SCROLL_SPEED_STEP_PX;
+      if (stoppedAtZero) {
+        wheelSpeedAccumPx = 0;
+        speedZeroGateDirection = direction;
+        speedZeroGateUntil = performance.now() + 360;
+        break;
+      }
+    }
+    return;
+  }
+
+  panSceneByScreenDelta(scene, dx, dy);
+  wheelSpeedAccumPx = 0;
+  speedZeroGateDirection = 0;
+  speedZeroGateUntil = 0;
+}, { passive: false });
 
 // Restore the user's fade-toggle preference (default on).
 {
@@ -176,6 +319,7 @@ function frame(now: number) {
   if (r) {
     const name = player.currentName();
     if (name !== currentName) {
+      if (name) replaceReplayUrl(name);
       const nextBoardKey = boardKey(r.board);
       // Replay swap: rebuild geometry if board shape differs from current.
       // Mixed radius streams are normal while experiments pivot, so compare
@@ -186,6 +330,7 @@ function frame(now: number) {
       }
       board = r.board;
       currentName = name;
+      runHeader.setReplay(name, r);
     }
     const idx = player.currentFrame();
     const f = r.frames[idx];
@@ -204,6 +349,8 @@ function frame(now: number) {
         r.header.dtPerTickMs,
       );
     }
+  } else {
+    runHeader.setReplay(null, null);
   }
 
   playbackBar.setFrame(player.currentFrame(), player.frameCount());

@@ -1,14 +1,9 @@
 /**
- * Event log reader for `public/v2/replays/events.jsonl`.
+ * Event log reader for public/v2/replays/events.jsonl.
  *
- * The writer (python/flux_v2/replay.py::append_index) appends one JSON
- * line per replay. The viewer tails the file, filters by the user's
- * last-closed timestamp (persisted in localStorage), and surfaces a
- * new-arrivals count to the hamburger badge.
- *
- * Composition style: each step is a Kleisli arrow `A -> Promise<B>`
- * (i.e. an async function), wired together with `andThen` so the
- * pipeline reads top-to-bottom in one place.
+ * The replay writer appends one JSON line per replay. The viewer tails the
+ * file and uses a local "last closed" cursor to badge new arrivals without
+ * diffing index snapshots.
  */
 
 export type ReplayEvent = {
@@ -20,22 +15,17 @@ export type ReplayEvent = {
   radius?: number;
   num_players?: number;
   kind?: string;
+  ruleset?: string;
+  edge_alpha?: number;
+  seed?: number;
+  winner?: number;
+  ticks?: number;
 };
-
-// Kleisli composition over Promise: (A -> Promise<B>) >=> (B -> Promise<C>)
-//                                   ============================
-//                                   = A -> Promise<C>
-export function andThen<A, B, C>(
-  f: (a: A) => Promise<B>,
-  g: (b: B) => Promise<C>,
-): (a: A) => Promise<C> {
-  return async (a) => g(await f(a));
-}
 
 export const fetchEventsText = async (url: string): Promise<string> => {
   const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-cache' });
   if (!res.ok) {
-    // 404 is normal before any replay has been written — treat as empty.
+    // 404 is normal before any replay has been written.
     if (res.status === 404) return '';
     throw new Error(`events http ${res.status}`);
   }
@@ -53,7 +43,7 @@ export const parseEvents = async (text: string): Promise<ReplayEvent[]> => {
         out.push(obj as ReplayEvent);
       }
     } catch {
-      // Truncated/corrupt line — skip; next poll picks up the rest.
+      // Ignore partial/corrupt lines; the next poll will see a complete file.
     }
   }
   return out;
@@ -69,20 +59,14 @@ export const sinceTs = (sinceMs: number) =>
   };
 
 export type EventsTailer = {
-  // Returns events newer than `sinceMs` (ms-since-epoch). The pipeline
-  // itself is allocation-light; callers cache the result and recompute
-  // the badge count whenever they re-render.
   fetchNewer: (sinceMs: number) => Promise<ReplayEvent[]>;
 };
 
 export function createEventsTailer(url: string): EventsTailer {
   return {
-    fetchNewer(sinceMs) {
-      const pipeline = andThen(
-        () => fetchEventsText(url),
-        andThen(parseEvents, sinceTs(sinceMs)),
-      );
-      return pipeline(undefined as void);
+    async fetchNewer(sinceMs) {
+      const text = await fetchEventsText(url);
+      return sinceTs(sinceMs)(await parseEvents(text));
     },
   };
 }

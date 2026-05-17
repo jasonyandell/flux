@@ -4,7 +4,7 @@
  *
  * Mirrors src/replay/player.ts but for v2 binary format and v2-only state.
  */
-import { parseReplay, type Replay } from './format';
+import { parseReplayResponse, type Replay } from './format';
 
 export type IndexEntry = {
   file: string;
@@ -14,6 +14,12 @@ export type IndexEntry = {
   generation?: number;
   radius?: number;
   num_players?: number;
+  ruleset?: string;
+  edge_alpha?: number;
+  model?: string;
+  winner?: number;
+  ticks?: number;
+  seat_solvers?: string[];
 };
 
 export type Player = {
@@ -123,7 +129,7 @@ export function createPlayer(opts: Opts): Player {
       // artifacts in the index); only ever use it to speed playback UP, never
       // to slow it below the configured baseline tick rate.
       const targetSec = Math.max(1.0, cadenceSec * 0.9) / speedMult;
-      const cadenceFps = Math.max(1, r.frames.length / targetSec);
+      const cadenceFps = Math.max(1, r.header.numFrames / targetSec);
       if (cadenceFps > baselineFps) {
         return { fps: cadenceFps, targetSec };
       }
@@ -164,6 +170,7 @@ export function createPlayer(opts: Opts): Player {
       // Skip entries we already know are unplayable (parsed to <2 frames).
       const newest = entries.find(e => e.file && !skippedFiles.has(e.file));
       if (!newest || !newest.file) return;
+      if (forceLoad || pendingFile) return;
       const isNewArrival = newest.file !== lastSeenNewestFile;
       lastSeenNewestFile = newest.file;
       if (newest.file === replayName) return;
@@ -190,35 +197,68 @@ export function createPlayer(opts: Opts): Player {
     const file = pendingFile;
     loading = true;
     setStatus(`loading ${file}`);
+    const clearPending = () => {
+      pendingFile = null;
+      pendingIsShapeChange = false;
+      forceLoad = false;
+    };
     try {
       const res = await fetch(`${opts.replayBaseUrl}${file}?t=${Date.now()}`, { cache: 'no-cache' });
-      if (!res.ok) { setStatus(`replay http ${res.status}`); loading = false; return; }
-      const buf = await res.arrayBuffer();
-      const r = await parseReplay(buf);
+      if (!res.ok) {
+        setStatus(`replay http ${res.status}: ${file}`);
+        clearPending();
+        loading = false;
+        return;
+      }
+      let activated = false;
+      const activate = (r: Replay) => {
+        if (activated || r.frames.length < 2) return;
+        replay = r;
+        replayName = file;
+        frameIdx = 0;
+        frameAccSec = 0;
+        clearPending();
+        activated = true;
+        // Recompute auto-speed from the recorded stride so playback follows
+        // the trainer's replay cadence once the index has timestamps.
+        if (manualSpeedOverride !== null) {
+          framesPerSec = manualSpeedOverride;
+          setStatus(
+            `streaming ${file} (${r.frames.length}/${r.header.numFrames} frames, manual ${framesPerSec.toFixed(1)} fps)`,
+          );
+        } else {
+          const auto = autoFramesPerSec(r, file);
+          framesPerSec = auto.fps;
+          const target = auto.targetSec === null
+            ? 'real time'
+            : `~${auto.targetSec.toFixed(1)}s`;
+          setStatus(
+            `streaming ${file} (${r.frames.length}/${r.header.numFrames} frames over ${target}, ${framesPerSec.toFixed(1)} fps)`,
+          );
+        }
+      };
+      const r = await parseReplayResponse(res, {
+        onReplayReady: activate,
+        onProgress: (loaded, total, streamed) => {
+          if (!activated) return;
+          setStatus(`streaming ${file} (${loaded}/${total} frames, ${effectiveFps().toFixed(1)} fps)`);
+          if (streamed !== replay) replay = streamed;
+        },
+      });
       if (r.frames.length < 2) {
         // No-frames stub (header-only file from a crashed/aborted writer).
         // Mark it skipped so future polls walk past it to the next candidate.
         skippedFiles.add(file);
         setStatus(`skipped ${file} (${r.frames.length} frames)`);
-        pendingFile = null;
-        pendingIsShapeChange = false;
-        forceLoad = false;
+        clearPending();
         loading = false;
         return;
       }
-      replay = r;
-      replayName = file;
-      frameIdx = 0;
-      frameAccSec = 0;
-      pendingFile = null;
-      pendingIsShapeChange = false;
-      forceLoad = false;
-      // Recompute auto-speed from the recorded stride so playback follows
-      // the trainer's replay cadence once the index has timestamps.
+      activate(r);
       if (manualSpeedOverride !== null) {
         framesPerSec = manualSpeedOverride;
         setStatus(
-          `playing ${file} (${r.frames.length} frames, manual ${framesPerSec.toFixed(1)} fps)`,
+          `playing ${file} (${r.header.numFrames} frames, manual ${framesPerSec.toFixed(1)} fps)`,
         );
       } else {
         const auto = autoFramesPerSec(r, file);
@@ -227,35 +267,53 @@ export function createPlayer(opts: Opts): Player {
           ? 'real time'
           : `~${auto.targetSec.toFixed(1)}s`;
         setStatus(
-          `playing ${file} (${r.frames.length} frames over ${target}, ${framesPerSec.toFixed(1)} fps)`,
+          `playing ${file} (${r.header.numFrames} frames over ${target}, ${framesPerSec.toFixed(1)} fps)`,
         );
       }
     } catch (err) {
       setStatus(`load error: ${(err as Error).message}`);
+      clearPending();
     } finally {
       loading = false;
     }
   }
 
   function effectiveFps(): number {
-    return Math.max(0.1, framesPerSec * runtimeSpeedMult);
+    const signed = framesPerSec * runtimeSpeedMult;
+    if (signed === 0) return 0;
+    if (Math.abs(signed) < 0.1) return signed < 0 ? -0.1 : 0.1;
+    return signed;
   }
 
   function advance(dt: number): void {
     if (!replay || paused) return;
-    const wallSec = 1 / effectiveFps();
+    const fps = effectiveFps();
+    if (fps === 0) return;
+    const wallSec = 1 / Math.abs(fps);
     frameAccSec += dt;
     while (frameAccSec >= wallSec) {
       frameAccSec -= wallSec;
-      if (frameIdx + 1 < replay.frames.length) {
-        frameIdx++;
-      } else {
-        if (!pendingFile) {
-          const next = pickNextReplay();
-          if (next && next !== replayName) pendingFile = next;
+      if (fps >= 0) {
+        if (frameIdx + 1 < replay.frames.length) {
+          frameIdx++;
+        } else {
+          if (loading && replay.frames.length < replay.header.numFrames) {
+            frameAccSec = 0;
+            break;
+          }
+          if (!pendingFile) {
+            const next = pickNextReplay();
+            if (next && next !== replayName) pendingFile = next;
+          }
+          frameAccSec = 0;
+          break;
         }
-        frameAccSec = 0;
-        break;
+      } else {
+        if (frameIdx > 0) frameIdx--;
+        else {
+          frameAccSec = 0;
+          break;
+        }
       }
     }
   }
@@ -295,7 +353,8 @@ export function createPlayer(opts: Opts): Player {
     },
     speedMultiplier() { return runtimeSpeedMult; },
     setSpeedMultiplier(m: number) {
-      runtimeSpeedMult = Math.max(0.05, m);
+      const clipped = Math.max(-8, Math.min(8, m));
+      runtimeSpeedMult = Object.is(clipped, -0) ? 0 : clipped;
       frameAccSec = 0;
     },
     nextReplay() {

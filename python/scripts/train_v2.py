@@ -48,10 +48,21 @@ MODEL_REGISTRY = {
     "attn": AttnActorCritic,
 }
 
+
+def _lightning_sum_long(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", gamma=0.94)
+
+
+def _lightning_sum_throttled(state, seat, rng=None):
+    return lightning_solver_actions(state, seat, rng=rng, mode="sum", throttle=1)
+
+
 PRETRAIN_SOLVERS = {
     "bfs": bfs_solver_actions,
     "lightning": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="max"),
     "lightning_sum": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="sum"),
+    "lightning_sum_long": _lightning_sum_long,
+    "lightning_sum_throttled": _lightning_sum_throttled,
     "lightning_sum_pw": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="sum_pw"),
     "lightning_loop": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="loop"),
     "lightning_attn": lambda s, seat, rng=None: lightning_solver_actions(s, seat, rng=rng, mode="attn"),
@@ -1430,7 +1441,7 @@ def collect_solver_pretrain_data(
             outflow = new_outflow
 
         # Physics tick.
-        owner, strength, outflow, edge_pressure, _waste = tick_batched(
+        owner, strength, outflow, edge_pressure, _waste, _transit = tick_batched(
             owner, strength, outflow, edge_pressure, alive, P, neighbors,
         )
 
@@ -1448,6 +1459,7 @@ def pretrain_supervised(
     neighbors_mx: mx.array,
     num_players: int,
     epochs: int,
+    nonnoop_weight: float = 1.0,
 ) -> None:
     """Cross-entropy fit: model predicts solver's action choice per cell.
     Only owned cells contribute to the loss (solver returns NOOP elsewhere
@@ -1465,6 +1477,13 @@ def pretrain_supervised(
         seat_idx = mx.arange(S).reshape(1, S, 1)
         is_owned = (state["owner"].reshape(G, 1, -1) == seat_idx)
         mask = is_owned.astype(mx.float32)
+        if nonnoop_weight != 1.0:
+            action_weight = mx.where(
+                actions == ACTION_NOOP,
+                1.0,
+                float(nonnoop_weight),
+            )
+            mask = mask * action_weight
         denom = mx.maximum(mask.sum(), 1.0)
         loss = -(log_probs * mask).sum() / denom
         return loss
@@ -1558,6 +1577,13 @@ def main() -> None:
     ap.add_argument("--pretrain-games", type=int, default=0,
                     help="Number of games_per_rollout for the warmstart data "
                          "collection pass. 0 = use --games-per-rollout.")
+    ap.add_argument("--pretrain-only", action="store_true",
+                    help="Run supervised solver warmstart, save checkpoint, "
+                         "and exit before PPO updates.")
+    ap.add_argument("--pretrain-nonnoop-weight", type=float, default=1.0,
+                    help="Supervised warmstart weight multiplier for non-NOOP "
+                         "teacher actions. Helps sparse solver clones avoid "
+                         "learning an inert mostly-NOOP policy.")
     ap.add_argument("--opponent-seats", type=str, default="",
                     help="Comma-separated seat IDs (e.g. '0,2,4') that act via "
                          "a fixed solver instead of the model. The PPO loss "
@@ -1669,8 +1695,15 @@ def main() -> None:
         pretrain_supervised(
             model, optimizer, states_log, actions_log, neighbors_mx,
             config.num_players, args.pretrain_epochs,
+            nonnoop_weight=args.pretrain_nonnoop_weight,
         )
         print(f"  warmstart done in {time.time() - t_warm_train:.1f}s")
+        if args.pretrain_only:
+            save_checkpoint(model, args.checkpoint, iteration_offset)
+            print(f"pretrain-only checkpoint saved -> {_ckpt_label(args.checkpoint)}")
+            return
+    elif args.pretrain_only:
+        raise SystemExit("--pretrain-only requires --pretrain-epochs > 0 from fresh weights")
 
     wandb_run = None
     if args.wandb:

@@ -2,7 +2,7 @@
 title: v2 ML gameplay opportunities
 kind: topic
 first_seen: workspace
-last_updated: workspace
+last_updated: 2026-05-16
 status: active
 ---
 
@@ -29,8 +29,10 @@ from the long-field flow.
   not beaten the best big-bag solvers under the current methodology
   ([[v2-training-runs]], [[ppo-gnn]]).
 - Matched-pair solver work found the robust top mechanism:
-  long-horizon `sum` aggregation, especially `sum_long` / `wave_long`
-  ([[v2-overnight-research]]).
+  throttled `sum` aggregation. The vectorized recheck preserved
+  `lightning_sum_throttled` as the teacher candidate, while the older
+  `sum_long` / `wave_long` advantage did not reproduce strongly enough
+  to train from ([[v2-temporal-strategy]], [[v2-vectorized]]).
 - The decisive mechanistic clue is that `gamma=0.94` helps `sum` but hurts
   `max`: integrated aggregators benefit from far-field information, while
   single-winner aggregators turn longer reach into noise
@@ -39,25 +41,39 @@ from the long-field flow.
   ([[v2-edge-voting-policy]]). It points in the right direction if it uses
   solver structure as teacher and diagnostics rather than expecting PPO to
   rediscover local flow vocabulary unaided.
+- A loop-release micro-probe showed that v2 physics can make temporal
+  charge/hold/release useful, especially under fluid edge memory
+  (`EDGE_ALPHA=0.05`). Real solver sweeps kept `lightning_sum_throttled`
+  strong at lower alpha, so edge memory is a plausible next training world
+  rather than a disconnected toy rule.
 
 ## Best ML opportunities
 
 ### Distill the solver before doing RL
 
-Use `lightning_sum_long` or `wave_long` as a behavioral teacher, then ask RL to
+Use `lightning_sum_throttled` as the behavioral teacher, then ask learning to
 improve beyond it. Pure PPO from a random policy spends too much budget learning
 basic flow physics that the solver already knows.
 
 Candidate experiment:
 
-1. Behavior-clone `lightning_sum_long` with `--pretrain-solver
-   lightning_sum_long`.
-2. Fine-tune in PPO self-play with some fixed solver seats masked from loss.
-3. Evaluate trained-vs-solver with matched-pair seat rotation, not raw win
+1. Behavior-clone `lightning_sum_throttled` with `--pretrain-solver
+   lightning_sum_throttled`.
+2. First require the clone itself to survive head-to-head against the teacher.
+3. Only then fine-tune in PPO with fixed solver seats masked from loss.
+4. Evaluate trained-vs-solver with matched-pair seat rotation, not raw win
    rates.
 
 Success criterion: the learned policy keeps solver-level expansion speed while
 improving finish rate, defense, or late-game cleanup on same-board pairs.
+
+2026-05-16 result: plain cell-action cloning is not there yet. GNN and
+edge-aware BC checkpoints, including non-NOOP weighted clones, all lost 0 wins
+against `lightning_sum_throttled` on the R=5 P=6 tiny arena. PPO fine-tuning
+from those clones immediately collapsed entropy and produced huge KL spikes.
+The next useful ML step is therefore a better imitation/control surface
+(edge-intent distillation, DAgger-style on-policy correction, or a residual
+head over solver intents), not another vanilla PPO run.
 
 ### Learn residuals over the long-field solver
 
@@ -89,6 +105,22 @@ The current [[v2-edge-voting-policy]] direction is promising if it keeps:
   vocabulary before RL asks for timing;
 - logs for attack, expansion, relay, sink, threat, stored pressure, release
   burst, and follow-through channels.
+
+### Learn temporal release, not just spatial routing
+
+The best hand solvers can route pressure, but they still do not reason about
+when a loop or charged relay should hold versus fire. That is a better ML
+target than asking a network to relearn local physics. Candidate labels:
+
+- stored loop pressure and time-since-charge;
+- release opportunity value over the next 50-300 ticks;
+- flank danger while charging;
+- breakthrough probability if one edge is diverted now;
+- follow-through value after capture.
+
+This also reframes the "dots" intuition: `EDGE_ALPHA < 1` gives continuous
+edge pressure some of the delayed-commitment character that dot/ship games get
+for free, while keeping the fast pressure-field simulation.
 
 ### Use tournaments as supervised datasets
 
@@ -136,14 +168,16 @@ champion, not only mean reward.
 
 ## Next experiments
 
-1. Rerun the matched-pair solver hierarchy on the vectorized code, because
-   the current official rankings predate the semantic deltas in
-   [[v2-vectorized]].
-2. Behavior-clone `lightning_sum_long`, then PPO fine-tune against fixed solver
-   seats. Evaluate with matched pairs.
-3. Run the edge-aware auxiliary pretrain until edge category/channel accuracy
-   is clearly above trivial baselines, then try the same clone plus PPO path
-   with `--model edge`.
-4. Build a residual-policy prototype around long-field solver suggestions.
-   Even a small residual head is a sharper test than another from-scratch PPO
-   run.
+1. Run the next serious ML world at `EDGE_ALPHA=0.05` or `0.1` and add
+   diagnostics for stored loop pressure, release bursts, and breakthrough
+   follow-through.
+2. Build a teacher-intent dataset from `lightning_sum_throttled` that supervises
+   edge desired/open masks directly, not only the one sampled Set/Clear/No-op
+   action per cell.
+3. Add DAgger-style data collection: let the clone act, query
+   `lightning_sum_throttled` on the clone-induced states, and train on those
+   recovery states.
+4. Prototype a residual policy around throttled-sum suggestions. Even a small
+   residual head is a sharper test than another from-scratch PPO run.
+5. If target commitment is revisited, make it a soft bias or switching cost;
+   hard target masking is a documented negative control.

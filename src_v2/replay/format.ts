@@ -59,6 +59,11 @@ export type Replay = {
   frames: Frame[];
 };
 
+export type ReplayStreamCallbacks = {
+  onReplayReady?(replay: Replay): void;
+  onProgress?(loadedFrames: number, totalFrames: number, replay: Replay): void;
+};
+
 async function decompressGzip(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([new Uint8Array(bytes)]).stream().pipeThrough(
     new DecompressionStream('gzip'),
@@ -67,17 +72,17 @@ async function decompressGzip(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(out);
 }
 
-export async function parseReplay(buffer: ArrayBuffer): Promise<Replay> {
-  const view = new DataView(buffer);
-  if (view.getUint32(0, true) !== MAGIC) throw new Error('replay: bad magic');
-  const version = view.getUint8(4);
-  if (version !== V3_VERSION) {
-    throw new Error(`replay: expected v3 (version=${V3_VERSION}), got ${version}`);
-  }
-  const headerLen = view.getUint32(6, true);
+function appendBytes(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function headerFromBuffer(buffer: ArrayBuffer, version: number, headerLen: number): ReplayHeader {
   const headerBytes = new Uint8Array(buffer, 10, headerLen);
   const headerJson = JSON.parse(new TextDecoder('utf-8').decode(headerBytes));
-  const hdr: ReplayHeader = {
+  return {
     version,
     radius: headerJson.radius,
     numPlayers: headerJson.num_players,
@@ -89,6 +94,17 @@ export async function parseReplay(buffer: ArrayBuffer): Promise<Replay> {
     maxEdge: headerJson.max_edge,
     metadata: headerJson.metadata ?? {},
   };
+}
+
+export async function parseReplay(buffer: ArrayBuffer): Promise<Replay> {
+  const view = new DataView(buffer);
+  if (view.getUint32(0, true) !== MAGIC) throw new Error('replay: bad magic');
+  const version = view.getUint8(4);
+  if (version !== V3_VERSION) {
+    throw new Error(`replay: expected v3 (version=${V3_VERSION}), got ${version}`);
+  }
+  const headerLen = view.getUint32(6, true);
+  const hdr = headerFromBuffer(buffer, version, headerLen);
 
   const board = buildBoard(hdr.radius, hdr.numPlayers);
   if (board.N !== hdr.numNodes) {
@@ -100,6 +116,117 @@ export async function parseReplay(buffer: ArrayBuffer): Promise<Replay> {
   const compressed = new Uint8Array(buffer, 10 + headerLen);
   const raw = await decompressGzip(compressed);
 
+  return parseRawFrames(hdr, board, raw);
+}
+
+export async function parseReplayResponse(
+  res: Response,
+  callbacks: ReplayStreamCallbacks = {},
+): Promise<Replay> {
+  if (!res.body || typeof DecompressionStream === 'undefined') {
+    return parseReplay(await res.arrayBuffer());
+  }
+
+  const reader = res.body.getReader();
+  let head: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+  while (head.length < 10) {
+    const { value, done } = await reader.read();
+    if (done || !value) throw new Error('replay: truncated before header');
+    head = appendBytes(head, value);
+  }
+
+  const prefix = new DataView(head.buffer, head.byteOffset, head.byteLength);
+  if (prefix.getUint32(0, true) !== MAGIC) throw new Error('replay: bad magic');
+  const version = prefix.getUint8(4);
+  if (version !== V3_VERSION) {
+    throw new Error(`replay: expected v3 (version=${V3_VERSION}), got ${version}`);
+  }
+  const headerLen = prefix.getUint32(6, true);
+  const headerEnd = 10 + headerLen;
+  while (head.length < headerEnd) {
+    const { value, done } = await reader.read();
+    if (done || !value) throw new Error('replay: truncated header');
+    head = appendBytes(head, value);
+  }
+
+  const hdr = headerFromBuffer(
+    head.buffer.slice(head.byteOffset, head.byteOffset + headerEnd),
+    version,
+    headerLen,
+  );
+  const board = buildBoard(hdr.radius, hdr.numPlayers);
+  if (board.N !== hdr.numNodes) {
+    throw new Error(
+      `replay: node count mismatch (header=${hdr.numNodes}, derived=${board.N})`,
+    );
+  }
+
+  const replay: Replay = { header: hdr, board, frames: [] };
+  let ready = false;
+  const emitProgress = () => {
+    if (!ready && replay.frames.length >= 2) {
+      ready = true;
+      callbacks.onReplayReady?.(replay);
+    }
+    callbacks.onProgress?.(replay.frames.length, hdr.numFrames, replay);
+  };
+
+  const firstCompressed = head.subarray(headerEnd);
+  const compressedStream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      if (firstCompressed.length > 0) controller.enqueue(firstCompressed);
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) controller.enqueue(value);
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+  });
+  const gzipStream = new DecompressionStream('gzip') as unknown as {
+    readable: ReadableStream<Uint8Array>;
+    writable: WritableStream<Uint8Array>;
+  };
+  const rawReader = compressedStream.pipeThrough(gzipStream).getReader();
+
+  const N = hdr.numNodes;
+  const outflowBytes = (N * K + 7) >> 3;
+  const edgeScale = hdr.maxEdge / 255;
+  let raw: Uint8Array<ArrayBuffer> = new Uint8Array(0);
+
+  async function ensureAvailable(n: number): Promise<boolean> {
+    while (raw.length < n) {
+      const { value, done } = await rawReader.read();
+      if (done) return false;
+      if (value) raw = appendBytes(raw, value);
+    }
+    return true;
+  }
+
+  for (let i = 0; i < hdr.numFrames; i++) {
+    const baseBytes = N + N + outflowBytes;
+    if (!await ensureAvailable(baseBytes)) break;
+
+    const outflowBits = raw.subarray(N + N, baseBytes);
+    const active = countActiveOutflows(outflowBits, N);
+    if (!await ensureAvailable(baseBytes + active)) break;
+
+    const frameRaw = raw.subarray(0, baseBytes + active);
+    replay.frames.push(decodeFrame(frameRaw, hdr, board, edgeScale));
+    raw = raw.subarray(baseBytes + active);
+    emitProgress();
+  }
+
+  if (!ready) callbacks.onReplayReady?.(replay);
+  callbacks.onProgress?.(replay.frames.length, hdr.numFrames, replay);
+  return replay;
+}
+
+function parseRawFrames(hdr: ReplayHeader, board: Board, raw: Uint8Array): Replay {
   const N = hdr.numNodes;
   const outflowBytes = (N * K + 7) >> 3;
   const edgeScale = hdr.maxEdge / 255;
@@ -114,31 +241,39 @@ export async function parseReplay(buffer: ArrayBuffer): Promise<Replay> {
     const outflowBits = new Uint8Array(raw.buffer, raw.byteOffset + off, outflowBytes);
     off += outflowBytes;
 
-    // Count active outflow bits to know how many pressure bytes follow.
-    let active = 0;
-    for (let b = 0; b < outflowBytes; b++) {
-      let v = outflowBits[b];
-      v = v - ((v >> 1) & 0x55);
-      v = (v & 0x33) + ((v >> 2) & 0x33);
-      active += (((v + (v >> 4)) & 0x0f));
-    }
-    // Trim trailing pad bits (set to 0 by the writer but defensive).
-    const padBits = outflowBytes * 8 - N * K;
-    if (padBits > 0) {
-      // Subtract any spurious bits set in the pad region. Writer should never
-      // emit them, but be defensive.
-      const lastByte = outflowBits[outflowBytes - 1];
-      const padMask = (1 << padBits) - 1;
-      active -= popcount8(lastByte & padMask);
-    }
+    const active = countActiveOutflows(outflowBits, N);
 
     const pressureBytes = new Uint8Array(raw.buffer, raw.byteOffset + off, active);
     off += active;
 
+    frames[i] = decodeFrameParts(owners, strengths, outflowBits, pressureBytes, board, edgeScale);
+  }
+
+  return { header: hdr, board, frames };
+}
+
+function decodeFrame(raw: Uint8Array, hdr: ReplayHeader, board: Board, edgeScale: number): Frame {
+  const N = hdr.numNodes;
+  const outflowBytes = (N * K + 7) >> 3;
+  const owners = new Int8Array(raw.slice(0, N).buffer);
+  const strengths = raw.slice(N, N + N);
+  const outflowBits = raw.subarray(N + N, N + N + outflowBytes);
+  const pressureBytes = raw.subarray(N + N + outflowBytes);
+  return decodeFrameParts(owners, strengths, outflowBits, pressureBytes, board, edgeScale);
+}
+
+function decodeFrameParts(
+  owners: Int8Array,
+  strengths: Uint8Array,
+  outflowBits: Uint8Array,
+  pressureBytes: Uint8Array,
+  board: Board,
+  edgeScale: number,
+): Frame {
     // Reconstruct flows by iterating bits in order.
-    const flows: Flow[] = new Array(active);
+    const flows: Flow[] = new Array(pressureBytes.length);
     let pIdx = 0;
-    for (let c = 0; c < N; c++) {
+    for (let c = 0; c < owners.length; c++) {
       const ownerC = owners[c];
       for (let k = 0; k < K; k++) {
         const bitIdx = c * K + k;
@@ -157,10 +292,21 @@ export async function parseReplay(buffer: ArrayBuffer): Promise<Replay> {
     for (let f = 0; f < flows.length; f++) {
       if (flows[f]) compact.push(flows[f]);
     }
-    frames[i] = { owners, strengths, flows: compact };
-  }
+  return { owners, strengths, flows: compact };
+}
 
-  return { header: hdr, board, frames };
+function countActiveOutflows(outflowBits: Uint8Array, numNodes: number): number {
+  let active = 0;
+  for (let b = 0; b < outflowBits.length; b++) {
+    active += popcount8(outflowBits[b]);
+  }
+  const padBits = outflowBits.length * 8 - numNodes * K;
+  if (padBits > 0) {
+    const lastByte = outflowBits[outflowBits.length - 1];
+    const padMask = (1 << padBits) - 1;
+    active -= popcount8(lastByte & padMask);
+  }
+  return active;
 }
 
 function popcount8(x: number): number {

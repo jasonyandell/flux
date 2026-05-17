@@ -2,7 +2,7 @@
 title: v2 viewer (trainer-displayer)
 kind: topic
 first_seen: 2026-05-14
-last_updated: 2026-05-15
+last_updated: 2026-05-16
 status: active
 ---
 
@@ -23,35 +23,61 @@ truth, the viewer is the lens. The list below stays accountable to
 - Live training monitor — the trainer drops a `.flxr` plus an
   `index.json` entry each `--record-stride` iters; the viewer polls and
   auto-swaps to the newest replay on a 3 s cadence (`POLL_INTERVAL_MS`).
+  New writes also append to `events.jsonl`, which drives the hamburger
+  arrival badge.
 - Post-hoc inspection — by default the index keeps the last **50** runs
   (`append_index(cap=50)` in [`python/flux_v2/replay.py`](../../python/flux_v2/replay.py)),
   so you can scroll back through whatever's still on disk.
+- Agent handoff — a run is addressable by URL:
+  `/index-v2.html?replay=<file.flxr>`. The viewer loads that exact file,
+  keeps the URL in sync when the user selects another run, and exposes copy
+  link controls in the current-run header and playlist rows.
+- Transport handoff — explicit replay changes preserve the current play/pause
+  state and speed multiplier. If the viewer is paused at `0×` or playing in
+  reverse, loading another replay keeps that same temporal mode.
 - Mixed-experiment streams — radius/seat changes are normal between
   runs; the viewer rebuilds geometry on board-signature changes and
   doesn't need a reload.
 
-## Recent-runs list (most recent first)
+## Replay browser
 
-The top bar carries a horizontally scrollable strip of every indexed
-replay, newest at the left. Each entry is a clickable `i<iteration>`
-chip; the currently-playing one is outlined. Clicking jumps to that
-replay and unpauses.
+The top-left hamburger opens a searchable replay drawer. The drawer is inert
+while closed, so hidden rows cannot catch clicks or confuse browser
+automation.
 
 - **Order:** index is sorted `saved_at` descending on every write
-  (`python/flux_v2/replay.py::append_index`), so on reload the freshest
-  run is what plays first and the list reads recent → less recent left
-  to right.
-- **Depth:** all 50 indexed entries are reachable from the strip. There
-  is no separate "older runs" menu — horizontal scroll is the affordance.
-- **Hover tooltip** shows the full `.flxr` filename, relative
-  `saved_at`, radius, seat count, and `kind` if recorded.
-- **Highlighting:** the active replay is bordered `#4a90e2`; others sit
-  at 0.78 opacity. The whole strip dims to 0.6 when the pointer leaves.
-- **Pause survival:** explicit selection unpauses and bypasses the
-  auto-cycle gate (`forceLoad` in
-  [`src_v2/replay/player.ts`](../../src_v2/replay/player.ts)). Auto-poll
-  preemption still respects paused state for genuinely-new arrivals
-  (only newest fresh drops can preempt; static newest entries cannot).
+  (`python/flux_v2/replay.py::append_index`), so the freshest run is first.
+- **Search:** filename, solver name, ruleset, model, `rN`, `pN`, and
+  `ea0p05`-style alpha tokens are searchable.
+- **Quick filters:** All, Solver, Train, Fluid, New, Current.
+- **Copy link:** every row has a `link` button that copies
+  `/index-v2.html?replay=<file>`. Selecting a row loads that replay and
+  closes the drawer.
+- **Arrival badge:** `events.jsonl` is tailed every 3 s. The badge counts
+  replay events newer than the last time the drawer was closed
+  (`flux-v2-playlist-last-closed` in `localStorage`).
+
+## Current-run header
+
+The compact top-right run header shows the current filename plus useful
+metadata when present: `ruleset`, `edge_alpha`, `seed`, `winner`, and
+`ticks`. Its `link` button copies the exact current replay URL. Solver
+runs now write richer metadata and index fields from
+[`python/scripts/run_v2_solver.py`](../../python/scripts/run_v2_solver.py):
+seed, board/run shape, seat solvers, edge alpha, winner/leader, final ticks,
+alive count, dominance, and final cell counts.
+
+## R40 smooth-replay probes
+
+On 2026-05-16, the viewer/feed path was smoke-tested with large,
+smooth-recorded solver games: `radius=40`, `num_players=12`,
+`num_dead_cells=720`, `edge_alpha=0.05`, `max_ticks=9000`,
+`record_stride=1`, and carved connectivity. The useful replay artifacts are:
+
+- `solver_v2_lightning_sum_throttled+lightning_wave_long_ea0p05_20260516T210154.flxr`
+  — frontier duel; `lightning_sum_throttled` seat 8 won at tick 6794.
+- `solver_v2_lightning_chase+lightning_sum_wave+lightning_vortex_ea0p05_20260516T210154.flxr`
+  — morphology mix; `lightning_sum_wave` seat 11 won at tick 4921.
 
 ## Transport bar (bottom)
 
@@ -72,10 +98,13 @@ replay and unpauses.
   (0..N−1). Dragging auto-pauses; programmatic updates are suppressed
   while the user has the slider grabbed so playback doesn't fight the
   drag.
-- **Speed cycle** picks `0.25 / 0.5 / 1 / 2 / 4×`, applied as a
+- **Speed cycle** picks `-8 / -4 / -2 / -1 / -0.5 / -0.25 / -0.1 /
+  -0.05 / 0 / 0.05 / 0.1 / 0.25 / 0.5 / 1 / 2 / 4 / 8×`, applied as a
   *runtime multiplier* on top of `PLAYBACK_SPEED` and the cadence-aware
   `framesPerSec` the player computes per replay. 1× means "whatever the
-  player picked"; the multiplier never replaces the auto-cadence logic.
+  player picked"; negative values play the current replay backwards, and
+  `0×` pauses on the current frame. The multiplier never replaces the
+  auto-cadence logic.
 - **Fade trail** (`✦` on / `✧` off) toggles the per-node brightness
   pulse-and-fade effect. On by default; preference persists in
   `localStorage` under `flux-v2-fade-enabled`. See
@@ -84,9 +113,28 @@ replay and unpauses.
 The bar sits at z-index 9, 0.55 opacity, fading to 1.0 on hover, so it
 stays out of the way during passive viewing.
 
+## Canvas gestures
+
+The canvas owns Mac-friendly inspection gestures:
+
+- **Trackpad pinch** (Chromium/Electron reports this as `ctrl+wheel`) zooms
+  the orthographic camera around the cursor. The camera clamps to `0.35..8×`.
+- **Two-finger trackpad scroll** pans the map. The camera clamps to the board
+  envelope plus a small margin so a zoomed-in view cannot drift completely
+  away from the action.
+- **Shift-scroll** adjusts playback speed. Small scrolls feather through the
+  fine `0.05 / 0.1 / 0.25×` stops around pause; faster scrolls advance through
+  the ladder faster. Crossing direction stops at `0×` and pauses. A separate
+  follow-up shift-scroll crosses from `0×` into reverse or forward playback.
+  Reverse playback walks the current replay backward and stops at frame 0.
+
+Wheel handling is attached only to the canvas, so the replay drawer can keep
+using normal scroll behavior. The canvas mental model is spatial by default:
+unmodified scroll pans; the Shift modifier opts into time control.
+
 ## Status row
 
-Below the recent-runs strip, the top bar shows the live player
+The top bar shows the live player
 status — `polling` / `loading <file>` / `playing <file> (N frames over
 ~Xs, fps)` / `skipped <file> (0 frames)` — alongside iteration, fitness,
 model tag (`[gnn]` or `[edge]`), and board signature
@@ -153,25 +201,36 @@ a different board shape, the player interrupts the current replay
 instead of waiting for it to finish; a static newest entry that's been
 sitting in the index doesn't preempt every poll.
 
-## FLXR v2 binary format
+## FLXR v3 binary format
 
-Same fixed header as v1 with `version=2`. Per-frame flow record is
-**6 bytes** instead of 5: `src u16, dst u16, player u8, pressure_q u8`.
-`pressure_q` is quantized 0..255 from 0..MAX_EDGE=100. Geometry is
-derived from `(radius, num_players)` by `buildBoard` on the client.
-Writer side: [`python/flux_v2/replay.py`](../../python/flux_v2/replay.py).
-Parser side: [`src_v2/replay/format.ts`](../../src_v2/replay/format.ts).
+V3 replays use a JSON header plus gzip-compressed dense frames. The header
+carries radius, seat count, node count, tick stride, `max_strength`,
+`max_edge`, and metadata. Per frame: owners, quantized strengths, outflow
+bitset, and pressure bytes for active outflows. Geometry is derived from
+`(radius, num_players)` by `buildBoard` on the client. Writer side:
+[`python/flux_v2/replay.py`](../../python/flux_v2/replay.py). Parser side:
+[`src_v2/replay/format.ts`](../../src_v2/replay/format.ts).
+
+The browser reader streams FLXR v3 responses: it reads the fixed header first,
+starts gzip decompression on the remaining body, attaches the replay after the
+first two frames, and keeps appending frames as they arrive. Large R40 replays
+therefore show a first frame before the full file has downloaded, inflated,
+and parsed. If browser streaming/decompression APIs are unavailable, it falls
+back to the older whole-file parse.
 
 ## Layout
 
 ```
 index-v2.html               Vite entrypoint (root); served at /index-v2.html
 src_v2/board.ts             hex grid builder (mirrors python/flux_v2/graph.py)
-src_v2/replay/format.ts     FLXR v2 parser (6-byte flow records)
+src_v2/replay/format.ts     FLXR v3 parser (gzip dense frames)
+src_v2/replay/events.ts     events.jsonl tailer for arrival badges
 src_v2/replay/player.ts     index poller + frame advancer + transport API
 src_v2/render/scene.ts      three.js orthographic scene, instanced nodes
-src_v2/render/topbar.ts     iter row + recent-runs strip
+src_v2/render/topbar.ts     iter row + status
+src_v2/render/playlist.ts   searchable replay drawer
 src_v2/render/playback.ts   bottom transport bar
+src_v2/render/runHeader.ts  current-run summary + copy-link button
 src_v2/main.ts              entry: wires it all up
 ```
 
@@ -192,7 +251,8 @@ replay flow.
 
 ## Operational pointers
 
-- Replays land at `public/v2/replays/*.flxr` + `index.json`; the Vite
+- Replays land at `public/v2/replays/*.flxr` + `index.json` +
+  `events.jsonl`; the Vite
   dev server serves them at `/v2/replays/`. `.gitignore` already
   excludes them, so long runs don't pollute git.
 - Each replay at `record-stride=25` is ~1.5 MB and the index keeps 50,

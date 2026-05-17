@@ -2,7 +2,7 @@
 title: v2 edge-loop emergence (lightning diffusion modes)
 kind: topic
 first_seen: 2026-05-14
-last_updated: 2026-05-15
+last_updated: 2026-05-16
 status: active
 ---
 
@@ -33,6 +33,41 @@ likely waste-reduction plus loop-aware-potential, not the
 [[v2-temporal-strategy]] for the framing, validation results, and
 implementation. The ranking above describes the *non-throttled* family;
 throttled sits above all of them in measured head-to-head.
+
+## Update (2026-05-16) — loop-release exists, edge memory exposes it
+
+`python/scripts/loop_release_probe.py` is a targeted micro-scenario for the
+question "do the rules actually make loops useful?" It builds three friendly
+max-strength cells in a directed triangle plus an adjacent enemy target, then
+compares immediate direct feed against a charged loop whose release edge is
+opened later.
+
+Result: the rules already contain a loop-release advantage. With snap pressure
+(`EDGE_ALPHA=1.0`), a charged loop mostly improves *capture timing*: against a
+500-strength target at regen 5, direct feed captures at tick 53, while a
+charged-loop divert captures 16 ticks after a 25-tick charge and 4 ticks after
+a 50-tick charge. With fluid pressure (`EDGE_ALPHA=0.05`), the effect becomes
+qualitative: direct feed may leave a 500- or 1000-strength target alive in the
+release horizon, while charged-loop divert captures after a sufficiently long
+charge.
+
+Constant read:
+
+- `EDGE_ALPHA` is the main moonshot knob. Lowering it gives edges memory,
+  making charge/hold/release a real temporal decision instead of a mostly
+  instantaneous reroute.
+- `MAX_EDGE=50-100` is enough to preserve the micro-scenario advantage. The
+  current `1000` keeps the "massive shots" spectacle but is not required for
+  the effect.
+- No evidence from this probe says to change `REGEN_BASE_PER_TICK` or
+  `MAX_STRENGTH` yet.
+
+Real-solver sanity at R=18 P=6 dead=60 max_ticks=6000 preserved the current
+frontier: `lightning_sum_throttled` self-play stayed decisive at
+`EDGE_ALPHA ∈ {1.0, 0.2, 0.1, 0.05}` and matched-pair checks still favored it
+over `lightning_wave_long`, `lightning_sum`, and `lightning_live`. Lower alpha
+slows games and improves temporal morphology without immediately invalidating
+the champion.
 
 ## The observation
 

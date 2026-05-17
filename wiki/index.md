@@ -38,8 +38,10 @@ v2 reference:
 - [[v2-prd|v2-prd]] — pinned design doc (state shape, action space,
   capture semantics, delivery shape).
 - [[topics/v2-viewer|v2-viewer]] — feature catalog for `/index-v2.html`:
-  clickable newest-first recent-runs strip (all 50 indexed runs),
-  transport bar, auto-cadence, mixed-radius rebuild, FLXR v2 format.
+  searchable replay drawer, deep links (`?replay=<file.flxr>`), copy-link
+  controls, arrival badges, current-run metadata, pinch zoom, two-finger pan,
+  Shift-scroll speed control including zero-stop reverse playback, transport bar,
+  auto-cadence, mixed-radius rebuild, streaming FLXR v3 loads.
 
 v2 research (freshest first):
 

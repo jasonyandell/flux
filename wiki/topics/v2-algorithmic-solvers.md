@@ -2,7 +2,7 @@
 title: v2 algorithmic solvers
 kind: topic
 first_seen: 2026-05-13
-last_updated: 2026-05-13
+last_updated: 2026-05-16
 status: active
 ---
 
@@ -39,6 +39,13 @@ Runner: `python/scripts/run_v2_solver.py`. Per-seat solver assignment via
 `--seats bfs,lightning,bfs,lightning,bfs,lightning`. Writes a `.flxr` v2
 replay to `public/v2/replays/` when `--write-replay` is passed; metadata
 records the seat → solver mapping.
+
+The runner can instantiate stateful per-seat wrappers for experiment-only
+solvers. `lightning_sum_throttled_sticky` and `lightning_sum_long_sticky`
+wrap their base Lightning variants with hard target hysteresis: once the
+seat has outgoing attack pressure on an enemy, non-target enemies are masked
+as blocked until that target has no cells left. This is a negative-control
+prototype for [[v2-temporal-strategy]], not a current champion.
 
 ## Why we want these
 
