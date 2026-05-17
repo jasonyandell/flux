@@ -40,6 +40,12 @@ State, rules, and reward shape are pinned in [[../v2-prd|v2-prd]]. The
 compact reference is [[../topics/v2-rules-one-pager|v2-rules-one-pager]].
 Active threads:
 
+- **Pete** ([[../topics/v2-vectorized|v2-vectorized]]). Pete is the
+  vectorized v2 generator / trainer / solver path: JIT board setup,
+  vectorized solver execution, batched per-AI-tick runs, FLXR v3 replay
+  output, and the fast measurement loop. "Run that through Pete" means use
+  this path as the lab surface before trusting slower legacy loops.
+
 - **Algorithmic solvers**
   ([[../topics/v2-algorithmic-solvers|v2-algorithmic-solvers]]). BFS plus
   a family of Lightning solvers — `max`, `sum`, `sum_pw`, `sum_long`,

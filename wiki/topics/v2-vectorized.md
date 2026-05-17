@@ -1,5 +1,5 @@
 ---
-title: v2 vectorized
+title: Pete (v2 vectorized)
 kind: topic
 first_seen: 2026-05-15
 last_updated: 2026-05-16
@@ -8,7 +8,12 @@ status: active
 
 ## Status
 
-Landed on main 2026-05-16. The hot path is now Numba-JIT'd top to
+Landed on main 2026-05-16. **Canonical name: Pete.** "Run that through
+Pete" means use this vectorized v2 generator / trainer / solver path:
+JIT board generation, vectorized solver execution, trainer replay output,
+and the fast measurement loop around them.
+
+The hot path is now Numba-JIT'd top to
 bottom and parallel-friendly. **One open question remains**: the
 matched-pair tournament rankings in
 [[v2-overnight-research|v2-overnight-research]] were produced
@@ -20,7 +25,7 @@ official rankings get refreshed.
 
 ## What this is
 
-A single-shot rewrite of the v2 hot path:
+Pete is the single-shot rewrite of the v2 hot path:
 
 - **All 17 lightning modes + BFS go through one vectorized pipeline**
   in `python/flux_v2/solver_vec.py`. Each mode produces an `(N, K)`

@@ -52,13 +52,18 @@ v2 research (freshest first):
   `lightning_sum_throttled` dominates both bfs (7/7 coherent, p≈0.016)
   and vanilla `lightning_sum` (9/9, p≈0.004) at R=25 P=12 40%-dead.
   Sits above the overnight-research ranking below.
-- [[topics/v2-vectorized|v2-vectorized]] — **the current hot path.**
+- [[topics/v2-grand-research-plan|v2-grand-research-plan]] —
+  grant-scale plan for solving v2 without compute theater: vectorized
+  measurement lab, solver factory, solver distillation, residual policies,
+  temporal manager, then league scaling.
+- [[topics/v2-vectorized|Pete / v2-vectorized]] — **the current hot path.**
   Numba-JIT'd solver pipeline, fluid `EDGE_ALPHA` momentum knob,
   warm-start Bellman, batched per-AI-tick solver, JIT'd board-setup
   BFS, FLXR v3 gzip-compressed replays. R=30 6000-tick game runs in
-  1.3s (~24× pre-vec); R=100 in 13.9s (~36×). One open item: the
-  matched-pair rankings need a rerun under the new code before the
-  v2-overnight-research rankings get refreshed.
+  1.3s (~24× pre-vec); R=100 in 13.9s (~36×). "Run that through Pete"
+  means use this vectorized generator / trainer / solver lab path. One
+  open item: the matched-pair rankings need a rerun under the new code
+  before the v2-overnight-research rankings get refreshed.
 - [[topics/v2-ml-gameplay-opportunities|v2-ml-gameplay-opportunities]] —
   ML-scientist synthesis of where learning can most plausibly improve v2:
   solver distillation, residual policies, edge-aware auxiliary learning, and
