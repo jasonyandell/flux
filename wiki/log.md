@@ -6,6 +6,38 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | loop | first transfer-robust champion: evolve_r0_ms (score 0.703)]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[topics/v2-beat-the-solver-plan]] [[log]]
+
+The multi-scale Ring 0 run (`ms_ring0`, R=7/12/20, 22%-dead, 150 gens)
+produced the **first transfer-robust champion** and was promoted to the
+registered solver `evolve_r0_ms`. 40-pair cross-scale holdout vs
+`lightning_sum_throttled` (fresh boards, seed 20260613):
+
+- R=7: **67.8%** [55%, 78%] · R=12: **71.2%** [59%, 81%] · R=20: **79.6%** [66%, 89%]
+- mean 72.9% · worst 67.8% · **score 0.703** (prior bar evolve_r0_ref 0.613)
+
+Wins at every scale with all win-rate CIs above 50%, and win rate *rises*
+with board size — genuine transfer robustness. Honest caveat: at 22% dead,
+many games don't resolve in 3000 ticks (19–31 timeouts/40 pairs), so the
+per-radius coherent-pair sign tests are only moderate (p≈0.25–0.62); the
+strong evidence is the decided-game win-rate CIs.
+
+**Genome (for the record — checkpoints are gitignored):**
+`gamma=0.609, weak_bonus=1.578, expand_bonus=2.661, defense_bonus≈0,
+fanout_eps≈0.05, throttle=1`. The strategy is distinct from the single-scale
+`evolve_r0` (which leaned on defense): multi-scale training found a
+**low-gamma short-range field + very aggressive neutral expansion**
+generalizes across scales better than defense does. Convergent-lever update:
+defense was the single-scale lever, but under transfer the dominant lever is
+*expansion aggression* with a short horizon.
+
+This is a Ring 0 (knob) champion, so it **raises the bar to 0.703** for the
+real goal — a *learned* (Ring 1/2) policy that beats the knob champions. The
+campaign continues: Ring 2 (opponent-aware) is front-loaded, and `evolve_r0_ms`
+is now available as a league opponent for learned policies to train against.
+
 ## [2026-06-13 | loop | Ring 2 opponent-aware policy built + prioritized]
 
 **Touched pages:** [[topics/v2-champion-lab]] [[log]]

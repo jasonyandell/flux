@@ -349,6 +349,17 @@ First evolution + probe pass, R=7 P=6 dead=15 screen world unless noted.
 All numbers are provisional lab signal; official promotion is Todd's
 `eval_solvers.py`.
 
+**UPDATE (autonomous campaign): transfer is solved at the knob level.**
+Multi-scale Ring 0 (evolve the six knobs against R=7/12/20 at once, 22%-dead)
+produced `evolve_r0_ms` — a **transfer-robust champion**: 40-pair holdout vs
+`lightning_sum_throttled` of 67.8% / 71.2% / 79.6% at R=7/12/20 (score 0.703,
+worst-scale 67.8%, win rate *rising* with scale). It wins at every scale, not
+just the training one. The lever under transfer is **low-gamma + aggressive
+expansion**, not the defense term that single-scale R=7 found. The open goal
+is now a *learned* (Ring 1/2) policy that beats this 0.703 knob bar; the live
+board is [[v2-champion-lab]]. The single-scale results below are kept as the
+original record.
+
 **Ring 0 — a real win at training scale.** ~230 generations of CMA-style
 ES over the champion's six knobs reached ~74% CRN win rate vs
 `lightning_sum_throttled`. Out-of-sample it holds:
