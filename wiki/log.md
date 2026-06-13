@@ -6,6 +6,31 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | workspace | autonomous champion lab launched]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[topics/v2-beat-the-solver-plan]] [[index]] [[log]]
+
+Stood up a persistent, self-driving campaign for the strongest transfer-robust
+champion (board: [[topics/v2-champion-lab]]). New machinery:
+`evolve_champion.py` gained **multi-scale training** (`--radii`/`--dead-frac`,
+boards cycle radii) to attack transfer directly, plus a per-radius
+`--eval-suite` scored vs a fixed `--eval-opponent`.
+`scripts/champion_lab.py` is a queue + scheduler (`tick` reaps/evals/launches,
+keeps ≤2 evolution runs alive, ranks a leaderboard by
+`0.5·mean + 0.5·worst-scale` win rate). `scripts/lab_heartbeat.sh` is a
+detached, LLM-free heartbeat that runs the pipeline and is the sole git driver
+(commits the board page + narrative). A 10-min loop adds intelligence
+(propose experiments, promote winners, narrate). 16 experiments seeded; two
+running.
+
+**Eval-condition correction:** evaluating `evolve_r0` (the first-session R=7
+champion) across R=7/12/20 at *matched* 22%-dead density gives R7=62% / R12=60%
+/ **R20=66%** (score 0.613) — it does *not* lose at R=20. The earlier "R=20
+wash" was an artifact of that Todd run using a near-full board (≈3% dead) and
+6000-tick games; the transfer gap is smaller than reported once dead-density
+matches training. The campaign now tests transfer under controlled,
+matched conditions. `evolve_r0_ref` is the leaderboard bar to beat.
+
 ## [2026-06-13 | workspace | rings validated + Gate 0 corrects the diagnosis]
 
 **Touched pages:** [[topics/v2-beat-the-solver-plan]] [[log]]
