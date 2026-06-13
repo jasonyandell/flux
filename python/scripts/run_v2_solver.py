@@ -322,6 +322,45 @@ SOLVERS["evolve_r0"] = _make_evolved_solver(0, "ring0.json")
 SOLVERS["evolve_r1"] = _make_evolved_solver(1, "ring1.json")
 
 
+# ---------------------------------------------------------------------------
+# Promoted champions: any checkpoint dropped in checkpoints/evolve/promoted/ is
+# auto-registered as a solver named by its filename stem (ring read from the
+# blob, so Ring 0/1/2 all work). This lets the champion lab promote a winner
+# with a plain file copy — no source edit — and makes promoted champions usable
+# as Todd opponents AND as evolution opponents (the league). Fully defensive:
+# a malformed file is skipped, never breaking import or any eval.
+# ---------------------------------------------------------------------------
+
+def _maker_for_ring(ring: int):
+    from flux_v2.ring1 import make_field2_solver, make_field_solver
+
+    from scripts.evolve_champion import make_ring0_solver
+    return {0: make_ring0_solver, 1: make_field_solver, 2: make_field2_solver}[int(ring)]
+
+
+def _make_promoted_solver(path: Path):
+    def _solver(state, seat, rng=None):
+        key = str(path)
+        fn = _evolve_cache.get(key)
+        if fn is None:
+            import json as _json
+            blob = _json.loads(path.read_text())
+            vec = np.array(blob["best_vector"], dtype=np.float64)
+            fn = _maker_for_ring(int(blob["ring"]))(vec)
+            _evolve_cache[key] = fn
+        return fn(state, seat, rng=rng)
+    return _solver
+
+
+_PROMOTED_DIR = _EVOLVE_CKPT_DIR / "promoted"
+try:
+    if _PROMOTED_DIR.is_dir():
+        for _p in sorted(_PROMOTED_DIR.glob("*.json")):
+            SOLVERS.setdefault(_p.stem, _make_promoted_solver(_p))
+except Exception:
+    pass
+
+
 def _solver_instance(name: str) -> Callable:
     solver = SOLVERS[name]
     if isinstance(solver, StatefulSolverFactory):

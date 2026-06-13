@@ -476,6 +476,29 @@ def add(spec_json: str) -> None:
     _event("enqueue", id=exp["id"], label=exp.get("label", ""))
 
 
+def promote(args_str: str) -> None:
+    """promote <candidate_id> [champion_name] — copy a lab checkpoint into
+    checkpoints/evolve/promoted/, where run_v2_solver auto-registers it as a
+    solver (usable by Todd AND as an evolution opponent). The loop should only
+    call this AFTER a tighter confirm eval clears the bar."""
+    import shutil
+    parts = args_str.split()
+    cid = parts[0]
+    name = parts[1] if len(parts) > 1 else cid
+    src = RUNS / f"{cid}.json"
+    if not src.exists():
+        raise SystemExit(f"no checkpoint for '{cid}' at {src}")
+    dst = REPO / "python" / "checkpoints" / "evolve" / "promoted" / f"{name}.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    lb = _load_json(LB, [])
+    for e in lb:
+        if e["id"] == cid:
+            e["promoted_as"] = name
+    _save_json(LB, lb)
+    _event("promote", id=cid, name=name, dst=str(dst.relative_to(REPO)))
+
+
 def prioritize(ids_csv: str) -> None:
     """Move the named experiment ids to the FRONT of the queue (preserving
     their given order), so high-value directions run next. flock-safe."""
@@ -510,6 +533,8 @@ def main() -> None:
         add(sys.argv[2])
     elif cmd == "prioritize":
         prioritize(sys.argv[2])
+    elif cmd == "promote":
+        promote(" ".join(sys.argv[2:]))
     elif cmd == "board":
         board()
     elif cmd == "render-wiki":
