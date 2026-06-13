@@ -6,6 +6,30 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | loop | train-at-hardest OVERFITS learned policies (opposite of knobs)]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[log]]
+
+`ring1_r20_noanchor` (Ring 1 learned, trained at R=20 alone — the
+train-at-hardest recipe that won for the *knob* champion) scores only
+**0.627** on the cross-scale holdout (R=7 59.7% / R=12 66.7% / R=20 70.9%,
+worst 59.7%), *weak at R=7* (coherent tied 2-2). Below the multi-scale Ring 2
+(`ms_ring2`, 0.731) and even below the multi-scale knob (`ms_ring0`, 0.639).
+
+**The methodology insight has a capacity caveat.** Train-at-hardest works for
+the **low-capacity knob policy** (6 params — can't overfit; the hard scale
+forces robust mechanics that transfer down). But the **higher-capacity learned
+policy overfits to the single training scale** and transfers *worse* to small
+boards. So the lever flips by capacity: knobs → train-at-hardest; learned →
+**multi-scale** (which regularizes across scales). The best learned policy
+remains the multi-scale `ms_ring2` (0.731).
+
+Pivot: the path to a learned policy beating the 0.747 knob champion is a
+**refined multi-scale Ring 2**, not train-at-hardest. Enqueued
+`ms_ring2_refined` (multi-scale, more boards + generations) and front-loaded
+it. `ring2_r20` (train-at-hardest Ring 2) is still running — kept as the
+confirming data point (predict it too will be weak at R=7).
+
 ## [2026-06-13 | loop | league training overfits — ms_ring2_vs_champ (0.647) worse than vs-lightning]
 
 **Touched pages:** [[topics/v2-champion-lab]] [[log]]
