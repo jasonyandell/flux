@@ -6,6 +6,26 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | loop | Ring 2 opponent-aware policy built + prioritized]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[log]]
+
+A campaign loop fire built **Ring 2** — the opponent-aware learned policy, the
+real path to a *dominant neural* strategy (no hand solver uses opponent
+fields). Added to `flux_v2/ring1.py` additively: a second sum-Bellman
+potential `opp_potential` (the enemy bloc's field — where the union of live
+non-me seats wants to go), and three guarded genome weights
+(`w_opp_def` defends cells the enemy covets, `atk_opp`/`rank_opp` bias attack
+and throttle by opponent attraction). `champion2_vector()` = the Ring 1
+champion padded with zeros, so Ring 2 reduces bit-exactly to the champion at
+init — parity proven in `tests/test_v2_ring2_parity.py` (151 tests green).
+`evolve_champion.py` gained `--ring 2`; `champion_lab.py` gained a flock-safe
+`prioritize`, and the heartbeat now commits code as well as the board.
+Enqueued and front-loaded three Ring 2 experiments (multi-scale, P=12
+dithering, R=12) — they run as soon as the current two finish. The campaign
+can now evolve genuinely opponent-aware learned policies, not just solver
+knobs.
+
 ## [2026-06-13 | workspace | autonomous champion lab launched]
 
 **Touched pages:** [[topics/v2-champion-lab]] [[topics/v2-beat-the-solver-plan]] [[index]] [[log]]
