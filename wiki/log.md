@@ -6,6 +6,30 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | loop | opponent-awareness REGULARIZES train-at-hardest (ring2_r20 0.721)]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[log]]
+
+Correction to the prior fire's prediction. `ring2_r20` (Ring 2, opponent-aware,
+trained at R=20 alone) scored **0.721** (R=7 72.4% / R=12 70.8% coherent 7-0
+p=0.016 / R=20 77.1%, worst 70.8%) — and is **strong at R=7**, NOT weak. So
+train-at-hardest does NOT overfit Ring 2 the way it overfit Ring 1
+(`ring1_r20_noanchor`, 0.627, weak at R=7). **The opponent-field features
+regularize**: they encode a robust strategy that transfers to small boards,
+where the bare Ring 1 policy overfit to R=20-specific patterns.
+
+Refined map of the lever by capacity AND features:
+- knobs (6 params): train-at-hardest ≫ multi-scale (0.747 vs 0.639)
+- Ring 1 learned (no opp): train-at-hardest *overfits* (0.627)
+- Ring 2 learned (opp-aware): multi-scale ≈ train-at-hardest, both
+  transfer-robust (`ms_ring2` 0.731 / `ring2_r20` 0.721) — opponent-fields fix
+  the overfit.
+
+Both Ring 2 variants cluster ~0.72–0.73, just below the 0.747 knob champion.
+The learned frontier is competitive but keeps landing ~0.02 short. The pivot
+`ms_ring2_refined` (refined multi-scale Ring 2) is the live shot to close it;
+not promoting `ring2_r20` (dominated by `ms_ring2` 0.731).
+
 ## [2026-06-13 | loop | train-at-hardest OVERFITS learned policies (opposite of knobs)]
 
 **Touched pages:** [[topics/v2-champion-lab]] [[log]]

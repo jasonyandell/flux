@@ -2,7 +2,7 @@
 title: v2 champion lab — autonomous campaign board
 kind: topic
 first_seen: 2026-06-13
-last_updated: 2026-06-13T17:40:56+00:00
+last_updated: 2026-06-13T20:41:23+00:00
 status: active
 ---
 
@@ -28,7 +28,7 @@ is the committed, human-readable projection.
 
 ## Live leaderboard
 
-_Updated 2026-06-13T17:40:56+00:00 · baseline `lightning_sum_throttled` = 0.50 · 2 running, 15 pending._
+_Updated 2026-06-13T20:41:23+00:00 · baseline `lightning_sum_throttled` = 0.50 · 3 running, 14 pending._
 
 | # | score | mean | worst | id | per-radius win% | key genome shift |
 |---|---|---|---|---|---|---|
@@ -39,8 +39,8 @@ _Updated 2026-06-13T17:40:56+00:00 · baseline `lightning_sum_throttled` = 0.50 
 | 5 | 0.613 | 63% | 60% | `evolve_r0_ref` | R7=62% R12=60% R20=66% | weak_bonus=0.0048, expand_bonus=1.3176, defense_bonus=0.587, throttle=1.4226 |
 | 6 | 0.589 | 62% | 56% | `ring1_r20_noanchor` | R7=56% R12=57% R20=73% |  |
 
-**Running:** `ring2_r20` (gen   98), `ms_ring2_refined` (evolve)
+**Running:** `ms_ring2_refined` (gen   56), `ring2_r20` (eval), `ms_ring2_p12` (evolve)
 
-**Queued:** `ms_ring2_p12`, `ring2_r12`, `ring0_r20_p12`, `ms_ring0_fluid`, `ring0_p12`, `ms_ring1`, `ring1_r12_noanchor`, `ring0_r12`, `ms_ring0_vs_evolver0`, `ms_ring0_wide`, `ms_ring0_dead40`, `ms_ring0_p12`, `ms_ring1_anchor`, `ms_ring1_p12`, `ms_ring1_fluid`
+**Queued:** `ring2_r12`, `ring0_r20_p12`, `ms_ring0_fluid`, `ring0_p12`, `ms_ring1`, `ring1_r12_noanchor`, `ring0_r12`, `ms_ring0_vs_evolver0`, `ms_ring0_wide`, `ms_ring0_dead40`, `ms_ring0_p12`, `ms_ring1_anchor`, `ms_ring1_p12`, `ms_ring1_fluid`
 
 Related: [[v2-beat-the-solver-plan]], [[v2-grand-research-plan]], [[v2-todd-measurement-lab]].
