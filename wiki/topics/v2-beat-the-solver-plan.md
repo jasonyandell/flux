@@ -349,16 +349,24 @@ First evolution + probe pass, R=7 P=6 dead=15 screen world unless noted.
 All numbers are provisional lab signal; official promotion is Todd's
 `eval_solvers.py`.
 
-**UPDATE (autonomous campaign): transfer is solved at the knob level.**
-Multi-scale Ring 0 (evolve the six knobs against R=7/12/20 at once, 22%-dead)
-produced `evolve_r0_ms` — a **transfer-robust champion**: 40-pair holdout vs
-`lightning_sum_throttled` of 67.8% / 71.2% / 79.6% at R=7/12/20 (score 0.703,
-worst-scale 67.8%, win rate *rising* with scale). It wins at every scale, not
-just the training one. The lever under transfer is **low-gamma + aggressive
-expansion**, not the defense term that single-scale R=7 found. The open goal
-is now a *learned* (Ring 1/2) policy that beats this 0.703 knob bar; the live
-board is [[v2-champion-lab]]. The single-scale results below are kept as the
-original record.
+**UPDATE (autonomous campaign): transfer is solved at the knob level; the
+current champion is `evolve_r0_r20` (score 0.746).** Two transfer-robust
+champions emerged, and the winner is counter-intuitive:
+
+- `evolve_r0_ms` (multi-scale R=7/12/20): 67.8/71.2/79.6%, score 0.703 —
+  low-gamma + aggressive expansion.
+- `evolve_r0_r20` (**single-scale R=20** tuning): 77.6/83.3/71.7%, score
+  **0.746**, significant at R=7 and R=12 (coherent 6-0, p=0.031) — defense-heavy
+  (`defense_bonus=0.777`). **This is the best champion.**
+
+**Methodology: train on the hardest case, not the average.** Tuning purely at
+the largest/richest scale (R=20) generalized DOWN to small boards *better* than
+multi-scale averaging — the hard regime forces robust mechanics (defense,
+moderate gamma) that also work at easier scales. This vindicates the defense
+lever (the single-scale R=7 finding) — decisive once surfaced at large scale.
+The open goal is a *learned* (Ring 1/2) policy beating the **0.746** knob bar;
+live board [[v2-champion-lab]]. Single-scale results below are the original
+record.
 
 **Ring 0 — a real win at training scale.** ~230 generations of CMA-style
 ES over the champion's six knobs reached ~74% CRN win rate vs

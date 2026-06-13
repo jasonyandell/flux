@@ -6,6 +6,36 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | loop | new champion evolve_r0_r20 (0.746) — train-at-hardest beats multi-scale]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[topics/v2-beat-the-solver-plan]] [[log]]
+
+Surprise leader: the **single-scale R=20-tuned** Ring 0 run (`ring0_r20`)
+transfers DOWN to small boards better than the multi-scale `ms_ring0`, and is
+the new champion — promoted as `evolve_r0_r20`. 40-pair cross-scale holdout vs
+`lightning_sum_throttled`:
+
+- R=7: **77.6%** (coherent 6-0, **p=0.031**) · R=12: **83.3%** (6-0, **p=0.031**)
+  · R=20: 71.7% (3-0, p=0.25)
+- mean 77.5% · worst 71.7% · **score 0.746** (beats evolve_r0_ms 0.703)
+
+First champion to clear **p<0.05** (at R=7 and R=12) — the most rigorously
+confirmed yet. Genome: `gamma=0.746, weak_bonus=0.451, expand_bonus=1.223,
+defense_bonus=0.777, fanout_eps=0.075, throttle=1.279` — **defense-heavy**.
+
+**Key methodology insight: train on the hardest case, not the average.**
+Multi-scale training (`ms_ring0`) averaged across R=7/12/20 and found
+aggressive expansion with a short-range field (0.703). Tuning purely at the
+largest, richest scale (R=20) found a defense-heavy genome that generalizes
+DOWN better (0.746). The hardest regime forces robust mechanics that also work
+at easier scales; averaging dilutes them. This also **vindicates the defense
+lever** — it was the single-scale R=7 finding, looked abandoned under
+multi-scale aggression, but re-emerges as decisive when tuned at large scale.
+
+Bar is now **0.746**. The goal remains a *learned* (Ring 1/2) policy that
+beats it; `ms_ring2` and `ms_ring2_vs_champ` are evolving toward it. Live
+board: [[v2-champion-lab]].
+
 ## [2026-06-13 | loop | first transfer-robust champion: evolve_r0_ms (score 0.703)]
 
 **Touched pages:** [[topics/v2-champion-lab]] [[topics/v2-beat-the-solver-plan]] [[log]]
