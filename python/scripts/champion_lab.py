@@ -206,6 +206,24 @@ def _read_genome(ckpt) -> dict:
 # --- tick --------------------------------------------------------------------
 
 def tick() -> None:
+    """Concurrency-safe heartbeat — a file lock guards the read-modify-write so
+    the mechanical heartbeat and an LLM loop can both poke it without racing."""
+    import fcntl
+    LAB.mkdir(parents=True, exist_ok=True)
+    lockf = open(LAB / ".tick.lock", "w")
+    try:
+        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("another tick in progress; skipping")
+        return
+    try:
+        _tick_body()
+    finally:
+        fcntl.flock(lockf, fcntl.LOCK_UN)
+        lockf.close()
+
+
+def _tick_body() -> None:
     print(f"== champion-lab tick {_now()} ==")
     running = _load_json(RUN, [])
     queue = _load_jsonl(Q)
@@ -394,6 +412,49 @@ def seed() -> None:
         {"id": "ring1_r12_noanchor", "ring": 1,
          "label": "Ring 1 at R=12, no anchor (let capacity explore)",
          "args": ["--radii", "12", "--dead-frac", "0.22", "--anchor-coef", "0.0",
+                  "--generations", "150", "--boards", "18", *common]},
+        # second wave — fill scale gaps, push past the defense-on champion,
+        # and probe where the richer Ring 1 policy might finally have headroom.
+        {"id": "ring0_r12", "ring": 0,
+         "label": "Ring 0 at R=12 (mid-scale baseline)",
+         "args": ["--radii", "12", "--dead-frac", "0.22",
+                  "--generations", "120", "--boards", "16", *common]},
+        {"id": "ms_ring0_vs_evolver0", "ring": 0,
+         "label": "multi-scale Ring 0 vs the defense-on evolve_r0 (beat the stronger baseline)",
+         "args": ["--radii", "7,12,20", "--dead-frac", "0.22",
+                  "--opponent", "evolve_r0",
+                  "--generations", "150", "--boards", "18", *common]},
+        {"id": "ms_ring0_wide", "ring": 0,
+         "label": "multi-scale Ring 0, more boards (lower CRN noise)",
+         "args": ["--radii", "7,12,20", "--dead-frac", "0.22",
+                  "--generations", "150", "--boards", "27", *common]},
+        {"id": "ms_ring0_dead40", "ring": 0,
+         "label": "multi-scale Ring 0 on sparse 40%-dead boards",
+         "args": ["--radii", "7,12,20", "--dead-frac", "0.40",
+                  "--generations", "150", "--boards", "18", *common]},
+        {"id": "ms_ring0_p12", "ring": 0,
+         "label": "multi-scale Ring 0, P=12 (scale + many seats)",
+         "args": ["--radii", "7,12,20", "--dead-frac", "0.22", "--num-players", "12",
+                  "--generations", "150", "--boards", "18", *common]},
+        {"id": "ring0_r20_p12", "ring": 0,
+         "label": "Ring 0 at R=20 P=12 (big multi-enemy)",
+         "args": ["--radii", "20", "--dead-frac", "0.22", "--num-players", "12",
+                  "--generations", "120", "--boards", "14", *common]},
+        {"id": "ms_ring1_anchor", "ring": 1,
+         "label": "multi-scale Ring 1 with light anchor (vs the no-anchor twin)",
+         "args": ["--radii", "12,20", "--dead-frac", "0.22", "--anchor-coef", "0.02",
+                  "--generations", "150", "--boards", "18", *common]},
+        {"id": "ms_ring1_p12", "ring": 1,
+         "label": "multi-scale Ring 1, P=12 (dithering + scale — Ring 1's best shot)",
+         "args": ["--radii", "12,20", "--dead-frac", "0.22", "--num-players", "12",
+                  "--generations", "150", "--boards", "18", *common]},
+        {"id": "ring1_r20_noanchor", "ring": 1,
+         "label": "Ring 1 at R=20, no anchor",
+         "args": ["--radii", "20", "--dead-frac", "0.22", "--anchor-coef", "0.0",
+                  "--generations", "150", "--boards", "16", *common]},
+        {"id": "ms_ring1_fluid", "ring": 1,
+         "label": "multi-scale Ring 1 under fluid edges",
+         "args": ["--radii", "12,20", "--dead-frac", "0.22", "--edge-alpha", "0.05",
                   "--generations", "150", "--boards", "18", *common]},
     ]
     existing = {e["id"] for e in _load_jsonl(Q)}
