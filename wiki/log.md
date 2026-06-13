@@ -6,6 +6,24 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | loop | league training overfits — ms_ring2_vs_champ (0.647) worse than vs-lightning]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[log]]
+
+Negative result worth keeping. `ms_ring2_vs_champ` — a Ring 2 (learned,
+opponent-aware) policy *trained against the strong champion* `evolve_r0_ms`
+(the league move) — learned to beat that opponent ~55% in training (CRN 0.547)
+but scores only **0.647** on the lightning leaderboard (R=7 61.4% / R=12 71.9%
+/ R=20 70.4%, worst 61.4%), *below* the vs-lightning-trained `ms_ring2` (0.731)
+and notably weak at R=7. **Training vs a strong specific opponent overfit to
+beating that opponent** rather than producing a better general champion;
+the simple-baseline multi-scale training generalized better. Not promoted
+(dominated). Lesson: the route to beating the knob champion is not league
+training but **train-at-hardest vs the simple baseline, with
+opponent-awareness** — exactly what `ring2_r20` (now running) tests. Both
+remaining front-of-queue learned experiments (`ring2_r20`, `ring1_r20_noanchor`)
+use that recipe.
+
 ## [2026-06-13 | loop | first strong LEARNED policy evolve_r2_ms (0.717) — close, short of the knob champion]
 
 **Touched pages:** [[topics/v2-champion-lab]] [[log]]
