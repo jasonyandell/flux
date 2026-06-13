@@ -182,7 +182,33 @@ def _play(state0, cand_fn, opp_fn, cand_seats: set[int], cfg: dict,
     return score, share, decisive, state.tick, frames, state
 
 
-def _eval_vector(vec: np.ndarray, ring: int, board_seeds, cfg: dict) -> dict:
+def _hex_cells(radius: int) -> int:
+    return 3 * radius * radius + 3 * radius + 1
+
+
+def _make_specs(radii, num_players, dead_frac, fixed_dead, base_max_ticks, seeds):
+    """Build per-board specs. Multi-scale: radius cycles through `radii`, dead
+    count scales with area via `dead_frac`. Single-scale (radii=[r],
+    dead_frac=None) reproduces the original fixed-board behavior."""
+    specs = []
+    radii = list(radii)
+    for i, s in enumerate(seeds):
+        r = radii[i % len(radii)]
+        nd = int(round(dead_frac * _hex_cells(r))) if dead_frac else int(fixed_dead)
+        mt = max(int(base_max_ticks), 400 * r // 7)
+        specs.append({"seed": int(s), "radius": int(r),
+                      "num_dead": int(nd), "max_ticks": int(mt)})
+    return specs
+
+
+def _spec_cfg(cfg: dict, spec: dict) -> dict:
+    """cfg overlaid with one board's geometry — feeds _get_board/_play
+    unchanged so single-scale callers and gate0 are unaffected."""
+    return {**cfg, "radius": spec["radius"],
+            "num_dead_cells": spec["num_dead"], "max_ticks": spec["max_ticks"]}
+
+
+def _eval_vector(vec: np.ndarray, ring: int, specs, cfg: dict) -> dict:
     """CRN fitness of one genome over all boards (2 seat-swapped halves each)."""
     _, _, _, _, make_solver = ring_spec(ring)
     cand_fn = make_solver(np.asarray(vec, dtype=np.float64))
@@ -191,12 +217,14 @@ def _eval_vector(vec: np.ndarray, ring: int, board_seeds, cfg: dict) -> dict:
     even = set(range(0, P, 2))
     odd = set(range(1, P, 2))
     scores, shares, decisives = [], [], 0
-    for bs in board_seeds:
-        state0 = _get_board(int(bs), cfg)
+    for spec in specs:
+        scfg = _spec_cfg(cfg, spec)
+        bs = spec["seed"]
+        state0 = _get_board(int(bs), scfg)
         for half, seats in ((0, even), (1, odd)):
             opp_fn = _solver_instance(cfg["opponent"])
             score, share, decisive, _, _, _ = _play(
-                state0, cand_fn, opp_fn, seats, cfg,
+                state0, cand_fn, opp_fn, seats, scfg,
                 game_seed=[int(bs), half],
             )
             scores.append(score)
@@ -232,7 +260,7 @@ def _eval_worker(payload: dict) -> dict:
     """Top-level worker for multiprocessing (spawn-safe)."""
     res = _eval_vector(
         np.asarray(payload["vec"], dtype=np.float64),
-        payload["ring"], payload["board_seeds"], payload["cfg"],
+        payload["ring"], payload["specs"], payload["cfg"],
     )
     res["idx"] = payload["idx"]
     return res
@@ -244,7 +272,7 @@ def _eval_worker(payload: dict) -> dict:
 
 
 def _save_ckpt(path: Path, ring, names, mean, sigma_mult, best_vec, best_fit,
-               gen, board_seeds, cfg, history):
+               gen, specs, cfg, history):
     path.parent.mkdir(parents=True, exist_ok=True)
     blob = {
         "ring": ring,
@@ -254,7 +282,7 @@ def _save_ckpt(path: Path, ring, names, mean, sigma_mult, best_vec, best_fit,
         "best_vector": [float(x) for x in best_vec],
         "best_fitness": float(best_fit),
         "generation": int(gen),
-        "board_seeds": [int(s) for s in board_seeds],
+        "specs": specs,
         "config": cfg,
         "history": history[-500:],
         "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -264,7 +292,7 @@ def _save_ckpt(path: Path, ring, names, mean, sigma_mult, best_vec, best_fit,
     tmp.replace(path)
 
 
-def _emit_replay(best_vec, ring, board_seeds, cfg, gen):
+def _emit_replay(best_vec, ring, specs, cfg, gen):
     from scripts.run_v2_solver import (
         DEFAULT_OUT_DIR, _solver_instance, write_replay,
     )
@@ -272,11 +300,15 @@ def _emit_replay(best_vec, ring, board_seeds, cfg, gen):
     cand_fn = make_solver(best_vec)
     opp_fn = _solver_instance(cfg["opponent"])
     P = cfg["num_players"]
-    state0 = _get_board(int(board_seeds[0]), cfg)
+    # Pick the largest-radius board so the showcased replay is the visually
+    # richest one the campaign trains on.
+    spec = max(specs, key=lambda s: s["radius"])
+    cfg = _spec_cfg(cfg, spec)
+    state0 = _get_board(int(spec["seed"]), cfg)
     stride = 10
     score, share, decisive, ticks, frames, state = _play(
         state0, cand_fn, opp_fn, set(range(0, P, 2)), cfg,
-        game_seed=[int(board_seeds[0]), 0], record_stride=stride,
+        game_seed=[int(spec["seed"]), 0], record_stride=stride,
     )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     ea = float(cfg["edge_alpha"])
@@ -294,7 +326,7 @@ def _emit_replay(best_vec, ring, board_seeds, cfg, gen):
         "edge_alpha": ea,
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "seats": seats,
-        "seed": int(board_seeds[0]),
+        "seed": int(spec["seed"]),
         "radius": int(cfg["radius"]),
         "num_players": P,
         "num_dead_cells": int(cfg["num_dead_cells"]),
@@ -331,23 +363,25 @@ def _wilson(wins: int, n: int, z: float = 1.96):
     return p, center - radius, center + radius
 
 
-def _confirm(best_vec, ring, cfg, pairs: int, seed: int):
-    """Holdout matched pairs on FRESH boards (not the CRN training set)."""
-    rng = np.random.default_rng(seed + 777_777)
+def _eval_one_radius(best_vec, ring, cfg, radius, num_dead, max_ticks,
+                     pairs, seed):
+    """Holdout matched pairs at ONE radius on fresh boards vs cfg['opponent']."""
+    rng = np.random.default_rng(seed + 777_777 + radius * 101)
     seeds = rng.integers(0, 2**31 - 1, size=pairs, dtype=np.int64)
     _, _, _, _, make_solver = ring_spec(ring)
     cand_fn = make_solver(best_vec)
     from scripts.run_v2_solver import _solver_instance
     P = cfg["num_players"]
+    scfg = {**cfg, "radius": radius, "num_dead_cells": num_dead,
+            "max_ticks": max_ticks}
     wins = losses = timeouts = coh_c = coh_o = split = unresolved = 0
-    t0 = time.time()
-    for i, bs in enumerate(seeds):
-        state0 = _get_board(int(bs), cfg)
+    for bs in seeds:
+        state0 = _get_board(int(bs), scfg)
         halves = []
         for half, seats in ((0, set(range(0, P, 2))), (1, set(range(1, P, 2)))):
             opp_fn = _solver_instance(cfg["opponent"])
             score, _, decisive, _, _, _ = _play(
-                state0, cand_fn, opp_fn, seats, cfg, game_seed=[int(bs), half],
+                state0, cand_fn, opp_fn, seats, scfg, game_seed=[int(bs), half],
             )
             halves.append((score, decisive))
             if not decisive:
@@ -366,23 +400,63 @@ def _confirm(best_vec, ring, cfg, pairs: int, seed: int):
             coh_o += 1
         else:
             split += 1
-        if (i + 1) % 10 == 0 or i + 1 == pairs:
-            print(f"  [{i+1}/{pairs}] cand wins={wins} losses={losses} "
-                  f"timeouts={timeouts} | coherent cand={coh_c} opp={coh_o} "
-                  f"split={split} unresolved={unresolved} "
-                  f"({time.time()-t0:.0f}s)", flush=True)
     decided = wins + losses
     p, lo, hi = _wilson(wins, max(decided, 1))
-    print(f"\n== holdout confirm: ring{ring} best vs {cfg['opponent']} ==")
-    print(f"  decided games: {decided} | candidate {p:.1%} "
-          f"[{lo:.1%}, {hi:.1%}] Wilson 95%")
     nc = coh_c + coh_o
+    pval = 1.0
     if nc:
         ps = sum(math.comb(nc, k) for k in range(max(coh_c, coh_o), nc + 1))
         pval = min(2 * ps * (0.5 ** nc), 1.0)
-        print(f"  coherent pairs: cand {coh_c} / opp {coh_o} "
-              f"(split {split}, unresolved {unresolved}) sign-test p≈{pval:.4f}")
-    print("  (promotion still goes through Todd: scripts/eval_solvers.py)")
+    return {"radius": radius, "pairs": pairs, "wins": wins, "losses": losses,
+            "timeouts": timeouts, "decided": decided, "win_rate": p,
+            "ci_lo": lo, "ci_hi": hi, "coherent_cand": coh_c,
+            "coherent_opp": coh_o, "split": split, "unresolved": unresolved,
+            "sign_p": pval}
+
+
+def _eval_suite(best_vec, ring, cfg, radii, dead_frac, fixed_dead, base_ticks,
+                pairs, seed):
+    """Per-radius holdout suite → dict for the leaderboard. The aggregate score
+    rewards winning at every scale and penalizes losing at any (min across
+    radii matters most for a transfer-robust champion)."""
+    per = []
+    for r in radii:
+        nd = int(round(dead_frac * _hex_cells(r))) if dead_frac else int(fixed_dead)
+        mt = max(int(base_ticks), 400 * r // 7)
+        per.append(_eval_one_radius(best_vec, ring, cfg, r, nd, mt, pairs, seed))
+    rates = [e["win_rate"] for e in per]
+    agg = float(np.mean(rates)) if rates else 0.0
+    worst = float(np.min(rates)) if rates else 0.0
+    # blended score: mean win rate, but the worst scale pulls it down so a
+    # champion that wins at R=7 and loses at R=20 doesn't top a robust one.
+    score = 0.5 * agg + 0.5 * worst
+    return {"opponent": cfg["opponent"], "radii": list(radii), "per_radius": per,
+            "mean_win_rate": agg, "worst_win_rate": worst, "score": score}
+
+
+def _confirm(best_vec, ring, cfg, pairs: int, seed: int, radii=None,
+             dead_frac=None, fixed_dead=None, base_ticks=None,
+             emit_json=False):
+    """Holdout suite across radii. Prints human-readable summary; optionally
+    prints a JSON line (prefixed EVALJSON:) for machine ingestion."""
+    radii = radii or [cfg.get("radius", 7)]
+    fixed_dead = fixed_dead if fixed_dead is not None else cfg.get("num_dead_cells", 15)
+    base_ticks = base_ticks or cfg.get("max_ticks", 3000)
+    t0 = time.time()
+    suite = _eval_suite(best_vec, ring, cfg, radii, dead_frac, fixed_dead,
+                        base_ticks, pairs, seed)
+    print(f"\n== holdout suite: ring{ring} best vs {cfg['opponent']} "
+          f"({pairs} pairs/radius) ==")
+    for e in suite["per_radius"]:
+        print(f"  R={e['radius']:>2}: win {e['win_rate']:.1%} "
+              f"[{e['ci_lo']:.1%},{e['ci_hi']:.1%}]  "
+              f"coherent {e['coherent_cand']}-{e['coherent_opp']} "
+              f"(p≈{e['sign_p']:.3f}, {e['decided']} decided)")
+    print(f"  mean {suite['mean_win_rate']:.1%} | worst {suite['worst_win_rate']:.1%} "
+          f"| score {suite['score']:.3f}  ({time.time()-t0:.0f}s)")
+    if emit_json:
+        print("EVALJSON:" + json.dumps(suite), flush=True)
+    return suite
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +472,12 @@ def main() -> None:
     ap.add_argument("--boards", type=int, default=12,
                     help="CRN matched-pair boards per evaluation (2 games each)")
     ap.add_argument("--radius", type=int, default=7)
+    ap.add_argument("--radii", type=str, default="",
+                    help="comma list, e.g. 7,12,20 — multi-scale training; "
+                         "overrides --radius. Boards cycle through these radii.")
+    ap.add_argument("--dead-frac", type=float, default=0.0,
+                    help="dead-cell fraction (scales with area, multi-scale). "
+                         "0 = use fixed --num-dead-cells")
     ap.add_argument("--num-players", type=int, default=6)
     ap.add_argument("--num-dead-cells", type=int, default=15)
     ap.add_argument("--ai-period-ticks", type=int, default=5)
@@ -424,16 +504,27 @@ def main() -> None:
     ap.add_argument("--confirm-pairs", type=int, default=0,
                     help="run a fresh-board holdout eval of the current best "
                          "and exit (use with --resume)")
+    ap.add_argument("--eval-suite", action="store_true",
+                    help="with --resume + --confirm-pairs: evaluate per-radius "
+                         "across --eval-radii and print an EVALJSON line")
+    ap.add_argument("--eval-radii", type=str, default="7,12,20",
+                    help="radii for the eval suite leaderboard metric")
+    ap.add_argument("--eval-opponent", type=str, default="",
+                    help="override the opponent for the eval suite (so the "
+                         "leaderboard scores all candidates vs one baseline)")
     args = ap.parse_args()
 
+    radii = [int(r) for r in args.radii.split(",") if r.strip()] or [args.radius]
+    dead_frac = args.dead_frac if args.dead_frac > 0 else None
     names, x0, lo, hi, _ = ring_spec(args.ring)
     cfg = {
-        "radius": args.radius, "num_players": args.num_players,
+        "radius": radii[0], "num_players": args.num_players,
         "num_dead_cells": args.num_dead_cells,
         "ai_period_ticks": args.ai_period_ticks, "max_ticks": args.max_ticks,
         "edge_alpha": args.edge_alpha, "connect_mode": args.connect_mode,
         "opponent": args.opponent, "dom_coef": args.dom_coef,
         "anchor_coef": args.anchor_coef,
+        "radii": radii, "dead_frac": dead_frac,
     }
 
     out = Path(args.out) if args.out else DEFAULT_CKPT_DIR / f"ring{args.ring}.json"
@@ -444,7 +535,9 @@ def main() -> None:
     best_fit = -np.inf
     start_gen = 0
     history: list[dict] = []
-    board_seeds = rng.integers(0, 2**31 - 1, size=args.boards, dtype=np.int64)
+    seeds = rng.integers(0, 2**31 - 1, size=args.boards, dtype=np.int64)
+    specs = _make_specs(radii, args.num_players, dead_frac,
+                        args.num_dead_cells, args.max_ticks, seeds)
 
     if args.resume:
         blob = json.loads(Path(args.resume).read_text())
@@ -454,15 +547,32 @@ def main() -> None:
         best_vec = np.array(blob["best_vector"], dtype=np.float64)
         best_fit = float(blob["best_fitness"])
         start_gen = int(blob["generation"])
-        board_seeds = np.array(blob["board_seeds"], dtype=np.int64)
         cfg = blob["config"]
+        cfg.setdefault("radii", [cfg.get("radius", 7)])
+        cfg.setdefault("dead_frac", None)
         history = blob.get("history", [])
+        if "specs" in blob:
+            specs = blob["specs"]
+        else:  # back-compat: old single-scale checkpoint stored board_seeds
+            specs = _make_specs(
+                cfg["radii"], cfg["num_players"], cfg.get("dead_frac"),
+                cfg.get("num_dead_cells", 15), cfg.get("max_ticks", 3000),
+                blob.get("board_seeds", seeds),
+            )
         out = Path(args.resume)
         print(f"resumed gen {start_gen}, best {best_fit:.4f}: "
               f"{describe_diff(args.ring, best_vec)}")
 
     if args.confirm_pairs > 0:
-        _confirm(best_vec, args.ring, cfg, args.confirm_pairs, args.seed)
+        eval_radii = [int(r) for r in args.eval_radii.split(",") if r.strip()]
+        if args.eval_opponent:
+            cfg = {**cfg, "opponent": args.eval_opponent}
+        _confirm(best_vec, args.ring, cfg, args.confirm_pairs, args.seed,
+                 radii=eval_radii if args.eval_suite else cfg["radii"],
+                 dead_frac=cfg.get("dead_frac"),
+                 fixed_dead=cfg.get("num_dead_cells", 15),
+                 base_ticks=cfg.get("max_ticks", 3000),
+                 emit_json=args.eval_suite)
         return
 
     sigma_frac = args.sigma if args.sigma > 0 else (0.10 if args.ring == 0 else 0.04)
@@ -481,10 +591,12 @@ def main() -> None:
         import multiprocessing as mp
         pool = mp.get_context("spawn").Pool(workers)
 
+    radii_tag = ",".join(str(r) for r in radii)
+    dead_tag = f"frac{dead_frac:g}" if dead_frac else str(args.num_dead_cells)
     print(f"evolve ring{args.ring} vs {cfg['opponent']} | pop {lam} mu {mu} "
-          f"| boards {len(board_seeds)} (CRN, {2*len(board_seeds)} games/cand) "
-          f"| R={cfg['radius']} P={cfg['num_players']} dead={cfg['num_dead_cells']} "
-          f"ticks={cfg['max_ticks']} ea={cfg['edge_alpha']:g} | workers {workers}")
+          f"| boards {len(specs)} (CRN, {2*len(specs)} games/cand) "
+          f"| R={radii_tag} P={cfg['num_players']} dead={dead_tag} "
+          f"ea={cfg['edge_alpha']:g} | workers {workers}")
     print(f"checkpoint: {out}")
 
     es_rng = np.random.default_rng(args.seed + 1000 + start_gen)
@@ -498,7 +610,7 @@ def main() -> None:
 
             payloads = [
                 {"vec": c.tolist(), "ring": args.ring, "idx": i,
-                 "board_seeds": [int(s) for s in board_seeds], "cfg": cfg}
+                 "specs": specs, "cfg": cfg}
                 for i, c in enumerate(cands)
             ]
             if pool is not None:
@@ -553,11 +665,11 @@ def main() -> None:
                 print(f"      new best: {describe_diff(args.ring, best_vec)}",
                       flush=True)
             _save_ckpt(out, args.ring, names, mean, sigma_mult, best_vec,
-                       best_fit, gen, board_seeds, cfg, history)
+                       best_fit, gen, specs, cfg, history)
             if args.replay_every and gen % args.replay_every == 0:
                 try:
                     rname, rscore = _emit_replay(
-                        best_vec, args.ring, board_seeds, cfg, gen)
+                        best_vec, args.ring, specs, cfg, gen)
                     print(f"      replay → public/v2/replays/{rname} "
                           f"(score {rscore:g})", flush=True)
                 except Exception as e:  # replay is decorative; never kill the run

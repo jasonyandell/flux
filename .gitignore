@@ -40,3 +40,6 @@ public/champions/v3/v3_gen*_b*_fit*.json
 # Local Claude Code agent state (per-machine).
 .claude/
 probe.mjs
+
+# Autonomous champion-lab state (durable on disk; wiki carries the rendered board).
+python/lab/

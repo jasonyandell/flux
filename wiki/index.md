@@ -45,6 +45,12 @@ v2 reference:
 
 v2 research (freshest first):
 
+- [[topics/v2-champion-lab|v2-champion-lab]] — **the live autonomous
+  campaign board.** Persistent queue + scheduler
+  (`python/scripts/champion_lab.py`) runs evolution experiments, evaluates
+  every checkpoint across scales vs the baseline, and ranks a leaderboard;
+  a 10-min loop keeps it moving and commits the board. Start here for
+  current standings.
 - [[topics/v2-beat-the-solver-plan|v2-beat-the-solver-plan]] —
   **the active ML program** (2026-06-12). Diagnosis: the BC/PPO failures
   are an information gap — the champion is a global Bellman field plus a
