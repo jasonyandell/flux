@@ -6,6 +6,28 @@ last_updated: 2026-06-12
 status: active
 ---
 
+## [2026-06-13 | loop | first strong LEARNED policy evolve_r2_ms (0.717) — close, short of the knob champion]
+
+**Touched pages:** [[topics/v2-champion-lab]] [[log]]
+
+`ms_ring2` (the first Ring 2 / learned, opponent-aware run, multi-scale vs
+lightning) finished and was evaluated: 40-pair cross-scale vs
+`lightning_sum_throttled` = R=7 70.5% / R=12 71.7% / R=20 76.5%, mean 72.9%,
+**worst 70.5%, score 0.717**. It is a genuine transfer-robust LEARNED champion
+(wins every scale, all CIs above 50%) and it **does use opponent-awareness**
+(`atk_opp=-0.297` — avoids contested targets). Registered as `evolve_r2_ms`,
+the best learned policy so far.
+
+But it **falls short of the knob champion** `evolve_r0_r20` (0.746): same
+multi-scale-averaging penalty (defense drifted negative, -0.43), so the
+opponent-field edge wasn't enough to overcome training on the average instead
+of the hardest case. The goal — a learned policy that *beats* the knob
+champions — is close (0.717 vs 0.746) but not met. Next shot: `ring2_r20`
+(learned + opponent-aware tuned at R=20 alone — combining opponent-fields with
+the winning train-at-hardest scale), queued to run next; and
+`ms_ring2_vs_champ` (still running, was climbing past the strong champion in
+training). Campaign continues.
+
 ## [2026-06-13 | loop | new champion evolve_r0_r20 (0.746) — train-at-hardest beats multi-scale]
 
 **Touched pages:** [[topics/v2-champion-lab]] [[topics/v2-beat-the-solver-plan]] [[log]]
