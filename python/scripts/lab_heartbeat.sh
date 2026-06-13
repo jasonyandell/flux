@@ -10,7 +10,8 @@
 # Detached (start_new_session) so it survives the interactive session ending —
 # this is the "your loop will be there when my limit ends" piece.
 #
-# Start:  nohup setsid python/scripts/lab_heartbeat.sh >/dev/null 2>&1 &
+# Start:  nohup python/scripts/lab_heartbeat.sh >/dev/null 2>&1 & disown
+#         (macOS has no setsid; nohup + disown detaches from the session)
 # Stop:   touch python/lab/STOP     (clean stop after current tick)
 #         or kill the process.
 set -u
@@ -42,20 +43,24 @@ while true; do
   ts=$(date -u +%FT%TZ)
   ( cd "$REPO/python" && "$PY" scripts/champion_lab.py tick ) >> "$LOG" 2>&1
 
+  # Re-render the board only when the campaign state actually moved (avoids a
+  # commit every tick just from the timestamp).
   new=$(hash_state)
   old=$(cat "$LAB/.state_hash" 2>/dev/null || echo init)
   if [ "$new" != "$old" ]; then
     ( cd "$REPO/python" && "$PY" scripts/champion_lab.py render-wiki ) >> "$LOG" 2>&1
-    if ! git -C "$REPO" diff --quiet -- wiki/ 2>/dev/null; then
-      git -C "$REPO" add wiki/ >> "$LOG" 2>&1
-      git -C "$REPO" commit -q -m "champion lab: board + narrative [$ts]
+    echo "$new" > "$LAB/.state_hash"
+  fi
+  # Commit ANY wiki change — board re-render above, or narrative an LLM loop
+  # wrote since last tick. Single git driver, so rebase-pull-push is race-free.
+  if ! git -C "$REPO" diff --quiet -- wiki/ 2>/dev/null; then
+    git -C "$REPO" add wiki/ >> "$LOG" 2>&1
+    git -C "$REPO" commit -q -m "champion lab: board + narrative [$ts]
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>" >> "$LOG" 2>&1
-      git -C "$REPO" pull --rebase --autostash -q origin main >> "$LOG" 2>&1
-      git -C "$REPO" push -q origin main >> "$LOG" 2>&1 && \
-        echo "[$ts] pushed board update" >> "$LOG"
-    fi
-    echo "$new" > "$LAB/.state_hash"
+    git -C "$REPO" pull --rebase --autostash -q origin main >> "$LOG" 2>&1
+    git -C "$REPO" push -q origin main >> "$LOG" 2>&1 && \
+      echo "[$ts] pushed wiki update" >> "$LOG"
   fi
   sleep "$INTERVAL"
 done
