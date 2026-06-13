@@ -87,6 +87,19 @@ GENOME_NAMES: tuple[str, ...] = (
 GENOME_DIM = len(GENOME_NAMES)
 _IDX = {n: i for i, n in enumerate(GENOME_NAMES)}
 
+# Ring 2: Ring 1 plus three opponent-field weights. The opponent field is a
+# SECOND sum-Bellman potential built from the enemy bloc's intrinsic (where
+# the union of all live non-me seats wants to go). No hand solver uses it.
+# The three extra weights are appended after the base 19 so a Ring 2 genome
+# reduces EXACTLY to Ring 1 when they are all zero (champion2 = champion ++ 0).
+GENOME2_NAMES: tuple[str, ...] = GENOME_NAMES + (
+    "w_opp_def",   # defend my cells the enemy field covets (intrinsic, pre-solve)
+    "atk_opp",     # attack gate × opp_pot[d] (prefer/avoid contested targets)
+    "rank_opp",    # throttle ranking × opp_pot[d]
+)
+GENOME2_DIM = len(GENOME2_NAMES)
+_IDX2 = {n: i for i, n in enumerate(GENOME2_NAMES)}
+
 
 def champion_vector() -> np.ndarray:
     """The genome that reproduces `lightning_sum_throttled` exactly."""
@@ -133,6 +146,29 @@ def genome_bounds() -> tuple[np.ndarray, np.ndarray]:
     return lo, hi
 
 
+def champion2_vector() -> np.ndarray:
+    """Ring 2 champion-init: the Ring 1 champion padded with 3 zero opp
+    weights. With the opp weights zero, `field_policy2_actions` skips the
+    opponent field entirely and is bit-identical to the champion."""
+    v = np.zeros(GENOME2_DIM, dtype=np.float64)
+    v[:GENOME_DIM] = champion_vector()
+    return v
+
+
+def genome2_bounds() -> tuple[np.ndarray, np.ndarray]:
+    """(lo, hi) for the Ring 2 genome: Ring 1 bounds extended with the three
+    opponent-weight bounds."""
+    lo1, hi1 = genome_bounds()
+    lo = np.zeros(GENOME2_DIM, dtype=np.float64)
+    hi = np.zeros(GENOME2_DIM, dtype=np.float64)
+    lo[:GENOME_DIM] = lo1
+    hi[:GENOME_DIM] = hi1
+    lo[_IDX2["w_opp_def"]], hi[_IDX2["w_opp_def"]] = -2.0, 2.0
+    lo[_IDX2["atk_opp"]], hi[_IDX2["atk_opp"]] = -3.0, 3.0
+    lo[_IDX2["rank_opp"]], hi[_IDX2["rank_opp"]] = -3.0, 3.0
+    return lo, hi
+
+
 def describe(vector: np.ndarray) -> str:
     """Compact human-readable genome string (deviations from champion bolded
     by a * marker)."""
@@ -149,6 +185,9 @@ def describe(vector: np.ndarray) -> str:
 # ---------------------------------------------------------------------------
 
 _field_warm_cache: dict = {}
+# Separate warm-start cache for the opponent field so its solve can't collide
+# with the seat's own field cache (same id(neighbors)/seat, different field).
+_opp_warm_cache: dict = {}
 _WARM_ITERS = 4
 _COLD_ITERS = 32
 _TOL = 1e-4
@@ -157,14 +196,18 @@ _TOL = 1e-4
 def clear_field_caches() -> None:
     """Reset warm-start caches (ours and the solver's) — call between games."""
     _field_warm_cache.clear()
+    _opp_warm_cache.clear()
     _pot_warm_cache.clear()
 
 
 def _potential_from_intrinsic(
     state: State, seat: int, intrinsic: np.ndarray, gamma: float,
+    cache: dict = _field_warm_cache, tag: str = "",
 ) -> np.ndarray:
-    cache_key = (id(state.neighbors), int(seat))
-    prev = _field_warm_cache.get(cache_key)
+    # `tag` distinguishes the seat's own field ("") from the opponent field
+    # ("opp") so they warm-start from separate caches and never collide.
+    cache_key = (id(state.neighbors), int(seat), tag)
+    prev = cache.get(cache_key)
     if prev is not None and prev.shape == intrinsic.shape:
         init_pot = prev
         iters = _WARM_ITERS
@@ -184,10 +227,59 @@ def _potential_from_intrinsic(
         1,  # mode_id: sum
         int(DEAD),
     ).astype(np.float32, copy=False)
-    if len(_field_warm_cache) > 256:
-        _field_warm_cache.clear()
-    _field_warm_cache[cache_key] = pot
+    if len(cache) > 256:
+        cache.clear()
+    cache[cache_key] = pot
     return pot
+
+
+# ---------------------------------------------------------------------------
+# Opponent field (Ring 2) — where the enemy bloc wants to go
+# ---------------------------------------------------------------------------
+
+
+def opp_intrinsic(
+    state: State, seat: int,
+    weak_bonus: float = 1.0, expand_bonus: float = 0.6,
+) -> np.ndarray:
+    """Enemy-bloc intrinsic for `seat`: the source term for a sum-Bellman
+    field representing where the union of all live non-`seat` seats wants to
+    flow. My weak cells are their attack targets; neutral cells are their
+    expansion targets.
+
+      MY cells:       weak_bonus * clip(1 - my_strength/MAX_STRENGTH, 0, ..)
+                      (clipped to [0, weak_bonus] when weak_bonus >= 0)
+      NEUTRAL cells:  expand_bonus
+      ENEMY/other:    0
+      DEAD:           0
+    """
+    owner = state.owner
+    strength = state.strength
+    N = state.N
+    is_mine = owner == seat
+    is_neutral = owner == NEUTRAL
+    intrinsic = np.zeros(N, dtype=np.float32)
+    if is_mine.any() and weak_bonus != 0.0:
+        term = weak_bonus * (1.0 - strength[is_mine] / MAX_STRENGTH)
+        if weak_bonus >= 0.0:
+            term = term.clip(0.0, weak_bonus)
+        intrinsic[is_mine] = term
+    intrinsic[is_neutral] = np.float32(expand_bonus)
+    # DEAD cells are already 0 and _compute_potential_core forces them to 0.
+    return intrinsic
+
+
+def opp_potential(
+    state: State, seat: int, gamma: float,
+    weak_bonus: float = 1.0, expand_bonus: float = 0.6,
+) -> np.ndarray:
+    """Sum-Bellman propagation of `opp_intrinsic`, using the same frozen
+    operator as the seat's own field but a SEPARATE warm-start cache (tag
+    "opp") so it cannot contaminate the seat's pot trajectory."""
+    intrinsic = opp_intrinsic(state, seat, weak_bonus, expand_bonus)
+    return _potential_from_intrinsic(
+        state, seat, intrinsic, gamma, cache=_opp_warm_cache, tag="opp",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +292,21 @@ def field_policy_actions(
     seat: int,
     rng: Optional[np.random.Generator] = None,
     vector: Optional[np.ndarray] = None,
+    *,
+    opp_pot: Optional[np.ndarray] = None,
+    w_opp_def: float = 0.0,
+    atk_opp: float = 0.0,
+    rank_opp: float = 0.0,
 ) -> np.ndarray:
-    """Ring 1 policy: (N,) int32 actions for `seat` from genome `vector`."""
+    """Ring 1 policy: (N,) int32 actions for `seat` from genome `vector`.
+
+    Ring 2 extension (all optional, fully guarded): `opp_pot` is the enemy
+    bloc's normalized sum-Bellman field (see `opp_potential`). When
+    `opp_pot is None` OR a given opp weight is 0.0, that code path is
+    byte-identical to Ring 1 — so `champion2_vector()` reproduces the
+    champion bit-for-bit. The opp weights are passed as kwargs (NOT appended
+    to `vector`) so the positional `_IDX` map over GENOME_NAMES is unchanged.
+    """
     g = champion_vector() if vector is None else np.asarray(vector, dtype=np.float64)
     owner = state.owner
     strength = state.strength
@@ -240,6 +345,10 @@ def field_policy_actions(
     w_mine = float(g[_IDX["w_mine"]])
     if w_mine != 0.0:
         intrinsic[is_mine] += np.float32(w_mine)
+    # Ring 2: defend cells the enemy bloc covets (added to the intrinsic
+    # BEFORE the seat's Bellman solve). Guarded so Ring 1 is untouched.
+    if opp_pot is not None and w_opp_def != 0.0 and is_mine.any():
+        intrinsic[is_mine] += (w_opp_def * opp_pot[is_mine]).astype(np.float32)
     intrinsic[is_dead] = 0.0
 
     # ---- Bellman (frozen operator) -----------------------------------------
@@ -283,11 +392,17 @@ def field_policy_actions(
     )
 
     # ---- readout_θ: attack gate --------------------------------------------
+    # Ring 2: opp_pot[d] at the neighbor, gathered once and reused below.
+    opp_d = None
+    if opp_pot is not None and (atk_opp != 0.0 or rank_opp != 0.0):
+        opp_d = opp_pot[nb_safe].astype(np.float64)  # (N, K)
     gate = (
         float(g[_IDX["atk_bias"]])
         + float(g[_IDX["atk_pot"]]) * potn_d
         + float(g[_IDX["atk_weak"]]) * weak_d
     )
+    if opp_d is not None and atk_opp != 0.0:
+        gate = gate + atk_opp * opp_d
     attack = attackable & (gate > 0.0)
 
     desired = attack | relay
@@ -312,6 +427,10 @@ def field_policy_actions(
             * (state.edge_pressure.astype(np.float64) / MAX_EDGE)
             + float(g[_IDX["rank_weak"]]) * weak_d * enemy_d.astype(np.float64)
         )
+        # Ring 2: bias the throttle ranking toward/away from cells the enemy
+        # bloc covets. Guarded so Ring 1's score is byte-identical.
+        if opp_d is not None and rank_opp != 0.0:
+            score = score + rank_opp * opp_d
         score = np.where(desired, score, -np.inf)
         order = np.argsort(-score, axis=1, kind="stable")
         rank = np.empty_like(order)
@@ -336,6 +455,54 @@ def make_field_solver(vector: np.ndarray):
     return _solver
 
 
+# ---------------------------------------------------------------------------
+# Ring 2 policy — Ring 1 plus opponent-field awareness
+# ---------------------------------------------------------------------------
+
+
+def field_policy2_actions(
+    state: State,
+    seat: int,
+    rng: Optional[np.random.Generator] = None,
+    vector: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Ring 2 policy: (N,) int32 actions for `seat` from a GENOME2 vector.
+
+    Splits the vector into the 19 base Ring 1 params + 3 opponent params.
+    The opponent field is computed ONLY if at least one opp param is nonzero
+    (otherwise opp_pot=None for zero cost and bit-exact Ring 1 behavior).
+    """
+    g = champion2_vector() if vector is None else np.asarray(vector, dtype=np.float64)
+    base = g[:GENOME_DIM]
+    w_opp_def = float(g[_IDX2["w_opp_def"]])
+    atk_opp = float(g[_IDX2["atk_opp"]])
+    rank_opp = float(g[_IDX2["rank_opp"]])
+
+    opp_pot = None
+    if w_opp_def != 0.0 or atk_opp != 0.0 or rank_opp != 0.0:
+        gamma = float(base[_IDX["gamma"]])
+        weak_bonus = float(base[_IDX["w_weak"]])
+        expand_bonus = float(base[_IDX["w_expand"]])
+        pot = opp_potential(state, seat, gamma, weak_bonus, expand_bonus)
+        pmax = float(pot.max())
+        opp_pot = (pot / pmax) if pmax > 0.0 else np.zeros_like(pot)
+
+    return field_policy_actions(
+        state, seat, rng=rng, vector=base,
+        opp_pot=opp_pot, w_opp_def=w_opp_def, atk_opp=atk_opp, rank_opp=rank_opp,
+    )
+
+
+def make_field2_solver(vector: np.ndarray):
+    """Wrap a GENOME2 vector as a solver(state, seat, rng) callable."""
+    vec = np.asarray(vector, dtype=np.float64).copy()
+
+    def _solver(state: State, seat: int, rng=None) -> np.ndarray:
+        return field_policy2_actions(state, seat, rng=rng, vector=vec)
+
+    return _solver
+
+
 __all__ = [
     "GENOME_NAMES",
     "GENOME_DIM",
@@ -345,4 +512,13 @@ __all__ = [
     "clear_field_caches",
     "field_policy_actions",
     "make_field_solver",
+    # Ring 2
+    "GENOME2_NAMES",
+    "GENOME2_DIM",
+    "champion2_vector",
+    "genome2_bounds",
+    "opp_intrinsic",
+    "opp_potential",
+    "field_policy2_actions",
+    "make_field2_solver",
 ]

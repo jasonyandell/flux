@@ -52,10 +52,14 @@ import numpy as np
 from flux_v2 import ACTION_NOOP, apply_actions, tick
 from flux_v2.replay import append_index, state_to_frame
 from flux_v2.ring1 import (
+    GENOME2_NAMES as R2_NAMES,
     GENOME_NAMES as R1_NAMES,
+    champion2_vector,
     champion_vector,
     clear_field_caches,
+    genome2_bounds,
     genome_bounds,
+    make_field2_solver,
     make_field_solver,
 )
 from flux_v2.solver_lightning import lightning_solver_actions
@@ -96,6 +100,9 @@ def ring_spec(ring: int):
     if ring == 1:
         lo, hi = genome_bounds()
         return R1_NAMES, champion_vector(), lo, hi, make_field_solver
+    if ring == 2:
+        lo, hi = genome2_bounds()
+        return R2_NAMES, champion2_vector(), lo, hi, make_field2_solver
     raise ValueError(f"unknown ring {ring}")
 
 
@@ -466,7 +473,7 @@ def _confirm(best_vec, ring, cfg, pairs: int, seed: int, radii=None,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ring", type=int, choices=(0, 1), default=0)
+    ap.add_argument("--ring", type=int, choices=(0, 1, 2), default=0)
     ap.add_argument("--generations", type=int, default=100)
     ap.add_argument("--pop", type=int, default=12)
     ap.add_argument("--boards", type=int, default=12,

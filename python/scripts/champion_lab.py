@@ -476,6 +476,25 @@ def add(spec_json: str) -> None:
     _event("enqueue", id=exp["id"], label=exp.get("label", ""))
 
 
+def prioritize(ids_csv: str) -> None:
+    """Move the named experiment ids to the FRONT of the queue (preserving
+    their given order), so high-value directions run next. flock-safe."""
+    import fcntl
+    LAB.mkdir(parents=True, exist_ok=True)
+    lockf = open(LAB / ".tick.lock", "w")
+    fcntl.flock(lockf, fcntl.LOCK_EX)
+    try:
+        want = [s for s in ids_csv.split(",") if s.strip()]
+        q = _load_jsonl(Q)
+        front = [e for w in want for e in q if e["id"] == w]
+        rest = [e for e in q if e["id"] not in set(want)]
+        _write_jsonl(Q, front + rest)
+        _event("prioritize", moved=len(front), order=",".join(e["id"] for e in front))
+    finally:
+        fcntl.flock(lockf, fcntl.LOCK_UN)
+        lockf.close()
+
+
 # --- main --------------------------------------------------------------------
 
 def main() -> None:
@@ -489,6 +508,8 @@ def main() -> None:
         status()
     elif cmd == "add":
         add(sys.argv[2])
+    elif cmd == "prioritize":
+        prioritize(sys.argv[2])
     elif cmd == "board":
         board()
     elif cmd == "render-wiki":

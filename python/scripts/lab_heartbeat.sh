@@ -51,16 +51,18 @@ while true; do
     ( cd "$REPO/python" && "$PY" scripts/champion_lab.py render-wiki ) >> "$LOG" 2>&1
     echo "$new" > "$LAB/.state_hash"
   fi
-  # Commit ANY wiki change — board re-render above, or narrative an LLM loop
-  # wrote since last tick. Single git driver, so rebase-pull-push is race-free.
-  if ! git -C "$REPO" diff --quiet -- wiki/ 2>/dev/null; then
-    git -C "$REPO" add wiki/ >> "$LOG" 2>&1
-    git -C "$REPO" commit -q -m "champion lab: board + narrative [$ts]
+  # Commit ANY change under wiki/ or python/ — board re-render, narrative, or
+  # code a loop fire wrote (e.g. a new Ring feature). python/lab + checkpoints
+  # are gitignored, so this only stages real docs/code. Single git driver, so
+  # the rebase-pull-push is race-free.
+  git -C "$REPO" add -A wiki/ python/ >> "$LOG" 2>&1
+  if ! git -C "$REPO" diff --cached --quiet 2>/dev/null; then
+    git -C "$REPO" commit -q -m "champion lab: board + narrative + code [$ts]
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>" >> "$LOG" 2>&1
     git -C "$REPO" pull --rebase --autostash -q origin main >> "$LOG" 2>&1
     git -C "$REPO" push -q origin main >> "$LOG" 2>&1 && \
-      echo "[$ts] pushed wiki update" >> "$LOG"
+      echo "[$ts] pushed update" >> "$LOG"
   fi
   sleep "$INTERVAL"
 done
