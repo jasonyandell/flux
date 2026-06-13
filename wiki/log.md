@@ -2,9 +2,100 @@
 title: flux Wiki Log
 kind: log
 first_seen: bootstrap
-last_updated: 2026-05-16
+last_updated: 2026-06-12
 status: active
 ---
+
+## [2026-06-13 | workspace | rings validated + Gate 0 corrects the diagnosis]
+
+**Touched pages:** [[topics/v2-beat-the-solver-plan]] [[log]]
+
+Pushed the rings past "implemented" to "measured." **Ring 0 is a real
+win** at training scale: fresh-board holdout 61.6% (coherent 7–0,
+p≈0.016) and Todd `eval_solvers.py` 7–1 coherent (+75pp) vs
+`lightning_sum_throttled` at R=7 — registered as `evolve_r0`. It does
+**not** transfer to R=20 (28/30 split pairs, p≈0.5); cross-scale needs a
+multi-radius curriculum. **Ring 1 is a dead end at R=7** (clean
+negative): v1 overfit 16 boards (64%→47% holdout); the `--anchor-coef` +
+40-board retry `ring1_v2` plateaued at ~57% in-sample and held out at
+**42%** (0–5 coherent against) — worse, not better. Both rings converged
+on the same single lever (`defense_bonus`≈0.37 vs the champion's 0), so
+the champion's only found weakness is its zero defense, which Ring 0
+already captures. Ring 1's extra capacity needs a regime where the
+champion is weak (R≥12 / dithering FFA), not the tiny arena. **Gate 0 was built and run**
+(`scripts/gate0_probe.py`) and it *partially refuted* the information-gap
+diagnosis: a 3-hop local field already predicts the champion's per-edge
+decision at ~0.93 AUC, and the local-vs-pot gap *shrinks* with board size
+(+0.020 at R=5 → +0.010 at R=20) because relay is local-gradient-following
+on a field that's smoother per hop on bigger boards. So the BC failure
+was dominated by error-compounding + the serialized action interface, not
+unrepresentability — which re-bases (and still supports) Ring 1: it wins
+by computing the field exactly, acting in mask space, and training on
+game outcomes, not by being uniquely expressive. Revised the plan's
+diagnosis, Gate 0 section, principle, gates table, and added a Results
+section. All 145 tests green.
+
+Capstone (`gate0_probe.py --deploy-pairs`): deployed the per-edge probes
+*as solvers* vs the champion (R=7, 30 pairs). The 3-hop local clone
+(0.93 AUC) wins **0%**; the +pot clone (0.94 AUC) wins **27%**; baseline
+~50%. Proves per-edge accuracy ≠ playability (compounding), that the
+global field is worth far more to *play* than to *predict* (+0.016 AUC →
++27pp), and that independent-edge thresholding can't reproduce the joint
+top-1 throttle — which is exactly why Ring 1 keeps the champion's exact
+operator and only learns its field inputs/readout.
+
+## [2026-06-13 | workspace | rings 0+1 land: evolve_champion + ring1 field policy]
+
+**Touched pages:** [[topics/v2-beat-the-solver-plan]] [[log]]
+
+One-shot implementation of the plan's first two rings, fully offline. New:
+`python/flux_v2/ring1.py` (19-param field-policy genome around the frozen
+Bellman operator; champion-init is a bit-exact clone),
+`python/scripts/evolve_champion.py` (dependency-free ES, CRN matched pairs
+vs `lightning_sum_throttled`, holdout confirm mode, viewer replays), and
+`python/tests/test_v2_ring1_parity.py` (Gate 2 — passes; perturbation
+liveness too). All 145 tests green. Two background runs launched (ring 0
+and ring 1, R=7 P=6 screen world); ring 0 hit ~70% CRN win rate vs the
+champion within its first minutes — provisional until holdout + Todd.
+Bonus discovery recorded on the plan page: the champion's attack-tier
+throttle ranking is vestigial (float32 `pot[d]+1e30` saturates → fixed
+lowest-slot/eastward bias), found because Gate 2 demanded bit parity.
+
+## [2026-06-12 | workspace | beat-the-solver plan: superset ML over the champion]
+
+**Touched pages:** [[topics/v2-beat-the-solver-plan]]
+[[topics/v2-grand-research-plan]] [[topics/v2-ml-gameplay-opportunities]]
+[[topics/v2-temporal-strategy]] [[index]] [[log]]
+
+Wrote the detailed program for ML that beats `lightning_sum_throttled`.
+Core diagnosis: the 2026-05-16 BC/PPO failures are an information gap —
+the champion factorizes into a global 32-iter Bellman field plus a
+near-linear local readout (gradient-relay, throttle top-1, picker diff),
+and a 3-hop GCN over local channels cannot represent the field even in
+principle. Core principle: build policy classes that strictly contain the
+champion, initialize at it analytically (perfect clone, no imitation
+loss), and hill-climb matched-pair win rate — Ring 0 evolves the
+champion's six hand-picked knobs (notably `defense_bonus=0.0` and an
+unswept throttle×gamma cell), Ring 1 learns neural intrinsic/readout
+around the frozen Bellman operator with a desired-mask action surface,
+Ring 2 adds rival potential fields, the temporal manager from
+[[topics/v2-temporal-strategy]], and a league. Gate 0 falsification test:
+rerun the failed BC protocol with pot-field input channels — conditioned
+on pot the teacher is near-linear, so the clone should jump from 0 wins
+to parity. Revised [[topics/v2-grand-research-plan]] phase 2 ("distill
+before RL" → "initialize inside a superset class") and cross-linked the
+BC post-mortem in [[topics/v2-ml-gameplay-opportunities]].
+
+## [2026-05-16 | workspace | Todd measurement lab and Pete factory specs]
+
+**Touched pages:** [[topics/v2-todd-measurement-lab]] [[topics/v2-pete-factory]] [[entities/flux]] [[index]] [[log]]
+
+Added the local M5-scale lab split. Todd owns matched-pair measurement,
+scoreboards, wandb logging, and champion-promotion discipline. The Pete
+factory owns deterministic artifact generation around the existing Pete
+vectorized path: boards, raw games, selected FLXR samples, teacher shards, and
+divergence/preference candidates. Updated the v2 route map and flux entity to
+keep the boundary explicit: Pete makes material; Todd measures it.
 
 ## [2026-05-16 | workspace | Pete names the vectorized v2 lab path]
 

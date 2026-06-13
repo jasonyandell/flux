@@ -45,6 +45,15 @@ v2 reference:
 
 v2 research (freshest first):
 
+- [[topics/v2-beat-the-solver-plan|v2-beat-the-solver-plan]] —
+  **the active ML program** (2026-06-12). Diagnosis: the BC/PPO failures
+  are an information gap — the champion is a global Bellman field plus a
+  near-linear local readout, while the students were 3-hop GCNs that
+  cannot represent the field. Plan: policy classes that strictly contain
+  the champion — Ring 0 knob evolution (CMA-ES, CRN matched pairs),
+  Ring 1 neural intrinsic/readout around the frozen Bellman operator,
+  Ring 2 opponent fields + temporal manager + league. Gate 0
+  falsification: rerun BC with pot-field input channels.
 - [[topics/v2-temporal-strategy|v2-temporal-strategy]] —
   ML-scientist synthesis (2026-05-15). Throttle (pressure/waste cliff),
   target dithering (multi-enemy cycling), and the strategic vocabulary
@@ -58,6 +67,13 @@ v2 research (freshest first):
   grant-scale plan for solving v2 without compute theater: vectorized
   measurement lab, solver factory, solver distillation, residual policies,
   temporal manager, then league scaling.
+- [[topics/v2-todd-measurement-lab|v2-todd-measurement-lab]] —
+  trimmed M5-scale measurement lab: matched-pair protocols, local artifacts,
+  wandb dashboards, scoreboards, and champion-promotion discipline.
+- [[topics/v2-pete-factory|v2-pete-factory]] —
+  local generation factory around Pete: deterministic boards, raw solver
+  games, sample replays, teacher shards, and divergence/preference candidates
+  for Todd to measure.
 - [[topics/v2-vectorized|Pete / v2-vectorized]] — **the current hot path.**
   Numba-JIT'd solver pipeline, fluid `EDGE_ALPHA` momentum knob,
   warm-start Bellman, batched per-AI-tick solver, JIT'd board-setup

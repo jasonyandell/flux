@@ -276,6 +276,52 @@ SOLVERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Evolved champions (beat-the-solver plan, Rings 0/1). Registered so Todd's
+# eval_solvers.py can run them under the official matched-pair protocol.
+# Genomes are lazy-loaded from the evolve checkpoint JSON on first call, so a
+# missing checkpoint only errors if that solver is actually requested.
+# ---------------------------------------------------------------------------
+
+# REPO_ROOT is defined further down; derive the path independently so this
+# block doesn't depend on definition order.
+_EVOLVE_CKPT_DIR = Path(__file__).resolve().parents[2] / "python" / "checkpoints" / "evolve"
+_evolve_cache: dict = {}
+
+
+def _load_evolved(ring: int, path: Path):
+    key = str(path)
+    fn = _evolve_cache.get(key)
+    if fn is None:
+        import json as _json
+
+        from flux_v2.ring1 import make_field_solver
+
+        from scripts.evolve_champion import make_ring0_solver
+
+        blob = _json.loads(path.read_text())
+        if int(blob["ring"]) != ring:
+            raise ValueError(f"{path} is ring {blob['ring']}, expected {ring}")
+        vec = np.array(blob["best_vector"], dtype=np.float64)
+        maker = make_ring0_solver if ring == 0 else make_field_solver
+        fn = maker(vec)
+        _evolve_cache[key] = fn
+    return fn
+
+
+def _make_evolved_solver(ring: int, filename: str):
+    path = _EVOLVE_CKPT_DIR / filename
+
+    def _solver(state, seat, rng=None):
+        return _load_evolved(ring, path)(state, seat, rng=rng)
+
+    return _solver
+
+
+SOLVERS["evolve_r0"] = _make_evolved_solver(0, "ring0.json")
+SOLVERS["evolve_r1"] = _make_evolved_solver(1, "ring1.json")
+
+
 def _solver_instance(name: str) -> Callable:
     solver = SOLVERS[name]
     if isinstance(solver, StatefulSolverFactory):

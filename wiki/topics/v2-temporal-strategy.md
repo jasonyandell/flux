@@ -2,7 +2,7 @@
 title: v2 temporal strategy — throttle, targeting, and options as one ML problem
 kind: topic
 first_seen: 2026-05-15
-last_updated: 2026-05-16
+last_updated: 2026-06-12
 status: active
 ---
 
@@ -278,6 +278,11 @@ alone.
 
 ## Cross-references
 
+- [[v2-beat-the-solver-plan]] — the active ML program. Its Ring 2
+  temporal manager instantiates this page's manager/worker split with a
+  concrete goal space: slow modulations of the Ring 1 intrinsic /
+  throttle / target-weight parameterization, with the solver pipeline
+  as the worker.
 - [[v2-edge-voting-policy]] — edge-centric representation; this
   page's manager/worker split presupposes its output factorization.
 - [[v2-edge-loop-emergence]] — attention as the spatial primitive;

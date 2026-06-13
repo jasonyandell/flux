@@ -2,7 +2,7 @@
 title: v2 grand research plan
 kind: topic
 first_seen: 2026-05-16
-last_updated: 2026-05-16
+last_updated: 2026-06-12
 status: active
 ---
 
@@ -62,6 +62,11 @@ Output: a family of high-quality teachers plus hard states where teachers
 disagree.
 
 ### Phase 2: Distillation And Residuals
+
+*Revision 2026-06-12:* the BC leg failed for representational reasons —
+the students cannot compute the champion's global potential field. See
+[[v2-beat-the-solver-plan]], which replaces "distill, then RL" with
+"initialize inside a policy class that strictly contains the champion."
 
 - Behavior-clone the solver champions into the node-centric and edge-aware
   policy surfaces.
@@ -134,6 +139,6 @@ If that campaign cannot produce a residual that beats its teacher somewhere
 real, the correct grant move is not "more PPO"; it is to improve the game
 formulation, diagnostics, or solver family until there is a learnable gap.
 
-Related: [[v2-ml-gameplay-opportunities]], [[v2-temporal-strategy]],
-[[v2-vectorized]], [[v2-overnight-research]], [[v2-edge-voting-policy]],
-[[v2-training-runs]].
+Related: [[v2-beat-the-solver-plan]], [[v2-ml-gameplay-opportunities]],
+[[v2-temporal-strategy]], [[v2-vectorized]], [[v2-overnight-research]],
+[[v2-edge-voting-policy]], [[v2-training-runs]].

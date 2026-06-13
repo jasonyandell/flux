@@ -46,6 +46,13 @@ Active threads:
   output, and the fast measurement loop. "Run that through Pete" means use
   this path as the lab surface before trusting slower legacy loops.
 
+- **Todd** ([[../topics/v2-todd-measurement-lab|v2-todd-measurement-lab]])
+  and the **Pete factory**
+  ([[../topics/v2-pete-factory|v2-pete-factory]]). Todd is the M5-scale
+  measurement lab: matched pairs, scoreboards, and wandb summaries. The Pete
+  factory produces deterministic raw material for Todd: boards, games, replay
+  samples, teacher shards, and divergence candidates.
+
 - **Algorithmic solvers**
   ([[../topics/v2-algorithmic-solvers|v2-algorithmic-solvers]]). BFS plus
   a family of Lightning solvers — `max`, `sum`, `sum_pw`, `sum_long`,

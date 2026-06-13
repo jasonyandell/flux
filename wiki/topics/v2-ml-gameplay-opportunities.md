@@ -2,7 +2,7 @@
 title: v2 ML gameplay opportunities
 kind: topic
 first_seen: workspace
-last_updated: 2026-05-16
+last_updated: 2026-06-12
 status: active
 ---
 
@@ -74,6 +74,13 @@ from those clones immediately collapsed entropy and produced huge KL spikes.
 The next useful ML step is therefore a better imitation/control surface
 (edge-intent distillation, DAgger-style on-policy correction, or a residual
 head over solver intents), not another vanilla PPO run.
+
+2026-06-12 follow-up: [[v2-beat-the-solver-plan]] diagnoses this failure
+as an information gap — the teacher's decisions are a function of a global
+32-iter Bellman field a 3-hop GCN cannot represent, so the failure was
+over-determined before covariate shift or label sparsity enter. That page
+supersedes the imitation framing here: initialize inside a policy class
+that strictly contains the champion instead of cloning it.
 
 ### Learn residuals over the long-field solver
 
